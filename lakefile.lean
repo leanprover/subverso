@@ -4,13 +4,14 @@ open Lake DSL
 package «subverso» where
   -- add package configuration options here
 
-lean_lib «Subverso» where
-  -- add library configuration options here
+lean_lib SubversoHighlighting where
+  srcDir := "src/highlighting"
+  roots := #[`Subverso.Highlighting]
+
+lean_lib SubversoExamples where
+  srcDir := "src/examples"
+  roots := #[`Subverso.Examples]
 
 @[default_target]
-lean_exe «subverso» where
-  root := `Main
-  -- Enables the use of the Lean interpreter by the executable (e.g.,
-  -- `runFrontend`) at the expense of increased binary size on Linux.
-  -- Remove this line if you do not need such functionality.
-  supportInterpreter := true
+lean_exe «subverso-tests» where
+  root := `Tests
