@@ -9,6 +9,8 @@ jobs:
     strategy:
       matrix:
         toolchain:
+          - "leanprover/lean4:4.3.0"
+          - "leanprover/lean4:4.4.0"
           - "leanprover/lean4:4.5.0"
           - "leanprover/lean4:4.6.0-rc1"
     name: Build and test
@@ -43,3 +45,7 @@ jobs:
       - name: Build the project
         run: |
           lake build
+
+      - name: Run tests
+        run: |
+          lake exe subverso-tests
