@@ -15,10 +15,12 @@ lean_lib SubversoExamples where
 @[default_target]
 lean_exe «subverso-tests» where
   root := `Tests
+  supportInterpreter := true
 
 @[default_target]
 lean_exe «subverso-extract» where
   root := `Extract
+  supportInterpreter := true
 
 module_facet examples mod : FilePath := do
   let ws ← getWorkspace

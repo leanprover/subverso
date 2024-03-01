@@ -6,7 +6,31 @@ open Lean
 namespace Subverso.Examples
 open Subverso.Highlighting
 
-deriving instance ToJson, FromJson for Position, MessageSeverity
+instance : ToJson Position where
+  toJson | ⟨l, c⟩ => toJson (l, c)
+
+instance : FromJson Position where
+  fromJson?
+    | .arr #[l, c] => Position.mk <$> fromJson? l <*> fromJson? c
+    | other => .error s!"Couldn't decode position from {other}"
+
+example : fromJson? (toJson (⟨1, 5⟩ : Position)) = .ok (⟨1, 5⟩ : Position) := rfl
+
+instance : ToJson MessageSeverity where
+  toJson
+    | .error => "error"
+    | .warning => "warning"
+    | .information => "information"
+
+instance : FromJson MessageSeverity where
+  fromJson?
+    | "error" => .ok .error
+    | "warning" => .ok .warning
+    | "information" => .ok .information
+    | other => .error s!"Expected 'error', 'warning', or 'information', got {other}"
+
+theorem MessageSeverity.fromJson_toJson_ok (s : MessageSeverity) : fromJson? (toJson s) = .ok s := by
+  cases s <;> simp [toJson, fromJson?]
 
 structure Example where
   highlighted : Array Highlighted
