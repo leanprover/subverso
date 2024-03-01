@@ -12,7 +12,7 @@ jobs:
           - "leanprover/lean4:4.3.0"
           - "leanprover/lean4:4.4.0"
           - "leanprover/lean4:4.5.0"
-          - "leanprover/lean4:4.6.0-rc1"
+          - "leanprover/lean4:4.6.0"
     name: Build and test
     runs-on: ubuntu-latest
     steps:
@@ -45,6 +45,12 @@ jobs:
       - name: Build the project
         run: |
           lake build
+
+      - name: Configure demo/test subproject
+        run: |
+          pushd demo
+          lake update
+          popd
 
       - name: Run tests
         run: |

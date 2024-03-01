@@ -17,7 +17,7 @@ inductive Token.Kind where
   | docComment
   | sort
   | unknown
-deriving Repr, Inhabited, BEq, Hashable
+deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 open Token.Kind in
 open Syntax (mkCApp) in
@@ -35,7 +35,7 @@ instance : Quote Token.Kind where
 structure Token where
   kind : Token.Kind
   content : String
-deriving Repr, Inhabited, BEq, Hashable
+deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 open Syntax in
 instance : Quote Token where
@@ -46,10 +46,9 @@ instance : Quote Token where
 structure Highlighted.Goal (expr) where
   name : Option Name
   goalPrefix : String
-  /-- The hypotheses - `some` means let-binding with value-/
   hypotheses : Array (Name × Token.Kind × expr)
   conclusion : expr
-deriving Repr, BEq, Hashable
+deriving Repr, BEq, Hashable, ToJson, FromJson
 
 instance [Quote expr] : Quote (Highlighted.Goal expr) where
   quote
@@ -61,7 +60,7 @@ inductive Highlighted.Span.Kind where
   | error
   | warning
   | info
-deriving Repr, DecidableEq, Inhabited, BEq, Hashable
+deriving Repr, DecidableEq, Inhabited, BEq, Hashable, ToJson, FromJson
 
 open Highlighted Span Kind in
 open Syntax in
@@ -77,10 +76,9 @@ inductive Highlighted where
   | seq (highlights : Array Highlighted)
   -- TODO replace messages as strings with structured info
   | span (kind : Highlighted.Span.Kind) (info : String) (content : Highlighted)
-  -- TODO structured representation of tactic state
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : String.Pos) (content : Highlighted)
+  | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) (content : Highlighted)
   | point (kind : Highlighted.Span.Kind) (info : String)
-deriving Repr, Inhabited, BEq, Hashable
+deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.empty : Highlighted := .seq #[]
 instance : Append Highlighted where
@@ -107,5 +105,5 @@ where
     | .seq hls => mkCApp ``seq #[quoteArray ⟨quote'⟩ hls]
     | .span k info content => mkCApp ``span #[quote k, quote info, quote' content]
     | .tactics info pos content =>
-      mkCApp ``tactics #[quoteArray (@quoteHl _ ⟨quote'⟩) info, mkCApp ``String.Pos.mk #[quote pos.byteIdx], quote' content]
+      mkCApp ``tactics #[quoteArray (@quoteHl _ ⟨quote'⟩) info, quote pos, quote' content]
     | .point k info => mkCApp ``point #[quote k, quote info]

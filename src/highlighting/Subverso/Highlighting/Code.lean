@@ -166,12 +166,10 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
       pure <| some <| .option oi.declName docs
     | _ => pure none
 
-def identKind [Monad m] [MonadInfoTree m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : TSyntax `ident)
+def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
+    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray InfoTree) (stx : TSyntax `ident)
     : m Token.Kind := do
-  let trees ← getInfoTrees
   let mut kind : Token.Kind := .unknown
-
   for t in trees do
     for (ci, info) in infoForSyntax t stx do
       if let some seen ← infoKind ids ci info then
@@ -180,8 +178,7 @@ def identKind [Monad m] [MonadInfoTree m] [MonadLiftT IO m] [MonadFileMap m] [Mo
 
   pure kind
 
-def infoExists [Monad m] [MonadInfoTree m] [MonadLiftT IO m] (stx : Syntax) : m Bool := do
-  let trees ← getInfoTrees
+def infoExists [Monad m] [MonadLiftT IO m] (trees : PersistentArray InfoTree) (stx : Syntax) : m Bool := do
   for t in trees do
     for _ in infoForSyntax t stx do
       return true
@@ -191,7 +188,7 @@ def infoExists [Monad m] [MonadInfoTree m] [MonadLiftT IO m] (stx : Syntax) : m 
 inductive Output where
   | seq (emitted : Array Highlighted)
   | span (kind : Highlighted.Span.Kind) (info : String)
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : String.Pos)
+  | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : Nat)
 
 def Output.add (output : List Output) (hl : Highlighted) : List Output :=
   match output with
@@ -209,7 +206,7 @@ def Output.addText (output : List Output) (str : String) : List Output :=
 def Output.openSpan (output : List Output) (kind : Highlighted.Span.Kind) (info : String) : List Output :=
   .span kind info :: output
 
-def Output.openTactic (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (pos : String.Pos) : List Output :=
+def Output.openTactic (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) : List Output :=
   .tactics info pos :: output
 
 def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal Highlighted)) : Bool :=
@@ -478,7 +475,7 @@ def findTactics (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : Syntax) : Highl
         let endPosition := text.toPosition endPos
         if !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
           modify fun st => {st with
-            output := Output.openTactic st.output #[] endPos,
+            output := Output.openTactic st.output #[] endPos.byteIdx,
             inMessages := .inr ⟨endPosition⟩ :: st.inMessages
           }
           break
@@ -519,21 +516,21 @@ def findTactics (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : Syntax) : Highl
           goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
         if !Output.inTacticState (← get).output goalView then
           modify fun st => {st with
-            output := Output.openTactic st.output goalView endPos,
+            output := Output.openTactic st.output goalView endPos.byteIdx,
             inMessages := .inr ⟨endPosition⟩ :: st.inMessages
           }
         return
 
-partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : Syntax) (lookingAt : Option (Name × String.Pos) := none) : HighlightM Unit := do
+partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray Lean.Elab.InfoTree) (stx : Syntax) (lookingAt : Option (Name × String.Pos) := none) : HighlightM Unit := do
   findTactics ids stx
   match stx with
   | `($e.%$tk$field:ident) =>
-      highlight' ids e
+      highlight' ids trees e
       if let some ⟨pos, endPos⟩ := tk.getRange? then
         emitToken tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
       else
         emitString' "."
-      highlight' ids field
+      highlight' ids trees field
   | _ =>
     match stx with
     | .missing => pure () -- TODO emit unhighlighted string
@@ -542,21 +539,21 @@ partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : Syntax) 
         | .str (.str _ _) _ =>
           match stx.identComponents (nFields? := some 1) with
           | [y, field] =>
-            if (← infoExists field) then
-              highlight' ids y
+            if (← infoExists trees field) then
+              highlight' ids trees y
               emitToken' <| fakeToken .unknown "."
-              highlight' ids field
+              highlight' ids trees field
             else
-              emitToken i ⟨← identKind ids ⟨stx⟩, x.toString⟩
-          | _ => emitToken i ⟨← identKind ids ⟨stx⟩, x.toString⟩
-        | _ => emitToken i ⟨← identKind ids ⟨stx⟩, x.toString⟩
+              emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
+          | _ => emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
+        | _ => emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
     | stx@(.atom i x) =>
       let docs ← match lookingAt with
         | none => pure none
         | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
-      if let .sort ← identKind ids ⟨stx⟩ then
+      if let .sort ← identKind ids trees ⟨stx⟩ then
         emitToken i ⟨.sort, x⟩
         return
       else
@@ -587,18 +584,18 @@ partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : Syntax) 
       match i, i' with
       | .original leading pos _ _, .original _ _ trailing endPos =>
         let info := .original leading pos trailing endPos
-        emitToken info ⟨← identKind ids ⟨stx⟩, s!".{x.toString}"⟩
+        emitToken info ⟨← identKind ids trees ⟨stx⟩, s!".{x.toString}"⟩
       | _, _ =>
-        highlight' ids dot
-        highlight' ids name
+        highlight' ids trees dot
+        highlight' ids trees name
     | stx@(.node _ k children) =>
       let pos := stx.getPos?
       for child in children do
-        highlight' ids child (lookingAt := pos.map (k, ·))
+        highlight' ids trees child (lookingAt := pos.map (k, ·))
 
-def highlight (stx : Syntax) (messages : Array Message) : TermElabM Highlighted := do
-  let modrefs := Lean.Server.findModuleRefs (← getFileMap) (← getInfoTrees).toArray
+def highlight (stx : Syntax) (messages : Array Message) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM Highlighted := do
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
   let st ← HighlightState.ofMessages stx messages
-  let ((), {output := output, ..}) ← StateT.run (highlight' ids stx) st
+  let ((), {output := output, ..}) ← StateT.run (highlight' ids trees stx) st
   pure <| .fromOutput output
