@@ -2,7 +2,7 @@ import Lean
 
 open Lean
 
-namespace Subverso.Highlighting
+namespace SubVerso.Highlighting
 
 deriving instance Repr for Std.Format.FlattenBehavior
 deriving instance Repr for Std.Format

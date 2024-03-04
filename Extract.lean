@@ -1,8 +1,8 @@
 import Lean
-import Subverso.Examples.Env
+import SubVerso.Examples.Env
 
 open Lean
-open Subverso.Examples
+open SubVerso.Examples
 
 def main : (args : List String) → IO UInt32
   | [mod, outFile] => do
