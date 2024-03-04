@@ -1,14 +1,14 @@
 import Lean
 import Lean.Widget.TaggedText
 
-import Subverso.Highlighting.Highlighted
+import SubVerso.Highlighting.Highlighted
 
 open Lean Elab
 open Lean.Widget (TaggedText)
 open Lean.Widget
 open Lean.PrettyPrinter (InfoPerPos)
 
-namespace Subverso.Highlighting
+namespace SubVerso.Highlighting
 
 partial def Token.Kind.priority : Token.Kind → Nat
   | .var .. => 2
