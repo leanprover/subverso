@@ -2,9 +2,9 @@
 -- Import modules here that should be built as part of the library.
 import «Demo».Basic
 
-import Subverso.Examples
+import SubVerso.Examples
 
-open Subverso.Examples
+open SubVerso.Examples
 
 %example xdef
 def f (x : Nat) := %ex{add}{33 + %ex{X}{x}}
