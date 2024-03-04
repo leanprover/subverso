@@ -1,9 +1,9 @@
-import Subverso.Highlighting
-import Subverso.Examples
-import Subverso.Examples.Env
+import SubVerso.Highlighting
+import SubVerso.Examples
+import SubVerso.Examples.Env
 import Lean
 
-open Subverso.Examples (loadExamples Example)
+open SubVerso.Examples (loadExamples Example)
 open Lean.FromJson (fromJson?)
 
 def assert (what : String) (cond : Unit -> Bool) : IO Unit := do

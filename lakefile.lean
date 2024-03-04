@@ -4,13 +4,13 @@ open Lake DSL
 package «subverso» where
   -- add package configuration options here
 
-lean_lib SubversoHighlighting where
+lean_lib SubVersoHighlighting where
   srcDir := "src/highlighting"
-  roots := #[`Subverso.Highlighting]
+  roots := #[`SubVerso.Highlighting]
 
-lean_lib SubversoExamples where
+lean_lib SubVersoExamples where
   srcDir := "src/examples"
-  roots := #[`Subverso.Examples]
+  roots := #[`SubVerso.Examples]
 
 @[default_target]
 lean_exe «subverso-tests» where
