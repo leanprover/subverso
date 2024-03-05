@@ -54,7 +54,8 @@ jobs:
       - name: Configure demo/test subproject
         run: |
           pushd demo
-          lake update
+          # Use lake update to get the right version
+          ~/.elan/bin/lake update
           popd
 
       - name: Run tests
