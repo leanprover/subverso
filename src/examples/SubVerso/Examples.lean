@@ -90,19 +90,39 @@ elab_rules : command
     else
       throwErrorAt name "No highlighting found for '{name}'"
 
+def findElanLake : IO String := do
+  if let some elanPath ← IO.getEnv "ELAN_HOME" then
+    return ((elanPath : System.FilePath) / "bin" / "lake").toString
+  let some path ← IO.getEnv "PATH"
+    | return "lake" -- better than crashing!
+  let entries := System.SearchPath.parse path
+  for entry in entries do
+    -- This is an elan version of lake if it responds well to a `+`
+    let lakePath := entry / "lake"
+    let out ← IO.Process.output {
+      cmd := lakePath.toString
+      args := #["+stable"]
+      cwd := entry
+      env := #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP", "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH", "ELAN_TOOLCHAIN"].map (·, none)
+    }
+    if out.exitCode == 0 then
+      return lakePath.toString
+  return "lake"
+
 open System in
 partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example)) := do
   -- Validate that the path is really a Lean project
   let lakefile := leanProject / "lakefile.lean"
   if !(← lakefile.pathExists) then
     throw <| .userError s!"File {lakefile} doesn't exist, couldn't load project"
+
   -- Build the facet
   let res ← IO.Process.output {
-    cmd := "lake"
+    cmd := ← findElanLake
     args := #["build", ":examples"]
     cwd := leanProject
     -- Unset Lake's environment variables
-    env := #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP", "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH"].map (·, none)
+    env := #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP", "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH", "ELAN_TOOLCHAIN"].map (·, none)
   }
   if res.exitCode != 0 then
     throw <| .userError <|
