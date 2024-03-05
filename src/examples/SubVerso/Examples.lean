@@ -116,15 +116,24 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
   if !(← lakefile.pathExists) then
     throw <| .userError s!"File {lakefile} doesn't exist, couldn't load project"
 
+  let lake ← findElanLake
+
   -- Build the facet
   let res ← IO.Process.output {
-    cmd := ← findElanLake
+    cmd := lake
     args := #["build", ":examples"]
     cwd := leanProject
     -- Unset Lake's environment variables
     env := #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP", "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH", "ELAN_TOOLCHAIN"].map (·, none)
   }
   if res.exitCode != 0 then
+    IO.eprintln <|
+      "Build process failed." ++
+      "\nCWD: " ++ leanProject.toString ++
+      "\nCommand: " ++ lake ++
+      decorateOut "stdout" res.stdout ++
+      decorateOut "stderr" res.stderr
+
     throw <| .userError <|
       "Build process failed." ++
       decorateOut "stdout" res.stdout ++
