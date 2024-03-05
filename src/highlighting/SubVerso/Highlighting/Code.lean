@@ -534,6 +534,10 @@ partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : Persis
   | _ =>
     match stx with
     | .missing => pure () -- TODO emit unhighlighted string
+    | .ident _ _ .anonymous _ =>
+      -- If the anonymous identifier occurs, it's because it was a fallback for an optional
+      -- identifier (e.g. in `have`) and the user didn't write it.
+      pure ()
     | stx@(.ident i _ x _) =>
         match x.eraseMacroScopes with
         | .str (.str _ _) _ =>
