@@ -132,8 +132,9 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
       "Build process failed." ++
       "\nCWD: " ++ projectDir.toString ++
       "\nCommand: " ++ lake ++
-      decorateOut "stdout" res.stdout ++
-      decorateOut "stderr" res.stderr
+      "\nExit code: " ++ toString res.exitCode ++
+      "\nstdout: " ++ res.stdout ++
+      "\nstderr: " ++ res.stderr
 
     throw <| .userError <|
       "Build process failed." ++
