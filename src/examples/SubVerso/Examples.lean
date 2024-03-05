@@ -68,28 +68,30 @@ elab_rules : command
       | throwErrorAt allCommands.back "Failed to get source position"
     let text ← getFileMap
     let str := text.source.extract leading.startPos trailing.stopPos
-    modifyEnv fun ρ => highlighted.addEntry ρ (name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
-    for (name, term) in termExamples do
+    let mod ← getMainModule
+    modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+    for (tmName, term) in termExamples do
       let hl ← liftTermElabM (highlight term newMessages.toList.toArray trees)
       let .original leading startPos _ _ := term.getHeadInfo
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
       let str := text.source.extract leading.startPos trailing.stopPos
-      modifyEnv fun ρ => highlighted.addEntry ρ (name, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+      modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
 
 scoped syntax "%dump" ident : command
 
 elab_rules : command
   | `(%dump%$kw $name:ident) => do
-    let st := highlighted.getState (← getEnv)
+    let mod ← getMainModule
+    let st := highlighted.getState (← getEnv) |>.find? mod |>.getD {}
     if let some json := st.find? name.getId then
       logInfoAt kw m!"{toString json}"
     else
       throwErrorAt name "No highlighting found for '{name}'"
 
 open System in
-partial def loadExamples (leanProject : FilePath) : IO (NameMap Json) := do
+partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example)) := do
   -- Validate that the path is really a Lean project
   let lakefile := leanProject / "lakefile.lean"
   if !(← lakefile.pathExists) then
@@ -110,23 +112,28 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap Json) := do
 where
   decorateOut (name : String) (out : String) : String :=
     if out.isEmpty then "" else s!"\n{name}:\n{out}\n"
-  collectExamples (name : Name) (dir : FilePath) : IO (NameMap Json) := do
+  collectExamples (modName : Name) (dir : FilePath) : IO (NameMap (NameMap Example)) := do
     let contents ← dir.readDir
     let mut out := {}
     for f in contents do
       match (← f.path.metadata).type with
       | .dir =>
-        let sub ← collectExamples (.str name f.fileName) f.path
-        out := out.mergeBy (fun _ _ j2 => j2) sub
+        let sub ← collectExamples (.str modName f.fileName) f.path
+        out := out.mergeBy (fun _ j1 j2 => j1.mergeBy (fun _ _ x => x) j2) sub
       | .file =>
         if f.path.extension == some "json" then
           if let some mod := f.path.fileStem then
-            let name' : Name := .str name mod
+            let name' : Name := .str modName mod
             let contents := Json.parse (← IO.FS.readFile f.path)
             match contents with
             | .error err => throw <| .userError s!"Couldn't parse {f.path} as JSON: {err}"
             | .ok val =>
-              out := out.insert name' val
+              let .ok o := val.getObj?
+                | throw <| IO.userError "Expected JSON object in '{f.path}'"
+              for ⟨exName, exJson⟩ in o.toArray do
+                match FromJson.fromJson? (α := Example) exJson with
+                | .error err => throw <| IO.userError s!"Couldn't deserialized example: {err}"
+                | .ok ex => out := out.insert name' (out.find? name' |>.getD {} |>.insert exName.toName ex)
       | _ => pure ()
     return out
 
@@ -144,5 +151,5 @@ def xyz (n : Nat) := 1 + %ex{test2}{3 + n}
 -- %end
 
 -- %dump test
-%dump test2
+%dump test3.test2
 %dump test3
