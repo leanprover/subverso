@@ -101,6 +101,8 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
     cmd := "lake"
     args := #["build", ":examples"]
     cwd := leanProject
+    -- Unset Lake's environment variables
+    env := #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP", "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH"].map (·, none)
   }
   if res.exitCode != 0 then
     throw <| .userError <|
