@@ -40,15 +40,17 @@ structure Example where
   stop : Lean.Position
 deriving ToJson, FromJson
 
-initialize highlighted : PersistentEnvExtension (NameMap Json) (Name × Example) (NameMap Json) ←
+initialize highlighted : PersistentEnvExtension (NameMap (NameMap Json)) (Name × Name × Example) (NameMap (NameMap Json)) ←
   registerPersistentEnvExtension {
     mkInitial := pure {}
     addImportedFn := fun imported => do
       let mut s := {}
       for imp in imported do
         for found in imp do
-          s := s.mergeBy (fun _ _ json => json) found
+          s := s.mergeBy (fun _ exs1 exs2 => exs1.mergeBy (fun _ _ v => v) exs2) found
       pure s
-    addEntryFn := fun s (n, val) => s.insert n (toJson val)
+    addEntryFn := fun s (mod, ex, val) =>
+      let forMod := s.find? mod |>.getD .empty
+      s.insert mod (forMod.insert ex (toJson val))
     exportEntriesFn := fun s => #[s]
   }
