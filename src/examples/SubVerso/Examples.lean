@@ -117,6 +117,17 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
   if !(← lakefile.pathExists) then
     throw <| .userError s!"File {lakefile} doesn't exist, couldn't load project"
 
+  -- Kludge: path entries likely added by Elan
+  let newpath := System.SearchPath.parse ((← IO.getEnv "PATH").getD "") |>.filter ("toolchains" ∉ ·.toString.splitOn "/")
+
+  -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
+  -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared
+  -- libraries.
+  let lakeVars :=
+    #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP",
+      "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH",
+      "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
+
   let lake ← findElanLake
 
   -- Build the facet
@@ -125,7 +136,7 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
     args := #["build", ":examples"]
     cwd := projectDir
     -- Unset Lake's environment variables
-    env := #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP", "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH", "ELAN_TOOLCHAIN"].map (·, none)
+    env := lakeVars.map (·, none)
   }
   if res.exitCode != 0 then
     IO.eprintln <|
