@@ -111,20 +111,42 @@ def findElanLake : IO String := do
 
 open System in
 partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example)) := do
+  let projectDir := ((← IO.currentDir) / leanProject).normalize
   -- Validate that the path is really a Lean project
-  let lakefile := leanProject / "lakefile.lean"
+  let lakefile := projectDir / "lakefile.lean"
   if !(← lakefile.pathExists) then
     throw <| .userError s!"File {lakefile} doesn't exist, couldn't load project"
 
+  -- Kludge: path entries likely added by Elan
+  let newpath := System.SearchPath.parse ((← IO.getEnv "PATH").getD "") |>.filter ("toolchains" ∉ ·.toString.splitOn "/")
+
+  -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
+  -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared
+  -- libraries.
+  let lakeVars :=
+    #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP",
+      "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH",
+      "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
+
+  let lake ← findElanLake
+
   -- Build the facet
   let res ← IO.Process.output {
-    cmd := ← findElanLake
+    cmd := lake
     args := #["build", ":examples"]
-    cwd := leanProject
+    cwd := projectDir
     -- Unset Lake's environment variables
-    env := #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP", "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH", "ELAN_TOOLCHAIN"].map (·, none)
+    env := lakeVars.map (·, none)
   }
   if res.exitCode != 0 then
+    IO.eprintln <|
+      "Build process failed." ++
+      "\nCWD: " ++ projectDir.toString ++
+      "\nCommand: " ++ lake ++
+      "\nExit code: " ++ toString res.exitCode ++
+      "\nstdout: " ++ res.stdout ++
+      "\nstderr: " ++ res.stderr
+
     throw <| .userError <|
       "Build process failed." ++
       decorateOut "stdout" res.stdout ++
