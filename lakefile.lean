@@ -28,13 +28,13 @@ module_facet examples mod : FilePath := do
     | error "The subverso-extract executable was not found"
 
   let exeJob ← extract.exe.fetch
-  let modJob ← mod.leanArts.fetch
+  let modJob ← mod.olean.fetch
 
   let buildDir := ws.root.buildDir
   let hlFile := mod.filePath (buildDir / "examples") "json"
 
   exeJob.bindAsync fun exeFile exeTrace =>
-    modJob.bindSync fun () modTrace => do
+    modJob.bindSync fun _oleanPath modTrace => do
       let depTrace := mixTrace exeTrace modTrace
       let trace ← buildFileUnlessUpToDate hlFile depTrace do
         logStep s!"Exporting highlighted example JSON for '{mod.name}'"
@@ -61,5 +61,5 @@ package_facet examples pkg : FilePath := do
   let buildDir := ws.root.buildDir
   let hlDir := buildDir / "examples"
   libJobs.bindSync fun () trace => do
-    logStep s!"Highlighted code written to '{hlDir}'"
+    logInfo s!"Highlighted code written to '{hlDir}'"
     pure (hlDir, trace)
