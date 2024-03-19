@@ -36,10 +36,10 @@ def savingNewMessages [Monad m] [MonadFinally m] [MonadMessageState m]
     endMessages ← getMessages
     pure res
   finally
-    setMessages (startMessages ++ endMessages)
+    setMessages startMessages
   pure (res, endMessages)
 
-scoped syntax "%example" ident command command* "%end" : command
+scoped syntax "%example" ("(" &"config" " := " term")")? ident command command* "%end" : command
 
 example : TermElabM Unit := logError "foo"
 
@@ -54,14 +54,59 @@ partial def extractExamples (stx : Syntax) : StateT (NameMap Syntax) Id Syntax :
     | .node info kind args => pure <| .node info kind (← args.mapM extractExamples)
     | _ => pure stx
 
+private def contents (message : Message) : IO String := do
+  let head := if message.caption != "" then message.caption ++ ":\n" else ""
+  pure <| withNewline <| head ++ (← message.data.toString)
+where
+  withNewline (str : String) := if str == "" || str.back != '\n' then str ++ "\n" else str
+
+structure ExampleConfig where
+  /-- This example contains an error -/
+  error : Bool := false
+  /-- This example should be thrown away after elaboration (implied by `error`) -/
+  keep : Bool := true
+
+def elabExampleConfig (stx : TSyntax `term) : TermElabM ExampleConfig :=
+  match stx with
+  | `({}) => pure {}
+  | `({ $items:structInstField,* }) => mkConfig items.getElems {}
+  | other => throwErrorAt other "Expected structure literal"
+where
+  asBool (stx : TSyntax `term) : TermElabM Bool := do
+    match stx with
+    | `($x:ident) =>
+      match ← resolveGlobalConstNoOverloadWithInfo x with
+      | ``true => pure true
+      | ``false => pure false
+      | other => throwErrorAt stx "Expected Boolean literal, got {other}"
+    | _ => throwErrorAt stx "Expected Boolean literal"
+  mkConfig (items : Array (TSyntax `Lean.Parser.Term.structInstField)) (config : ExampleConfig) : TermElabM ExampleConfig := do
+    let mut config := config
+    for item in items do
+      if let `(Lean.Parser.Term.structInstField|$field:ident := $val:term) := item then
+        if field.getId == `error then config := {config with error := ← asBool val}
+        else if field.getId == `keep then config := {config with keep := ← asBool val}
+        else throwErrorAt field "Unknown field - expected 'error' or 'keep'"
+      else throwErrorAt item "Exptected field initializer"
+    pure config
+
+macro_rules
+  | `(%example $name:ident $cmd $cmds* %end) => `(%example (config := {}) $name $cmd $cmds* %end)
+
+deriving instance Repr for MessageSeverity
+
 elab_rules : command
-  | `(%example $name:ident $cmd $cmds* %end) => do
+  | `(%example%$tk ( config := $cfg:term ) $name:ident $cmd $cmds* %end) => do
+    let config ← liftTermElabM <| elabExampleConfig cfg
     let allCommands := #[cmd] ++ cmds
     let (allCommands, termExamples) := allCommands.mapM extractExamples .empty
+    let initSt ← get
     let ((), newMessages) ← savingNewMessages (allCommands.forM elabCommand)
+    if config.error && !newMessages.hasErrors then
+      throwErrorAt tk "Expected an error, but none occurred"
     let trees ← getInfoTrees
     let hl ← allCommands.mapM fun c => liftTermElabM (highlight c newMessages.toList.toArray trees)
-    let freshMsgs ← newMessages.toList.mapM fun m => do pure (m.severity, ← m.toString)
+    let freshMsgs ← newMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
     let .original leading startPos _ _ := allCommands[0]!.getHeadInfo
       | throwErrorAt allCommands[0]! "Failed to get source position"
     let .original _ _ trailing stopPos := allCommands.back.getTailInfo
@@ -69,6 +114,7 @@ elab_rules : command
     let text ← getFileMap
     let str := text.source.extract leading.startPos trailing.stopPos
     let mod ← getMainModule
+    if config.error || !config.keep then set initSt
     modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
     for (tmName, term) in termExamples do
       let hl ← liftTermElabM (highlight term newMessages.toList.toArray trees)
@@ -78,6 +124,9 @@ elab_rules : command
         | throwErrorAt term "Failed to get source position"
       let str := text.source.extract leading.startPos trailing.stopPos
       modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+    for msg in if config.error then newMessages.errorsToWarnings.toList else newMessages.toList do
+      logMessage msg
+
 
 scoped syntax "%dump" ident : command
 
@@ -187,6 +236,7 @@ def wxyz (n : Nat) := 1 + 3 + n
 #check wxyz
 def xyz (n : Nat) := 1 + %ex{test2}{3 + n}
 %end
+
 
 -- %example test
 -- #eval 5
