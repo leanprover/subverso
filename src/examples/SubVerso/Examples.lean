@@ -44,15 +44,23 @@ scoped syntax "%example" ("(" &"config" " := " term")")? ident command command* 
 example : TermElabM Unit := logError "foo"
 
 partial def extractExamples (stx : Syntax) : StateT (NameMap Syntax) Id Syntax := do
-  if let `(term|%ex { $n:ident }{ $tm:term }) := stx then
+  if let `(term|%ex { $n:ident }{ $tm:term }%$tk) := stx then
     let next ← extractExamples tm
     -- Save the erased version in case there's nested examples
+    let next := augmentTrailing next tk
     modify fun st => st.insert n.getId next
     pure next
   else
     match stx with
     | .node info kind args => pure <| .node info kind (← args.mapM extractExamples)
     | _ => pure stx
+where
+  getTrailing (stx : Syntax) : String :=
+    match stx.getTailInfo with
+    | .original _ _ t _ => t.toString
+    | _ => ""
+  augmentTrailing (stx tok : Syntax) : Syntax :=
+    stx.updateTrailing (getTrailing stx ++ getTrailing tok).toSubstring
 
 private def contents (message : Message) : IO String := do
   let head := if message.caption != "" then message.caption ++ ":\n" else ""
