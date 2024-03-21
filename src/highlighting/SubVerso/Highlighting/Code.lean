@@ -592,6 +592,13 @@ partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : Persis
       | _, _ =>
         highlight' ids trees dot
         highlight' ids trees name
+    | .node _ `choice alts =>
+      -- Arbitrarily select one of the alternatives found by the parser. Otherwise, quotations of
+      -- let-bindings with antiquotations as the bound variable leads to doubled bound variables,
+      -- because the parser emits a choice node in the quotation. And it's never correct to show
+      -- both alternatives!
+      if h : alts.size > 0 then
+        highlight' ids trees alts[0]
     | stx@(.node _ k children) =>
       let pos := stx.getPos?
       for child in children do
