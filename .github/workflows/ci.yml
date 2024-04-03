@@ -13,6 +13,7 @@ jobs:
           - "leanprover/lean4:4.4.0"
           - "leanprover/lean4:4.5.0"
           - "leanprover/lean4:4.6.0"
+          - "leanprover/lean4:4.7.0"
     name: Build and test
     runs-on: ubuntu-latest
     steps:
