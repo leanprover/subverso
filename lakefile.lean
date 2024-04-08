@@ -4,6 +4,10 @@ open Lake DSL
 package «subverso» where
   -- add package configuration options here
 
+lean_lib SubVersoCompat where
+  srcDir := "src/compat"
+  roots := #[`SubVerso.Compat]
+
 lean_lib SubVersoHighlighting where
   srcDir := "src/highlighting"
   roots := #[`SubVerso.Highlighting]
