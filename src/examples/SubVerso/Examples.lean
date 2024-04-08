@@ -1,4 +1,5 @@
 import SubVerso.Highlighting
+import SubVerso.Compat
 import SubVerso.Examples.Env
 import Lean.Environment
 
@@ -83,7 +84,7 @@ where
   asBool (stx : TSyntax `term) : TermElabM Bool := do
     match stx with
     | `($x:ident) =>
-      match ← resolveGlobalConstNoOverloadWithInfo x with
+      match ← Compat.realizeNameNoOverloads x with
       | ``true => pure true
       | ``false => pure false
       | other => throwErrorAt stx "Expected Boolean literal, got {other}"

@@ -1,6 +1,7 @@
 import Lean
 import Lean.Widget.TaggedText
 
+import SubVerso.Compat
 import SubVerso.Highlighting.Highlighted
 
 open Lean Elab
@@ -116,20 +117,21 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
   match ← instantiateMVars expr with
   | Expr.fvar id =>
     let seen ←
-      if let some y := ids.find? (.fvar id) then
-        match y with
-        | .fvar x =>
-          let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
-          let tyStr := toString (← runMeta <| Meta.ppExpr ty)
-          if let some localDecl := lctx.find? x then
-            if localDecl.isAuxDecl then
-              let e ← runMeta <| Meta.ppExpr expr
-              return some (.const (toString e) tyStr none)
-          return some (.var x tyStr)
-        | .const x =>
-          let sig := toString (← runMeta (PrettyPrinter.ppSignature x)).1
-          let docs ← findDocString? (← getEnv) x
-          return some (.const x sig docs)
+      if let some y := ids.find? (← Compat.mkRefIdentFVar id) then
+        Compat.refIdentCase y
+          (onFVar := fun x => do
+            let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
+            let tyStr := toString (← runMeta <| Meta.ppExpr ty)
+            if let some localDecl := lctx.find? x then
+              if localDecl.isAuxDecl then
+                let e ← runMeta <| Meta.ppExpr expr
+                -- FIXME the mkSimple is a bit of a kludge
+                return some (.const (.mkSimple (toString e)) tyStr none)
+            return some (.var x tyStr))
+          (onConst := fun x => do
+            let sig := toString (← runMeta (PrettyPrinter.ppSignature x)).1
+            let docs ← findDocString? (← getEnv) x
+            return some (.const x sig docs))
       else
         let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
         let tyStr := toString (← runMeta <| Meta.ppExpr ty)
