@@ -75,7 +75,7 @@ inductive Highlighted where
   | text (str : String)
   | seq (highlights : Array Highlighted)
   -- TODO replace messages as strings with structured info
-  | span (kind : Highlighted.Span.Kind) (info : String) (content : Highlighted)
+  | span (info : Array (Highlighted.Span.Kind × String)) (content : Highlighted)
   | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) (content : Highlighted)
   | point (kind : Highlighted.Span.Kind) (info : String)
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
@@ -103,7 +103,7 @@ where
     | .token tok => mkCApp ``token #[quote tok]
     | .text str => mkCApp ``text #[quote str]
     | .seq hls => mkCApp ``seq #[quoteArray ⟨quote'⟩ hls]
-    | .span k info content => mkCApp ``span #[quote k, quote info, quote' content]
+    | .span info content => mkCApp ``span #[quote info, quote' content]
     | .tactics info pos content =>
       mkCApp ``tactics #[quoteArray (@quoteHl _ ⟨quote'⟩) info, quote pos, quote' content]
     | .point k info => mkCApp ``point #[quote k, quote info]

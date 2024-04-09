@@ -189,7 +189,7 @@ def infoExists [Monad m] [MonadLiftT IO m] (trees : PersistentArray InfoTree) (s
 
 inductive Output where
   | seq (emitted : Array Highlighted)
-  | span (kind : Highlighted.Span.Kind) (info : String)
+  | span (info : Array (Highlighted.Span.Kind × String))
   | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : Nat)
 
 def Output.add (output : List Output) (hl : Highlighted) : List Output :=
@@ -205,8 +205,8 @@ def Output.addToken (output : List Output) (token : Token) : List Output :=
 def Output.addText (output : List Output) (str : String) : List Output :=
   Output.add output (.text str)
 
-def Output.openSpan (output : List Output) (kind : Highlighted.Span.Kind) (info : String) : List Output :=
-  .span kind info :: output
+def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.Kind × String)) : List Output :=
+  .span messages :: output
 
 def Output.openTactic (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) : List Output :=
   .tactics info pos :: output
@@ -219,7 +219,7 @@ def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal 
 def Output.closeSpan (output : List Output) : List Output :=
   let rec go (acc : Highlighted) : List Output → List Output
     | [] => [.seq #[acc]]
-    | .span kind info :: more => Output.add more (.span kind info acc)
+    | .span info :: more => Output.add more (.span info acc)
     | .tactics info pos :: more => Output.add more (.tactics info pos acc)
     | .seq left :: more => go (.seq (left.push acc)) more
   go .empty output
@@ -228,22 +228,22 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
   let rec go (acc : Highlighted) : List Output → Highlighted
     | [] => acc
     | .seq left :: more => go (.seq (left.push acc)) more
-    | .span kind info :: more => go (.span kind info acc) more
+    | .span info :: more => go (.span info acc) more
     | .tactics info pos :: more => go (.tactics info pos acc) more
   go .empty output
 
 structure OpenTactic where
   closesAt : Lean.Position
 
-structure HighlightState where
-  /-- Messages not yet displayed -/
+structure MessageBundle where
   messages : Array Message
-  nextMessage : Option (Fin messages.size)
-  /-- Output so far -/
-  output : List Output
-  /-- Messages being displayed -/
-  inMessages : List (Message ⊕ OpenTactic)
-deriving Inhabited
+  non_empty : messages.size > 0
+
+def MessageBundle.first (msgs : MessageBundle) : Message := msgs.messages[0]'msgs.non_empty
+
+def MessageBundle.pos (msgs : MessageBundle) : Lean.Position := msgs.first.pos
+
+def MessageBundle.endPos (msgs : MessageBundle) : Option Lean.Position := msgs.first.endPos
 
 private def _root_.Lean.Position.before (pos1 pos2 : Lean.Position) : Bool :=
   pos1.line < pos2.line || (pos1.line == pos2.line && pos1.column < pos2.column)
@@ -251,17 +251,31 @@ private def _root_.Lean.Position.before (pos1 pos2 : Lean.Position) : Bool :=
 private def _root_.Lean.Position.notAfter (pos1 pos2 : Lean.Position) : Bool :=
   pos1.line < pos2.line || (pos1.line == pos2.line && pos1.column ≤ pos2.column)
 
-
-def HighlightState.ofMessages [Monad m] [MonadFileMap m]
-    (stx : Syntax) (messages : Array Message) : m HighlightState := do
-  let msgs ← (·.qsort cmp) <$> messages.filterM (isRelevant stx)
-  pure {
-    messages := msgs,
-    nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
-    output := [],
-    inMessages := [],
-  }
+def bundleMessages (msgs : Array Message) : Array MessageBundle := Id.run do
+  let mut out := #[]
+  let mut curr : Option MessageBundle := none
+  for m in msgs.qsort cmp do
+    match curr with
+    | none => curr := some ⟨#[m], Nat.zero_lt_succ 0⟩
+    | some b =>
+      let first := b.messages[0]'b.non_empty
+      if first.pos == m.pos && first.endPos == m.endPos then
+        curr := some {b with
+          messages := b.messages.push m,
+          non_empty := by rw [Array.size_push]; exact lt_succ_of_lt b.non_empty
+        }
+      else
+        out := out.push b
+        curr := some ⟨#[m], Nat.zero_lt_succ 0⟩
+  if let some b := curr then out := out.push b
+  out
 where
+  lt_succ_of_lt {n k : Nat} : n < k → n < k + 1 := by
+    intro lt
+    induction lt <;> apply Nat.lt.step
+    . constructor
+    . assumption
+
   cmp (m1 m2 : Message) :=
     if m1.pos.before m2.pos then true
     else if m1.pos == m2.pos then
@@ -272,6 +286,26 @@ where
       | some e1, some e2 => e2.before e1
     else false
 
+structure HighlightState where
+  /-- Messages not yet displayed -/
+  messages : Array MessageBundle
+  nextMessage : Option (Fin messages.size)
+  /-- Output so far -/
+  output : List Output
+  /-- Messages being displayed -/
+  inMessages : List (MessageBundle ⊕ OpenTactic)
+deriving Inhabited
+
+def HighlightState.ofMessages [Monad m] [MonadFileMap m]
+    (stx : Syntax) (messages : Array Message) : m HighlightState := do
+  let msgs ← bundleMessages <$> messages.filterM (isRelevant stx)
+  pure {
+    messages := msgs
+    nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
+    output := [],
+    inMessages := [],
+  }
+where
   isRelevant (stx : Syntax) (msg : Message) : m Bool := do
     let text ← getFileMap
     let (some s, some e) := (stx.getPos?.map text.toPosition , stx.getTailPos?.map text.toPosition)
@@ -287,7 +321,7 @@ abbrev HighlightM (α : Type) : Type := StateT HighlightState TermElabM α
 instance : Inhabited (HighlightM α) where
   default := fun _ => default
 
-def nextMessage? : HighlightM (Option Message) := do
+def nextMessage? : HighlightM (Option MessageBundle) := do
   let st ← get
   match st.nextMessage with
   | none => pure none
@@ -307,24 +341,27 @@ def advanceMessages : HighlightM Unit := do
 -- the opening token of a syntax object is opened when visiting that syntax
 -- object. It should wait to open it until the syntax we're looking at is fully
 -- contained in the error span.
-def needsOpening (pos : Lean.Position) (message : Message) : Bool :=
+def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.pos.notAfter pos
 
-def needsClosing (pos : Lean.Position) (message : Message) : Bool :=
+def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.endPos.map pos.notAfter |>.getD true
 
 partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
   if let some msg ← nextMessage? then
     if needsOpening pos msg then
       advanceMessages
-      let kind :=
-        match msg.severity with
-        | .error => .error
-        | .warning => .warning
-        | .information => .info
-      let str ← contents msg
+      let str ← msg.messages.mapM fun m => do
+          let kind : Highlighted.Span.Kind :=
+            match m.severity with
+            | .error => .error
+            | .warning => .warning
+            | .information => .info
+          let str ← contents m
+          pure (kind, str)
+
       modify fun st => {st with
-        output := Output.openSpan st.output kind str
+        output := Output.openSpan st.output str
         inMessages := .inl msg :: st.inMessages
       }
       openUntil pos
