@@ -155,6 +155,10 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
   let lakefile := projectDir / "lakefile.lean"
   if !(← lakefile.pathExists) then
     throw <| .userError s!"File {lakefile} doesn't exist, couldn't load project"
+  let toolchainfile := projectDir / "lean-toolchain"
+  if !(← toolchainfile.pathExists) then
+    throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
+  let toolchain := ← IO.FS.readFile toolchainfile
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
   -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared
@@ -164,8 +168,8 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
       "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH",
       "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
 
-  let cmd := "lake"
-  let args := #["build", ":examples"]
+  let cmd := "elan"
+  let args := #["run", toolchain, "lake", "build", ":examples"]
 
   -- Build the facet
   let res ← IO.Process.output {
