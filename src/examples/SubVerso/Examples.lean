@@ -158,7 +158,7 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
   let toolchainfile := projectDir / "lean-toolchain"
   if !(← toolchainfile.pathExists) then
     throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
-  let toolchain := ← IO.FS.readFile toolchainfile
+  let toolchain := (← IO.FS.readFile toolchainfile).trim
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
   -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared
