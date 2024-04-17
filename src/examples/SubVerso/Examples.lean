@@ -169,7 +169,7 @@ partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example
       "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
 
   let cmd := "elan"
-  let args := #["run", toolchain, "lake", "build", ":examples"]
+  let args := #["run", "--install", toolchain, "lake", "build", ":examples"]
 
   -- Build the facet
   let res ← IO.Process.output {
