@@ -19,12 +19,24 @@ jobs:
           - os: ubuntu-latest
             installer: |
               curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
-          - os: macos-latest
-            installer: |
-              curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
-          - os: macos-latest
-            installer: |
-              brew install elan-init
+        # Mac runners are rare and expensive, so spot-check that the
+        # subprocess support seems OK but be less thorough
+        include:
+          - toolchain: "4.7.0"
+            platform:
+              os: macos-latest
+              installer: |
+                curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          - toolchain: "4.7.0"
+            platform:
+              os: macos-latest
+              installer: |
+                brew install elan-init
+          - toolchain: "4.3.0"
+            platform:
+              os: macos-latest
+              installer: |
+                brew install elan-init
     name: Build and test (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
     runs-on: ${{ matrix.platform.os }}
     steps:
