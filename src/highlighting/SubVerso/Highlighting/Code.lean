@@ -496,11 +496,13 @@ partial def _root_.Lean.Widget.TaggedText.indent (doc : TaggedText α) : TaggedT
     | .append docs => .append (docs.map indent')
   .append #[.text "  ", indent' doc]
 
-def findTactics (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : Syntax) : HighlightM Unit := do
+def findTactics
+    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
+    (trees : PersistentArray Lean.Elab.InfoTree)
+    (stx : Syntax) : HighlightM Unit := do
   -- Only show tactic output for the most specific source spans possible, with a few exceptions
   if stx.getKind ∉ [``Lean.Parser.Tactic.rwSeq,``Lean.Parser.Tactic.simp] then
     if ← childHasTactics stx then return ()
-  let trees ← getInfoTrees
   let text ← getFileMap
   for t in trees do
     -- The info is reversed here so that the _last_ state computed is shown.
@@ -561,7 +563,7 @@ def findTactics (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (stx : Syntax) : Highl
         return
 
 partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray Lean.Elab.InfoTree) (stx : Syntax) (lookingAt : Option (Name × String.Pos) := none) : HighlightM Unit := do
-  findTactics ids stx
+  findTactics ids trees stx
   match stx with
   | `($e.%$tk$field:ident) =>
       highlight' ids trees e
