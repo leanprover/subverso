@@ -76,11 +76,8 @@ inductive Highlighted where
   | seq (highlights : Array Highlighted)
   -- TODO replace messages as strings with structured info
   | span (info : Array (Highlighted.Span.Kind × String)) (content : Highlighted)
-  /--
-  A saved tactic state. The `pos` parameter indicates the byte index in the file where this tactic
-  state ceases; this is used for deduplication and rendering and gives a unique ID.
-  -/
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) (content : Highlighted)
+
+  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
   | point (kind : Highlighted.Span.Kind) (info : String)
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
@@ -108,6 +105,6 @@ where
     | .text str => mkCApp ``text #[quote str]
     | .seq hls => mkCApp ``seq #[quoteArray ⟨quote'⟩ hls]
     | .span info content => mkCApp ``span #[quote info, quote' content]
-    | .tactics info pos content =>
-      mkCApp ``tactics #[quoteArray (@quoteHl _ ⟨quote'⟩) info, quote pos, quote' content]
+    | .tactics info startPos endPos content =>
+      mkCApp ``tactics #[quoteArray (@quoteHl _ ⟨quote'⟩) info, quote startPos, quote endPos, quote' content]
     | .point k info => mkCApp ``point #[quote k, quote info]

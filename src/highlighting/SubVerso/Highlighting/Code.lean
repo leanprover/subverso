@@ -190,7 +190,7 @@ def infoExists [Monad m] [MonadLiftT IO m] (trees : PersistentArray InfoTree) (s
 inductive Output where
   | seq (emitted : Array Highlighted)
   | span (info : Array (Highlighted.Span.Kind × String))
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : Nat)
+  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : Nat) (endPos : Nat)
 
 def Output.add (output : List Output) (hl : Highlighted) : List Output :=
   match output with
@@ -210,14 +210,14 @@ def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.K
 
 def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal Highlighted)) : Bool :=
   output.any fun
-    | .tactics info' _ => info == info'
+    | .tactics info' _ _ => info == info'
     | _ => false
 
 def Output.closeSpan (output : List Output) : List Output :=
   let rec go (acc : Highlighted) : List Output → List Output
     | [] => [.seq #[acc]]
     | .span info :: more => Output.add more (.span info acc)
-    | .tactics info pos :: more => Output.add more (.tactics info pos acc)
+    | .tactics info startPos endPos :: more => Output.add more (.tactics info startPos endPos acc)
     | .seq left :: more => go (.seq (left.push acc)) more
   go .empty output
 
@@ -226,7 +226,7 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
     | [] => acc
     | .seq left :: more => go (.seq (left.push acc)) more
     | .span info :: more => go (.span info acc) more
-    | .tactics info pos :: more => go (.tactics info pos acc) more
+    | .tactics info startPos endPos :: more => go (.tactics info startPos endPos acc) more
   go .empty output
 
 structure OpenTactic where
@@ -321,23 +321,23 @@ private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
       some (x' :: xs)
     else (x :: ·) <$> modify? f xs
 
-def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (bytePos : Nat) (pos : Position) : HighlightState :=
+def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat) (pos : Position) : HighlightState :=
   if let some out' := modify? update? st.output then
     {st with output := out'}
   else {st with
-    output := .tactics info bytePos :: st.output,
+    output := .tactics info startPos endPos :: st.output,
     inMessages := .inr ⟨pos⟩ :: st.inMessages
   }
 where
   update?
-    | .tactics info' pos' =>
-      if bytePos == pos' then
-        some <| .tactics (info ++ info') pos'
+    | .tactics info' startPos' endPos' =>
+      if startPos == startPos' && endPos == endPos' then
+        some <| .tactics (info ++ info') startPos' endPos'
       else none
     | _ => none
 
-def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (bytePos : Nat) (pos : Position) : HighlightM Unit :=
-  modify fun st => st.openTactic info bytePos pos
+def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat) (pos : Position) : HighlightM Unit :=
+  modify fun st => st.openTactic info startPos endPos pos
 
 instance : Inhabited (HighlightM α) where
   default := fun _ => default
@@ -532,11 +532,13 @@ def findTactics
     for i in infoForSyntax t stx |>.reverse do
       if not i.2.isOriginal then continue
       if let (ci, .ofTacticInfo tacticInfo) := i then
+        let some startPos := stx.getPos?
+          | continue
         let some endPos := stx.getTailPos?
           | continue
         let endPosition := text.toPosition endPos
         if !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
-          HighlightM.openTactic #[] endPos.byteIdx endPosition
+          HighlightM.openTactic #[] startPos.byteIdx endPos.byteIdx endPosition
           break
         let goals := tacticInfo.goalsAfter
         if goals.isEmpty then continue
@@ -574,7 +576,7 @@ def findTactics
           let concl ← renderTagged ids (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
           goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
         if !Output.inTacticState (← get).output goalView then
-          HighlightM.openTactic goalView endPos.byteIdx endPosition
+          HighlightM.openTactic goalView startPos.byteIdx endPos.byteIdx endPosition
         return
 
 partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray Lean.Elab.InfoTree) (stx : Syntax) (lookingAt : Option (Name × String.Pos) := none) : HighlightM Unit := do
