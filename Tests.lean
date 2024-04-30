@@ -32,7 +32,7 @@ def Highlighting.Highlighted.countProofStates (hl : Highlighting.Highlighted) : 
     hls.map countProofStates |>.foldr (· + · ) 0
   | .span _ hl' =>
     hl'.countProofStates
-  | .tactics _ _ hl' =>
+  | .tactics _ _ _ hl' =>
     hl'.countProofStates + 1
   | _ => 0
 

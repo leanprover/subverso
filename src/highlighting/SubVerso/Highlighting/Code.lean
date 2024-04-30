@@ -516,14 +516,32 @@ partial def _root_.Lean.Widget.TaggedText.indent (doc : TaggedText α) : TaggedT
     | .append docs => .append (docs.map indent')
   .append #[.text "  ", indent' doc]
 
-def findTactics
+partial def findTactics
     (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
     (trees : PersistentArray Lean.Elab.InfoTree)
-    (stx : Syntax) : HighlightM Unit := do
+    (stx : Syntax)
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) := do
+  let text ← getFileMap
+  let some startPos := stx.getPos?
+    | return none
+  let some endPos := stx.getTailPos?
+    | return none
+  let endPosition := text.toPosition endPos
+
+  -- Blacklisted tactics. TODO: make into an extensible table.
+  -- For now, the `by` keyword itself is blacklisted
+  if stx.getKind ∈ [``Lean.Parser.Term.byTactic, ``Lean.Parser.Term.byTactic'] then return none
+
   -- Only show tactic output for the most specific source spans possible, with a few exceptions
   if stx.getKind ∉ [``Lean.Parser.Tactic.rwSeq,``Lean.Parser.Tactic.simp] then
-    if ← childHasTactics stx trees then return ()
-  let text ← getFileMap
+    if ← childHasTactics stx trees then return none
+
+  -- Override states - some tactics show many intermediate states, which is overwhelming in rendered
+  -- output. Get the right one to show for the whole thing, then adjust its positioning.
+  if let `(tactic|rw $[$_c:config]? [$_rs,*]%$brak $[$_l:location]?) := stx then
+    if let some (goals, _startPos, _endPos, _endPosition) ← findTactics ids trees brak then
+      return some (goals, startPos.byteIdx, endPos.byteIdx, endPosition)
+
   for t in trees do
     -- The info is reversed here so that the _last_ state computed is shown.
     -- This makes `repeat` do the right thing, rather than either spamming
@@ -531,14 +549,9 @@ def findTactics
     for i in infoForSyntax t stx |>.reverse do
       if not i.2.isOriginal then continue
       if let (ci, .ofTacticInfo tacticInfo) := i then
-        let some startPos := stx.getPos?
-          | continue
-        let some endPos := stx.getTailPos?
-          | continue
-        let endPosition := text.toPosition endPos
         if !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
-          HighlightM.openTactic #[] startPos.byteIdx endPos.byteIdx endPosition
-          break
+          return some (#[], startPos.byteIdx, endPos.byteIdx, endPosition)
+
         let goals := tacticInfo.goalsAfter
         if goals.isEmpty then continue
 
@@ -575,11 +588,12 @@ def findTactics
           let concl ← renderTagged ids (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
           goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
         if !Output.inTacticState (← get).output goalView then
-          HighlightM.openTactic goalView startPos.byteIdx endPos.byteIdx endPosition
-        return
+          return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
+  return none
 
 partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray Lean.Elab.InfoTree) (stx : Syntax) (lookingAt : Option (Name × String.Pos) := none) : HighlightM Unit := do
-  findTactics ids trees stx
+  if let some (tacticInfo, startPos, endPos, position) ← findTactics ids trees stx then
+    HighlightM.openTactic tacticInfo startPos endPos position
   match stx with
   | `($e.%$tk$field:ident) =>
       highlight' ids trees e
