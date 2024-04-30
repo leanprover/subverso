@@ -149,16 +149,21 @@ elab_rules : command
       throwErrorAt name "No highlighting found for '{name}'"
 
 open System in
-partial def loadExamples (leanProject : FilePath) : IO (NameMap (NameMap Example)) := do
+partial def loadExamples
+    (leanProject : FilePath)
+    (overrideToolchain : Option String := none) : IO (NameMap (NameMap Example)) := do
   let projectDir := ((← IO.currentDir) / leanProject).normalize
   -- Validate that the path is really a Lean project
   let lakefile := projectDir / "lakefile.lean"
   if !(← lakefile.pathExists) then
     throw <| .userError s!"File {lakefile} doesn't exist, couldn't load project"
-  let toolchainfile := projectDir / "lean-toolchain"
-  if !(← toolchainfile.pathExists) then
-    throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
-  let toolchain := (← IO.FS.readFile toolchainfile).trim
+  let toolchain ← match overrideToolchain with
+    | none =>
+      let toolchainfile := projectDir / "lean-toolchain"
+      if !(← toolchainfile.pathExists) then
+        throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
+      pure (← IO.FS.readFile toolchainfile).trim
+    | some override => pure override
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
   -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared

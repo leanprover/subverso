@@ -6,6 +6,19 @@ import SubVerso.Examples
 
 open SubVerso.Examples
 
+%example version
+#eval Lean.versionString
+%end
+
 %example xdef
 def f (x : Nat) := %ex{add}{33 + %ex{X}{x}}
+%end
+
+%example proof
+theorem test (n : Nat) : n * 1 = n := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    rw [← ih]
+    simp
 %end
