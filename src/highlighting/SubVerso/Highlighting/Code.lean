@@ -591,17 +591,28 @@ partial def findTactics
           return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
   return none
 
-partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray Lean.Elab.InfoTree) (stx : Syntax) (lookingAt : Option (Name × String.Pos) := none) : HighlightM Unit := do
-  if let some (tacticInfo, startPos, endPos, position) ← findTactics ids trees stx then
-    HighlightM.openTactic tacticInfo startPos endPos position
+partial def highlight'
+    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
+    (trees : PersistentArray Lean.Elab.InfoTree)
+    (stx : Syntax)
+    (tactics : Bool)
+    (lookingAt : Option (Name × String.Pos) := none)
+    : HighlightM Unit := do
+  let mut tactics := tactics
+  if tactics then
+    if let some (tacticInfo, startPos, endPos, position) ← findTactics ids trees stx then
+      HighlightM.openTactic tacticInfo startPos endPos position
+      -- No nested tactics - the tactic search process should only have returned results
+      -- on "leaf" nodes anyway
+      tactics := false
   match stx with
   | `($e.%$tk$field:ident) =>
-      highlight' ids trees e
+      highlight' ids trees e tactics
       if let some ⟨pos, endPos⟩ := tk.getRange? then
         emitToken tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
       else
         emitString' "."
-      highlight' ids trees field
+      highlight' ids trees field tactics
   | _ =>
     match stx with
     | .missing => pure () -- TODO emit unhighlighted string
@@ -615,9 +626,9 @@ partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : Persis
           match stx.identComponents (nFields? := some 1) with
           | [y, field] =>
             if (← infoExists trees field) then
-              highlight' ids trees y
+              highlight' ids trees y tactics
               emitToken' <| fakeToken .unknown "."
-              highlight' ids trees field
+              highlight' ids trees field tactics
             else
               emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
           | _ => emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
@@ -661,23 +672,23 @@ partial def highlight' (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : Persis
         let info := .original leading pos trailing endPos
         emitToken info ⟨← identKind ids trees ⟨stx⟩, s!".{x.toString}"⟩
       | _, _ =>
-        highlight' ids trees dot
-        highlight' ids trees name
+        highlight' ids trees dot tactics
+        highlight' ids trees name tactics
     | .node _ `choice alts =>
       -- Arbitrarily select one of the alternatives found by the parser. Otherwise, quotations of
       -- let-bindings with antiquotations as the bound variable leads to doubled bound variables,
       -- because the parser emits a choice node in the quotation. And it's never correct to show
       -- both alternatives!
       if h : alts.size > 0 then
-        highlight' ids trees alts[0]
+        highlight' ids trees alts[0]  tactics
     | stx@(.node _ k children) =>
       let pos := stx.getPos?
       for child in children do
-        highlight' ids trees child (lookingAt := pos.map (k, ·))
+        highlight' ids trees child tactics (lookingAt := pos.map (k, ·))
 
 def highlight (stx : Syntax) (messages : Array Message) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM Highlighted := do
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
   let st ← HighlightState.ofMessages stx messages
-  let ((), {output := output, ..}) ← StateT.run (highlight' ids trees stx) st
+  let ((), {output := output, ..}) ← StateT.run (highlight' ids trees stx true) st
   pure <| .fromOutput output
