@@ -442,8 +442,7 @@ partial def subsyntaxes (stx : Syntax) : Array Syntax := Id.run do
     stxs
   | _ => #[]
 
-def hasTactics (stx : Syntax) : HighlightM Bool := do
-  let trees ← getInfoTrees
+def hasTactics (stx : Syntax) (trees : PersistentArray Lean.Elab.InfoTree) : HighlightM Bool := do
   for t in trees do
     for (_, i) in infoForSyntax t stx do
       if not i.isOriginal then continue
@@ -451,13 +450,13 @@ def hasTactics (stx : Syntax) : HighlightM Bool := do
         return true
   return false
 
-partial def childHasTactics (stx : Syntax) : HighlightM Bool := do
+partial def childHasTactics (stx : Syntax) (trees : PersistentArray Lean.Elab.InfoTree) : HighlightM Bool := do
   match stx with
   | .node _ _ children =>
     for s in children do
-      if ← hasTactics s then
+      if ← hasTactics s trees then
         return true
-      if ← childHasTactics s then
+      if ← childHasTactics s trees then
         return true
     pure false
   | _ => pure false
@@ -523,7 +522,7 @@ def findTactics
     (stx : Syntax) : HighlightM Unit := do
   -- Only show tactic output for the most specific source spans possible, with a few exceptions
   if stx.getKind ∉ [``Lean.Parser.Tactic.rwSeq,``Lean.Parser.Tactic.simp] then
-    if ← childHasTactics stx then return ()
+    if ← childHasTactics stx trees then return ()
   let text ← getFileMap
   for t in trees do
     -- The info is reversed here so that the _last_ state computed is shown.
