@@ -314,14 +314,27 @@ where
 
 abbrev HighlightM (α : Type) : Type := StateT HighlightState TermElabM α
 
-def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (bytePos : Nat) (pos : Position) : HighlightState := Id.run do
-  if let .tactics info' pos' :: output' := st.output then
-    if bytePos == pos' then
-      return {st with output := .tactics (info ++ info') pos' :: output'}
-  return {st with
+private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
+  | [] => none
+  | x :: xs =>
+    if let some x' := f x then
+      some (x' :: xs)
+    else (x :: ·) <$> modify? f xs
+
+def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (bytePos : Nat) (pos : Position) : HighlightState :=
+  if let some out' := modify? update? st.output then
+    {st with output := out'}
+  else {st with
     output := .tactics info bytePos :: st.output,
     inMessages := .inr ⟨pos⟩ :: st.inMessages
   }
+where
+  update?
+    | .tactics info' pos' =>
+      if bytePos == pos' then
+        some <| .tactics (info ++ info') pos'
+      else none
+    | _ => none
 
 def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (bytePos : Nat) (pos : Position) : HighlightM Unit :=
   modify fun st => st.openTactic info bytePos pos

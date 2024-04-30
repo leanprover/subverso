@@ -76,6 +76,10 @@ inductive Highlighted where
   | seq (highlights : Array Highlighted)
   -- TODO replace messages as strings with structured info
   | span (info : Array (Highlighted.Span.Kind × String)) (content : Highlighted)
+  /--
+  A saved tactic state. The `pos` parameter indicates the byte index in the file where this tactic
+  state ceases; this is used for deduplication and rendering and gives a unique ID.
+  -/
   | tactics (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) (content : Highlighted)
   | point (kind : Highlighted.Span.Kind) (info : String)
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
