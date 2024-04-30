@@ -529,8 +529,10 @@ partial def findTactics
   let endPosition := text.toPosition endPos
 
   -- Blacklisted tactics. TODO: make into an extensible table.
-  -- For now, the `by` keyword itself is blacklisted
-  if stx.getKind ∈ [``Lean.Parser.Term.byTactic, ``Lean.Parser.Term.byTactic'] then return none
+  -- For now, the `by` keyword itself is blacklisted, as is its leading token
+  if stx.getKind ∈ [``Lean.Parser.Term.byTactic, ``Lean.Parser.Term.byTactic'] ||
+     stx matches .atom _ "by" then
+    return none
 
   -- Only show tactic output for the most specific source spans possible, with a few exceptions
   if stx.getKind ∉ [``Lean.Parser.Tactic.rwSeq,``Lean.Parser.Tactic.simp] then
