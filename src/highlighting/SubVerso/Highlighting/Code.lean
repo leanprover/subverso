@@ -208,8 +208,11 @@ def Output.addText (output : List Output) (str : String) : List Output :=
 def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.Kind × String)) : List Output :=
   .span messages :: output
 
-def Output.openTactic (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) : List Output :=
-  .tactics info pos :: output
+def Output.openTactic (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (pos : Nat) : List Output := Id.run do
+  if let .tactics info' pos' :: output' := output then
+    if pos == pos' then
+      return .tactics (info ++ info') pos :: output'
+  return .tactics info pos :: output
 
 def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal Highlighted)) : Bool :=
   output.any fun
