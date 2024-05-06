@@ -22,3 +22,9 @@ theorem test (n : Nat) : n * 1 = n := by
     rw [← ih]
     simp
 %end
+
+%example proofWithInstance
+-- Test that proof states containing daggered names can round-trip
+def test2 [ToString α] (x : α) : Decidable (toString x = "") := by
+  constructor; sorry
+%end
