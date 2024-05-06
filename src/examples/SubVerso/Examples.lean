@@ -232,12 +232,3 @@ def wxyz (n : Nat) := 1 + 3 + n
 #check wxyz
 def xyz (n : Nat) := 1 + %ex{test2}{3 + n}
 %end
-
-
--- %example test
--- #eval 5
--- %end
-
--- %dump test
--- %dump test3.test2
--- %dump test3

@@ -7,6 +7,30 @@ namespace SubVerso.Highlighting
 deriving instance Repr for Std.Format.FlattenBehavior
 deriving instance Repr for Std.Format
 
+-- Workaround for the fact that the default From/ToJson instances for Name
+-- don't always round-trip
+
+private def altNameJson (n : Name) : Json := Json.arr (splitName #[] n)
+where
+  splitName acc
+    | .anonymous => acc
+    | .num x n => splitName acc x |>.push n
+    | .str x s => splitName acc x |>.push s
+
+private def altNameUnJson (json : Json) : Except String Name := do
+  let arr ← json.getArr?
+  let mut n := .anonymous
+  for v in arr do
+    match v with
+    | (s : String) => n := n.str s
+    | (i : Nat) => n := n.num i
+    | other => .error s!"Expected a string or number as a name component, got '{other}'"
+  pure n
+
+private local instance : ToJson Name := ⟨altNameJson⟩
+private local instance : FromJson Name := ⟨altNameUnJson⟩
+
+
 inductive Token.Kind where
   | /-- `occurrence` is a unique identifier that unites the various keyword tokens from a given production -/
     keyword (name : Option Name) (occurrence : Option String) (docs : Option String)
