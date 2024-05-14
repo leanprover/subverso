@@ -1,4 +1,4 @@
-import Lean
+import Lean.Elab
 
 open Lean Elab Term
 
