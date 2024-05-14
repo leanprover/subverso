@@ -26,6 +26,18 @@ lean_exe «subverso-extract» where
   root := `Extract
   supportInterpreter := true
 
+-- Compatibility shims for older Lake (where logging was manual) and
+-- newer Lake (where it isn't). Necessary from Lean 4.8.0 and up.
+section
+open Lean Elab Command
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  if !env.contains `Lake.logStep then
+    elabCommand <| ← `(def $(mkIdent `logStep) [Pure $(mkIdent `m)] (message : String) : $(mkIdent `m) Unit := pure ())
+  if !env.contains `Lake.logInfo then
+    elabCommand <| ← `(def $(mkIdent `logInfo) [Pure $(mkIdent `m)] (message : String) : $(mkIdent `m) Unit := pure ())
+end
+
 module_facet examples mod : FilePath := do
   let ws ← getWorkspace
   let some extract ← findLeanExe? `«subverso-extract»
