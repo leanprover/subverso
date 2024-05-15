@@ -90,11 +90,11 @@ def Example.countProofStates (e : Example) : Nat :=
 end Examples
 end SubVerso
 
-def cleanupDemo : IO Unit := do
-  if ← System.FilePath.pathExists "demo/lake-manifest.json" then
-    IO.FS.removeFile "demo/lake-manifest.json"
-  if ← System.FilePath.isDir "demo/.lake" then
-    IO.FS.removeDirAll "demo/.lake"
+def cleanupDemo (demo : System.FilePath := "demo") : IO Unit := do
+  if ← System.FilePath.pathExists (demo / "lake-manifest.json") then
+    IO.FS.removeFile (demo / "lake-manifest.json")
+  if ← System.FilePath.isDir (demo / ".lake") then
+    IO.FS.removeDirAll (demo / ".lake")
 
 open Lean in
 def proofCount (examples : NameMap (NameMap Example)) : Nat := Id.run do
@@ -119,6 +119,14 @@ def main : IO UInt32 := do
     IO.println sliceLog
     IO.println "and actual:"
     IO.println expectedLog
+
+  IO.println "Checking that the TOML project will load"
+  cleanupDemo (demo := "demo-toml")
+  let examplesToml ← loadExamples "demo-toml"
+  if examplesToml.isEmpty then
+    IO.eprintln "No examples found"
+    return 1
+  else IO.println s!"Found {proofCount examplesToml} proofs"
 
   IO.println "Checking that the test project generates at least some deserializable JSON"
   cleanupDemo
