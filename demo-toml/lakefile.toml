@@ -1,0 +1,13 @@
+name = "demo"
+defaultTargets = ["demo"]
+
+[[require]]
+name = "subverso"
+git = ".."
+
+[[lean_lib]]
+name = "Demo"
+
+[[lean_exe]]
+name = "demo"
+root = "Main"

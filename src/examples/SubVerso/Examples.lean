@@ -155,8 +155,9 @@ partial def loadExamples
   let projectDir := ((← IO.currentDir) / leanProject).normalize
   -- Validate that the path is really a Lean project
   let lakefile := projectDir / "lakefile.lean"
-  if !(← lakefile.pathExists) then
-    throw <| .userError s!"File {lakefile} doesn't exist, couldn't load project"
+  let lakefile' := projectDir / "lakefile.toml"
+  if !(← lakefile.pathExists) && !(← lakefile'.pathExists) then
+    throw <| .userError s!"Neither {lakefile} nor {lakefile'} exist, couldn't load project"
   let toolchain ← match overrideToolchain with
     | none =>
       let toolchainfile := projectDir / "lean-toolchain"
@@ -210,7 +211,7 @@ where
         let sub ← collectExamples (.str modName f.fileName) f.path
         out := out.mergeBy (fun _ j1 j2 => j1.mergeBy (fun _ _ x => x) j2) sub
       | .file =>
-        if f.path.extension == some "json" then
+        if f.path.extension == some "json" && f.path.fileStem.map (·.takeRight 4) != some ".log" then
           if let some mod := f.path.fileStem then
             let name' : Name := .str modName mod
             let contents := Json.parse (← IO.FS.readFile f.path)
@@ -218,10 +219,10 @@ where
             | .error err => throw <| .userError s!"Couldn't parse {f.path} as JSON: {err}"
             | .ok val =>
               let .ok o := val.getObj?
-                | throw <| IO.userError "Expected JSON object in '{f.path}'"
+                | throw <| IO.userError s!"Expected JSON object in '{f.path}', got {val}"
               for ⟨exName, exJson⟩ in o.toArray do
                 match FromJson.fromJson? (α := Example) exJson with
-                | .error err => throw <| IO.userError s!"Couldn't deserialized example: {err}"
+                | .error err => throw <| IO.userError s!"Couldn't deserialize example '{exName}': {err}"
                 | .ok ex => out := out.insert name' (out.find? name' |>.getD {} |>.insert exName.toName ex)
       | _ => pure ()
     return out
