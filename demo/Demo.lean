@@ -28,3 +28,5 @@ theorem test (n : Nat) : n * 1 = n := by
 def test2 [ToString α] (x : α) : Decidable (toString x = "") := by
   constructor; sorry
 %end
+
+%show_name Nat.rec

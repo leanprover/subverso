@@ -13,7 +13,6 @@ scoped syntax "%ex" "{" ident (" : " term)? "}" "{" term "}" : term
 scoped syntax "%ex" "{" ident "}" "{" tactic "}" : tactic
 scoped syntax "%ex" "{" ident "}" "{" doElem "}" : doElem
 
-
 class MonadMessageState (m : Type → Type v) where
   getMessages : m MessageLog
   setMessages : MessageLog → m Unit
@@ -148,6 +147,34 @@ elab_rules : command
     else
       throwErrorAt name "No highlighting found for '{name}'"
 
+namespace Internals
+scoped syntax "%show_name" ident : term
+elab_rules : term
+  | `(%show_name $x) => do
+    let _ ← Compat.realizeNameNoOverloads x
+    elabTerm (← `((() : Unit))) none
+
+end Internals
+
+scoped syntax "%show_name" ident ("as" ident)? : command
+
+macro_rules
+  | `(%show_name $x) => `(%show_name $x as $x)
+
+open Internals in
+elab_rules : command
+  | `(%show_name $x as $name) => do
+    _ ← elabCommand <| ← `(def helper := %show_name $x)
+    let trees ← getInfoTrees
+    let mod ← getMainModule
+    let text ← getFileMap
+    let .original leading startPos trailing stopPos := x.raw.getHeadInfo
+      | throwErrorAt x "Failed to get source position"
+    let str := text.source.extract leading.startPos trailing.stopPos
+    let hl ← liftTermElabM <| highlight x #[] trees
+    modifyEnv fun ρ =>
+      highlighted.addEntry ρ (mod, name.getId, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
+
 open System in
 partial def loadExamples
     (leanProject : FilePath)
@@ -233,3 +260,5 @@ def wxyz (n : Nat) := 1 + 3 + n
 #check wxyz
 def xyz (n : Nat) := 1 + %ex{test2}{3 + n}
 %end
+
+%show_name Nat.rec
