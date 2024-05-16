@@ -30,3 +30,6 @@ def test2 [ToString α] (x : α) : Decidable (toString x = "") := by
 %end
 
 %show_name Nat.rec
+
+%signature qs
+  Array.qsort.{u} {α : Type u} (as : Array α) (lt : α → α → Bool) (low : Nat := 0) (high : Nat := as.size - 1) : Array α
