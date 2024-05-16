@@ -131,7 +131,8 @@ elab_rules : command
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
       let str := text.source.extract leading.startPos trailing.stopPos
-      modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+      modifyEnv fun ρ =>
+        highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
     for msg in if config.error then newMessages.errorsToWarnings.toList else newMessages.toList do
       logMessage msg
 
@@ -156,7 +157,7 @@ elab_rules : term
 
 end Internals
 
-scoped syntax "%show_name" ident ("as" ident)? : command
+scoped syntax "%show_name" ident (&"as" ident)? : command
 
 macro_rules
   | `(%show_name $x) => `(%show_name $x as $x)
@@ -164,7 +165,7 @@ macro_rules
 open Internals in
 elab_rules : command
   | `(%show_name $x as $name) => do
-    _ ← elabCommand <| ← `(def helper := %show_name $x)
+    elabCommand <| ← `(def helper := %show_name $x)
     let trees ← getInfoTrees
     let mod ← getMainModule
     let text ← getFileMap
@@ -174,6 +175,81 @@ elab_rules : command
     let hl ← liftTermElabM <| highlight x #[] trees
     modifyEnv fun ρ =>
       highlighted.addEntry ρ (mod, name.getId, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
+
+private def biDesc : BinderInfo → String
+  | .default => "explicit"
+  | .implicit => "implicit"
+  | .instImplicit => "instance"
+  | .strictImplicit => "strict implicit"
+
+
+private partial def compare (blame : Syntax): Expr → Expr → MetaM Unit
+  | .forallE x t1 b1 bi1, .forallE y t2 b2 bi2 => do
+    if x != y then logErrorAt blame m!"Mismatched parameter name: expected '{x}' but got '{y}'"
+    if bi1 != bi2 then logErrorAt blame m!"Mismatched binder of {x}: expected {biDesc bi1} but got {biDesc bi2}"
+    if t1.isAppOfArity' ``optParam 2 then
+      if t2.isAppOfArity' ``optParam 2 then
+        if !(← Meta.isDefEq t1.appArg! t2.appArg!) then
+          logErrorAt blame m!"Mismatched default values for parameter {x}: expected '{t1.appArg!}' but got '{t2.appArg!}'"
+    Meta.withLocalDecl x bi1 t1 fun e =>
+      compare blame (b1.instantiate1 e) (b2.instantiate1 e)
+  | .mdata _ tty', sty => compare blame tty' sty
+  | tty , .mdata _ sty' => compare blame tty sty'
+  | _, _ => pure ()
+
+scoped syntax (name := signature) "%signature" ident declId declSig : command
+elab_rules : command
+  | `(%signature $name $sigName $sig) => do
+    -- Check the signature by elaborating and comparing.
+
+    -- First make sure the names won't clash - we want two different declarations to compare.
+    let mod ← getMainModule
+    let sc ← getCurrMacroScope
+    let addScope x := mkIdentFrom x (addMacroScope mod x.getId sc)
+    let declName ← match sigName with
+      | `(Lean.Parser.Command.declId|$x:ident) => pure x
+      | `(Lean.Parser.Command.declId|$x:ident.{$u:ident,*}) => pure x
+      | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
+    let target ← liftTermElabM <| Compat.realizeNameNoOverloads declName
+    let noClash ← match sigName with
+      | `(Lean.Parser.Command.declId|$x:ident) => `(Lean.Parser.Command.declId| $(addScope x):ident)
+      | `(Lean.Parser.Command.declId|$x:ident.{$u:ident,*}) => `(Lean.Parser.Command.declId| $(addScope x):ident.{$u,*})
+      | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
+
+    -- Elaborate as an opaque constant (unsafe is to avoid an Inhabited constraint on the return type)
+    let stx ← `(command| unsafe opaque $noClash $sig)
+    withoutModifyingEnv do
+      elabCommand stx
+      if ← MonadLog.hasErrors then throwErrorAt sigName "Failed to elaborate signature"
+
+      -- The "source" is what the user wrote, the "target" is the existing declaration
+      let source ← liftTermElabM <| Compat.realizeNameNoOverloads (addScope declName)
+      let ti ← getConstInfo target
+      let si ← getConstInfo source
+      if si.numLevelParams != ti.numLevelParams then
+        throwErrorAt sigName "Mismatched number of level params: {target} has {ti.numLevelParams}, not {si.numLevelParams}"
+      let lvls := ti.levelParams.map mkLevelParam
+      let te : Expr := .const target lvls
+      let se : Expr := .const source lvls
+      liftTermElabM do
+        let tty ← Meta.inferType te
+        let sty ← Meta.inferType se
+        if !(← Meta.isDefEq tty sty) then
+          throwErrorAt sig "Expected {tty}, got {sty}"
+        compare sigName tty sty
+
+    -- Now actually generate the highlight and save it
+    let .original leading startPos _ _ := sigName.raw.getHeadInfo
+      | throwErrorAt sigName "Failed to get source position"
+    let .original _ _ trailing stopPos := sig.raw.getTailInfo
+      | throwErrorAt sig.raw "Failed to get source position"
+    let text ← getFileMap
+    let str := text.source.extract leading.startPos trailing.stopPos
+    let trees ← getInfoTrees
+    let hl ← liftTermElabM <| withDeclName `x <| do pure <| #[← highlight sigName #[] trees, ← highlight sig #[] trees]
+    modifyEnv fun ρ =>
+      highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
+
 
 open System in
 partial def loadExamples
