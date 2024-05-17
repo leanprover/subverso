@@ -32,13 +32,15 @@ instance : FromJson MessageSeverity where
 theorem MessageSeverity.fromJson_toJson_ok (s : MessageSeverity) : fromJson? (toJson s) = .ok s := by
   cases s <;> simp [toJson, fromJson?]
 
+deriving instance Repr for MessageSeverity
+
 structure Example where
   highlighted : Array Highlighted
   messages : List (MessageSeverity × String)
   original : String
   start : Lean.Position
   stop : Lean.Position
-deriving ToJson, FromJson
+deriving ToJson, FromJson, Repr
 
 initialize highlighted : PersistentEnvExtension (NameMap (NameMap Json)) (Name × Name × Example) (NameMap (NameMap Json)) ←
   registerPersistentEnvExtension {

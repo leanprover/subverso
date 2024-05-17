@@ -22,6 +22,11 @@ lean_exe «subverso-tests» where
   supportInterpreter := true
 
 @[default_target]
+lean_exe «subverso-internal-tests» where
+  root := `InternalTests
+  supportInterpreter := true
+
+@[default_target]
 lean_exe «subverso-extract» where
   root := `Extract
   supportInterpreter := true
