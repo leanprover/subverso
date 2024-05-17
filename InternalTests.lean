@@ -56,7 +56,7 @@ theorem test (n : Nat) : n * 1 = n := by
 
 
 
--- We don't have #guard_msgs in all supported Lean versions, so here's a dumb replacement:
+-- We don't have #guard_msgs in all supported Lean versions, so here's a low-tech replacement:
 
 open Lean Elab Command in
 elab "#evalString" s:str e:term : command => do
@@ -68,9 +68,12 @@ elab "#evalString" s:str e:term : command => do
     let [msg] := msgs'.toList
       | throwError "Too many messages"
     if (← msg.toString) != s.getString then
-      throwErrorAt e "Expected {s.getString}, got {← msg.toString}"
+      throwErrorAt e "Expected {String.quote s.getString}, got {String.quote (← msg.toString)}"
   finally
     MonadMessageState.setMessages msgs
+
+#evalString "[[\"n * 1 = n\"]]\n"
+  (proofEx.highlighted[0].proofStates.data.filter (·.fst == "by") |>.map (·.snd.data.map (·.conclusion)))
 
 #evalString "[[some `zero], [some `succ], [none], [some `succ.succ], [none]]\n"
   (proofEx.highlighted[0].proofStates.data.filter (·.fst == "=>") |>.map (·.snd.data.map (·.name)))

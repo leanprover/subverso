@@ -608,12 +608,21 @@ partial def findTactics
   let endPosition := text.toPosition endPos
 
   -- Blacklisted tactics. TODO: make into an extensible table.
-  -- For now, the `by` keyword itself is blacklisted, as is its leading token
-  if stx.getKind ∈ [``Lean.Parser.Term.byTactic, ``Lean.Parser.Term.byTactic'] ||
-     stx matches .atom _ "by" then
-    return none
-  -- `;` is blacklisted as well - no need to highlight states identically
+  -- `;` is blacklisted  - no need to highlight states identically
   if stx matches .atom _ ";" then return none
+
+  -- Place the initial proof state after the `by` token
+  if stx matches .atom _ "by" then
+    for t in trees do
+      for i in infoIncludingSyntax t stx |>.reverse do
+        if not i.2.isOriginal then continue
+        if let (_, .ofTacticInfo tacticInfo) := i then
+          match tacticInfo.stx with
+          | `(Lean.Parser.Term.byTactic| by%$tk $tactics)
+          | `(Lean.Parser.Term.byTactic'| by%$tk $tactics) =>
+            if tk == stx then
+              return (← findTactics' ids trees tactics startPos endPos endPosition (before := true))
+          | _ => continue
 
   -- Special handling for =>: show the _before state_
   if stx matches .atom _ "=>" then
