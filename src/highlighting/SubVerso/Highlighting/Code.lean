@@ -29,6 +29,20 @@ def infoForSyntax (t : InfoTree) (stx : Syntax) : List (ContextInfo × Info) :=
       (ci, info) :: soFar
     else soFar
 
+-- Find the nodes whose canonical span includes the given syntax
+def infoIncludingSyntax (t : InfoTree) (stx : Syntax) : List (ContextInfo × Info) :=
+  t.collectNodesBottomUp fun ci info _ soFar =>
+    if let some true := do
+      let start ← info.stx.getPos? true
+      let start' ← stx.getPos? true
+      let stop ← info.stx.getTailPos? true
+      let stop' ← stx.getTailPos? true
+      pure <| start ≤ start' && stop ≥ stop'
+    then
+      (ci, info) :: soFar
+    else soFar
+
+
 
 partial def bestD (sems : Array Token.Kind) (default : Token.Kind) : Token.Kind :=
   if let some m := sems.back? then
@@ -516,6 +530,71 @@ partial def _root_.Lean.Widget.TaggedText.indent (doc : TaggedText α) : TaggedT
     | .append docs => .append (docs.map indent')
   .append #[.text "  ", indent' doc]
 
+def highlightGoals
+    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
+    (ci : ContextInfo)
+    (goals : List MVarId)
+    : HighlightM (Array (Highlighted.Goal Highlighted)) := do
+  let mut goalView := #[]
+  for g in goals do
+    let mut hyps := #[]
+    let some mvDecl := ci.mctx.findDecl? g
+      | continue
+    let name := if mvDecl.userName.isAnonymous then none else some mvDecl.userName
+    let lctx := mvDecl.lctx |>.sanitizeNames.run' {options := (← getOptions)}
+
+    -- Tell the delaborator to tag functions that are being applied. Otherwise,
+    -- functions have no tooltips or binding info in tactics.
+    -- cf https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/Function.20application.20delaboration/near/265800665
+    let ci' := {ci with options := ci.options.set `pp.tagAppFns true}
+    let runMeta {α} (act : MetaM α) : HighlightM α := ci'.runMetaM lctx act
+    for c in lctx.decls do
+      let some decl := c
+        | continue
+      if decl.isAuxDecl || decl.isImplementationDetail then continue
+      match decl with
+      | .cdecl _index fvar name type _ _ =>
+        let nk ← exprKind ids ci lctx (.fvar fvar)
+        let tyStr ← renderTagged ids (← runMeta (ppExprTagged =<< instantiateMVars type))
+        hyps := hyps.push (name, nk.getD .unknown, tyStr)
+      | .ldecl _index fvar name type val _ _ =>
+        let nk ← exprKind ids ci lctx (.fvar fvar)
+        let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
+        let valDoc ← runMeta (ppExprTagged =<< instantiateMVars val)
+        let tyValStr ← renderTagged ids <| .append <| #[tyDoc].append <|
+          if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
+          else #[.text " := \n", valDoc.indent]
+        hyps := hyps.push (name, nk.getD .unknown, tyValStr)
+    let concl ← renderTagged ids (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
+    goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
+  pure goalView
+
+partial def findTactics'
+    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
+    (trees : PersistentArray Lean.Elab.InfoTree)
+    (stx : Syntax)
+    (startPos endPos : String.Pos)
+    (endPosition : Position)
+    (before : Bool := false)
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) := do
+  for t in trees do
+    -- The info is reversed here so that the _last_ state computed is shown.
+    -- This makes `repeat` do the right thing, rather than either spamming
+    -- states or showing the first one.
+    for i in infoForSyntax t stx |>.reverse do
+      if not i.2.isOriginal then continue
+      if let (ci, .ofTacticInfo tacticInfo) := i then
+        if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
+          return some (#[], startPos.byteIdx, endPos.byteIdx, endPosition)
+
+        let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
+        if goals.isEmpty then continue
+        let goalView ← highlightGoals ids ci goals
+
+        if !Output.inTacticState (← get).output goalView then
+          return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
+  return none
+
 partial def findTactics
     (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
     (trees : PersistentArray Lean.Elab.InfoTree)
@@ -533,6 +612,23 @@ partial def findTactics
   if stx.getKind ∈ [``Lean.Parser.Term.byTactic, ``Lean.Parser.Term.byTactic'] ||
      stx matches .atom _ "by" then
     return none
+  -- `;` is blacklisted as well - no need to highlight states identically
+  if stx matches .atom _ ";" then return none
+
+  -- Special handling for =>: show the _before state_
+  if stx matches .atom _ "=>" then
+    for t in trees do
+      for i in infoIncludingSyntax t stx |>.reverse do
+        if not i.2.isOriginal then continue
+        if let (_, .ofTacticInfo tacticInfo) := i then
+          match tacticInfo.stx with
+          | `(Lean.Parser.Tactic.inductionAlt| $_lhs =>%$tk $rhs )
+          | `(tactic| next $_* =>%$tk $rhs )
+          | `(tactic| case $_ $_* =>%$tk $rhs )
+          | `(tactic| case' $_ $_* =>%$tk $rhs ) =>
+            if tk == stx then
+              return (← findTactics' ids trees rhs startPos endPos endPosition (before := true))
+          | _ => continue
 
   -- Only show tactic output for the most specific source spans possible, with a few exceptions
   if stx.getKind ∉ [``Lean.Parser.Tactic.rwSeq,``Lean.Parser.Tactic.simp] then
@@ -544,54 +640,8 @@ partial def findTactics
     if let some (goals, _startPos, _endPos, _endPosition) ← findTactics ids trees brak then
       return some (goals, startPos.byteIdx, endPos.byteIdx, endPosition)
 
-  for t in trees do
-    -- The info is reversed here so that the _last_ state computed is shown.
-    -- This makes `repeat` do the right thing, rather than either spamming
-    -- states or showing the first one.
-    for i in infoForSyntax t stx |>.reverse do
-      if not i.2.isOriginal then continue
-      if let (ci, .ofTacticInfo tacticInfo) := i then
-        if !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
-          return some (#[], startPos.byteIdx, endPos.byteIdx, endPosition)
+  findTactics' ids trees stx startPos endPos endPosition
 
-        let goals := tacticInfo.goalsAfter
-        if goals.isEmpty then continue
-
-        let mut goalView := #[]
-        for g in goals do
-          let mut hyps := #[]
-          let some mvDecl := ci.mctx.findDecl? g
-            | continue
-          let name := if mvDecl.userName.isAnonymous then none else some mvDecl.userName
-          let lctx := mvDecl.lctx |>.sanitizeNames.run' {options := (← getOptions)}
-
-          -- Tell the delaborator to tag functions that are being applied. Otherwise,
-          -- functions have no tooltips or binding info in tactics.
-          -- cf https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/Function.20application.20delaboration/near/265800665
-          let ci' := {ci with options := ci.options.set `pp.tagAppFns true}
-          let runMeta {α} (act : MetaM α) : HighlightM α := ci'.runMetaM lctx act
-          for c in lctx.decls do
-            let some decl := c
-              | continue
-            if decl.isAuxDecl || decl.isImplementationDetail then continue
-            match decl with
-            | .cdecl _index fvar name type _ _ =>
-              let nk ← exprKind ids ci lctx (.fvar fvar)
-              let tyStr ← renderTagged ids (← runMeta (ppExprTagged =<< instantiateMVars type))
-              hyps := hyps.push (name, nk.getD .unknown, tyStr)
-            | .ldecl _index fvar name type val _ _ =>
-              let nk ← exprKind ids ci lctx (.fvar fvar)
-              let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
-              let valDoc ← runMeta (ppExprTagged =<< instantiateMVars val)
-              let tyValStr ← renderTagged ids <| .append <| #[tyDoc].append <|
-                if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
-                else #[.text " := \n", valDoc.indent]
-              hyps := hyps.push (name, nk.getD .unknown, tyValStr)
-          let concl ← renderTagged ids (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
-          goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
-        if !Output.inTacticState (← get).output goalView then
-          return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
-  return none
 
 partial def highlight'
     (ids : HashMap Lsp.RefIdent Lsp.RefIdent)

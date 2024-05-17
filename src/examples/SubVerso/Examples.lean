@@ -137,7 +137,7 @@ elab_rules : command
       logMessage msg
 
 
-scoped syntax "%dump" ident : command
+scoped syntax "%dump " ident : command
 
 elab_rules : command
   | `(%dump%$kw $name:ident) => do
@@ -147,6 +147,82 @@ elab_rules : command
       logInfoAt kw m!"{toString json}"
     else
       throwErrorAt name "No highlighting found for '{name}'"
+
+scoped syntax "%dump " ident &" into " ident: command
+scoped syntax "%dumpE " ident &" into " ident: command
+
+open Syntax in
+private scoped instance : Quote Int where
+  quote
+    | .ofNat n => mkCApp ``Int.ofNat #[quote n]
+    | .negSucc n => mkCApp ``Int.negSucc #[quote n]
+
+open Syntax in
+instance : Quote JsonNumber where
+  quote
+    | ⟨mantissa, exponent⟩ => mkCApp ``JsonNumber.mk #[quote mantissa, quote exponent]
+
+open Syntax in
+partial instance : Quote Json where
+  quote := q
+where
+  quoteArray {α : _} (_inst : Quote α) (xs : Array α) : TSyntax `term :=
+    mkCApp ``List.toArray #[quote xs.toList]
+  quoteField {α : _} (_inst : Quote α) (f : (_ : String) × α) : TSyntax `term :=
+    quote (f.fst, f.snd)
+  q
+    | .null => mkCApp ``Json.null #[]
+    | .str s => mkCApp ``Json.str #[quote s]
+    | .bool b => mkCApp ``Json.bool #[quote b]
+    | .num n => mkCApp ``Json.num #[quote n]
+    | .arr xs => mkCApp ``Json.arr #[(quoteArray ⟨q⟩ xs)]
+    | .obj fields =>
+      let _fieldInst : Quote ((_ : String) × Json) := ⟨quoteField ⟨q⟩⟩
+      let fieldList := quote fields.toArray.toList
+      mkCApp ``Json.mkObj #[fieldList]
+
+elab_rules : command
+  | `(%dump $name:ident into $x) => do
+    let mod ← getMainModule
+    let st := highlighted.getState (← getEnv) |>.find? mod |>.getD {}
+    if let some json := st.find? name.getId then
+      elabCommand <| ← `(def $x : Json := $(quote json))
+    else
+      throwErrorAt name "No highlighting found for '{name}'"
+
+open Syntax in
+instance : Quote MessageSeverity where
+  quote s :=
+    let n :=
+      match s with
+      | .error => ``MessageSeverity.error
+      | .information => ``MessageSeverity.information
+      | .warning => ``MessageSeverity.warning
+    mkCApp n #[]
+
+open Syntax in
+instance : Quote Lean.Position where
+  quote s :=
+    mkCApp ``Lean.Position.mk #[quote s.line, quote s.column]
+
+open Syntax in
+instance : Quote Example where
+  quote ex :=
+    mkCApp ``Example.mk #[quote ex.highlighted, quote ex.messages, quote ex.original, quote ex.start, quote ex.stop]
+
+elab_rules : command
+  | `(%dumpE $name:ident into $x) => do
+    let mod ← getMainModule
+    let st := highlighted.getState (← getEnv) |>.find? mod |>.getD {}
+    if let some json := st.find? name.getId then
+      match FromJson.fromJson? json with
+      | .ok (e : Example) =>
+        elabCommand <| ← `(def $x : Example := $(quote e))
+      | .error err =>
+        throwErrorAt name "Couldn't deserialize JSON: {err}"
+    else
+      throwErrorAt name "No highlighting found for '{name}'"
+
 
 namespace Internals
 scoped syntax "%show_name" ident : term

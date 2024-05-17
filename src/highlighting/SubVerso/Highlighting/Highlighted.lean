@@ -74,6 +74,11 @@ structure Highlighted.Goal (expr) where
   conclusion : expr
 deriving Repr, BEq, Hashable, ToJson, FromJson
 
+def Highlighted.Goal.map (f : α → β) (g : Goal α) : Goal β :=
+  {g with
+    hypotheses := g.hypotheses.map (fun (x, k, e) => (x, k, f e))
+    conclusion := f g.conclusion}
+
 instance [Quote expr] : Quote (Highlighted.Goal expr) where
   quote
     | {name, goalPrefix, hypotheses, conclusion} =>
