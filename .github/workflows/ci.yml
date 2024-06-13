@@ -14,7 +14,9 @@ jobs:
           - "4.5.0"
           - "4.6.0"
           - "4.7.0"
-          - "4.8.0-rc1"
+          - "4.8.0"
+          - "4.9.0-rc1"
+          - "nightly-2024-06-12"
         platform:
           - os: ubuntu-latest
             installer: |
@@ -22,12 +24,12 @@ jobs:
         # Mac runners are rare and expensive, so spot-check that the
         # subprocess support seems OK but be less thorough
         include:
-          - toolchain: "4.7.0"
+          - toolchain: "4.8.0"
             platform:
               os: macos-latest
               installer: |
                 curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
-          - toolchain: "4.7.0"
+          - toolchain: "4.8.0"
             platform:
               os: macos-latest
               installer: |
