@@ -9,6 +9,8 @@ open Lean.Widget (TaggedText)
 open Lean.Widget
 open Lean.PrettyPrinter (InfoPerPos)
 
+initialize registerTraceClass `SubVerso.Highlighting.Code
+
 namespace SubVerso.Highlighting
 
 partial def Token.Kind.priority : Token.Kind → Nat
@@ -599,7 +601,8 @@ partial def findTactics
     (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (stx : Syntax)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) := do
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) :=
+  withTraceNode `SubVerso.Highlighting.Code (fun x => pure m!"findTactics {stx} ==> {match x with | .error _ => "err" | .ok v => v.map (fun _ => "yes") |>.getD "no"}") <| do
   let text ← getFileMap
   let some startPos := stx.getPos?
     | return none
@@ -658,7 +661,8 @@ partial def highlight'
     (stx : Syntax)
     (tactics : Bool)
     (lookingAt : Option (Name × String.Pos) := none)
-    : HighlightM Unit := do
+    : HighlightM Unit :=
+  withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting {stx}") do
   let mut tactics := tactics
   if tactics then
     if let some (tacticInfo, startPos, endPos, position) ← findTactics ids trees stx then
