@@ -2,6 +2,7 @@ import Lake
 open Lake DSL
 
 package «subverso» where
+  precompileModules := true
   -- add package configuration options here
 
 lean_lib SubVersoCompat where
