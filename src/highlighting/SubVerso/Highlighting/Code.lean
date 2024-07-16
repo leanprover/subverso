@@ -1,4 +1,3 @@
-import Lean
 import Lean.Widget.TaggedText
 
 import SubVerso.Compat

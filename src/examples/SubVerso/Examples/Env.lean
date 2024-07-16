@@ -1,4 +1,3 @@
-import Lean
 import SubVerso.Highlighting
 
 open Lean
