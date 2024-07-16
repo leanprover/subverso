@@ -1,7 +1,13 @@
+/-
+Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
+Released under Apache 2.0 license as described in the file LICENSE.
+Author: David Thrane Christiansen
+-/
+import Lean.Environment
 import SubVerso.Highlighting
 import SubVerso.Compat
 import SubVerso.Examples.Env
-import Lean.Environment
+
 
 namespace SubVerso.Examples
 
@@ -284,7 +290,7 @@ elab_rules : command
     let addScope x := mkIdentFrom x (addMacroScope mod x.getId sc)
     let declName ← match sigName with
       | `(Lean.Parser.Command.declId|$x:ident) => pure x
-      | `(Lean.Parser.Command.declId|$x:ident.{$u:ident,*}) => pure x
+      | `(Lean.Parser.Command.declId|$x:ident.{$_u:ident,*}) => pure x
       | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
     let target ← liftTermElabM <| Compat.realizeNameNoOverloads declName
     let noClash ← match sigName with

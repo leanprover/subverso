@@ -1,0 +1,28 @@
+on:
+  push:
+  pull_request:
+
+name: Formalities
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Don't 'import Lean', use precise imports
+        if: always()
+        run: |
+          ! (find . -name "*.lean" -type f -print0 | xargs -0 grep -E -n '^import Lean$')
+
+      - name: Verify .lean files start with a copyright header.
+        run: |
+          FILES=$(find ./src ./demo ./demo-toml -not -path '*/.lake/*' -type f -name "*.lean" -exec perl -ne 'BEGIN { $/ = undef; } print "$ARGV\n" if !m{\A/-\nCopyright}; exit;' {} \;)
+          if [ -n "$FILES" ]; then
+            echo "Found .lean files which do not have a copyright header:"
+            echo "$FILES"
+            exit 1
+          else
+            echo "All copyright headers present."
+          fi
