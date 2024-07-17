@@ -280,28 +280,44 @@ private partial def compare (blame : Syntax): Expr → Expr → MetaM Unit
   | _, _ => pure ()
 
 scoped syntax (name := signature) "%signature" ident declId declSig : command
-elab_rules : command
-  | `(%signature $name $sigName $sig) => do
-    -- Check the signature by elaborating and comparing.
+/--
+Check the signature by elaborating and comparing.
+-/
+def checkSignature
+    (sigName : TSyntax `Lean.Parser.Command.declId)
+    (sig : TSyntax `Lean.Parser.Command.declSig)
+    : CommandElabM (Array Highlighted × String × String.Pos × String.Pos) := do
+  -- First make sure the names won't clash - we want two different declarations to compare.
+  let mod ← getMainModule
+  let sc ← getCurrMacroScope
+  let addScope x := mkIdentFrom x (addMacroScope mod x.getId sc)
+  let declName ← match sigName with
+    | `(Lean.Parser.Command.declId|$x:ident) => pure x
+    | `(Lean.Parser.Command.declId|$x:ident.{$_u:ident,*}) => pure x
+    | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
+  let (target, targetTrees) ← do
+    let origTrees ← getResetInfoTrees
+    let mut tgtTrees := PersistentArray.empty
+    try
+      let name ← liftTermElabM (Compat.realizeNameNoOverloads declName)
+      tgtTrees ← getInfoTrees
+      pure (name, tgtTrees)
+    finally
+      modifyInfoState ({· with trees := origTrees ++ tgtTrees})
 
-    -- First make sure the names won't clash - we want two different declarations to compare.
-    let mod ← getMainModule
-    let sc ← getCurrMacroScope
-    let addScope x := mkIdentFrom x (addMacroScope mod x.getId sc)
-    let declName ← match sigName with
-      | `(Lean.Parser.Command.declId|$x:ident) => pure x
-      | `(Lean.Parser.Command.declId|$x:ident.{$_u:ident,*}) => pure x
-      | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
-    let target ← liftTermElabM <| Compat.realizeNameNoOverloads declName
-    let noClash ← match sigName with
-      | `(Lean.Parser.Command.declId|$x:ident) => `(Lean.Parser.Command.declId| $(addScope x):ident)
-      | `(Lean.Parser.Command.declId|$x:ident.{$u:ident,*}) => `(Lean.Parser.Command.declId| $(addScope x):ident.{$u,*})
-      | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
+  let noClash ← match sigName with
+    | `(Lean.Parser.Command.declId|$x:ident) => `(Lean.Parser.Command.declId| $(addScope x):ident)
+    | `(Lean.Parser.Command.declId|$x:ident.{$u:ident,*}) => `(Lean.Parser.Command.declId| $(addScope x):ident.{$u,*})
+    | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
 
-    -- Elaborate as an opaque constant (unsafe is to avoid an Inhabited constraint on the return type)
-    let stx ← `(command| unsafe opaque $noClash $sig)
-    withoutModifyingEnv do
+  -- Elaborate as an opaque constant (unsafe is to avoid an Inhabited constraint on the return type)
+  let stx ← `(command| unsafe opaque $noClash $sig)
+  let trees ← withoutModifyingEnv do
+    let origTrees ← getResetInfoTrees
+    let mut outTrees := PersistentArray.empty
+    try
       elabCommand stx
+      outTrees ← getInfoTrees
       if ← MonadLog.hasErrors then throwErrorAt sigName "Failed to elaborate signature"
 
       -- The "source" is what the user wrote, the "target" is the existing declaration
@@ -319,16 +335,26 @@ elab_rules : command
         if !(← Meta.isDefEq tty sty) then
           throwErrorAt sig "Expected {tty}, got {sty}"
         compare sigName tty sty
+      pure outTrees
+      finally
+        modifyInfoState ({· with trees := origTrees ++ outTrees})
 
-    -- Now actually generate the highlight and save it
-    let .original leading startPos _ _ := sigName.raw.getHeadInfo
-      | throwErrorAt sigName "Failed to get source position"
-    let .original _ _ trailing stopPos := sig.raw.getTailInfo
-      | throwErrorAt sig.raw "Failed to get source position"
+  -- Now actually generate the highlight
+  let .original leading startPos _ _ := sigName.raw.getHeadInfo
+    | throwErrorAt sigName "Failed to get source position"
+  let .original _ _ trailing stopPos := sig.raw.getTailInfo
+    | throwErrorAt sig.raw "Failed to get source position"
+  let text ← getFileMap
+  let str := text.source.extract leading.startPos trailing.stopPos
+  let trees := targetTrees ++ trees
+  let hl ← liftTermElabM <| withDeclName `x <| do pure <| #[← highlight sigName #[] trees, ← highlight sig #[] trees]
+  return (hl, str, startPos, stopPos)
+
+elab_rules : command
+  | `(%signature $name $sigName $sig) => do
+    let mod ← getMainModule
     let text ← getFileMap
-    let str := text.source.extract leading.startPos trailing.stopPos
-    let trees ← getInfoTrees
-    let hl ← liftTermElabM <| withDeclName `x <| do pure <| #[← highlight sigName #[] trees, ← highlight sig #[] trees]
+    let (hl, str, startPos, stopPos) ← checkSignature sigName sig
     modifyEnv fun ρ =>
       highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
 
