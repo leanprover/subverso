@@ -295,7 +295,16 @@ def checkSignature
     | `(Lean.Parser.Command.declId|$x:ident) => pure x
     | `(Lean.Parser.Command.declId|$x:ident.{$_u:ident,*}) => pure x
     | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
-  let target ← liftTermElabM <| Compat.realizeNameNoOverloads declName
+  let (target, targetTrees) ← do
+    let origTrees ← getResetInfoTrees
+    let mut tgtTrees := PersistentArray.empty
+    try
+      let name ← liftTermElabM (Compat.realizeNameNoOverloads declName)
+      tgtTrees ← getInfoTrees
+      pure (name, tgtTrees)
+    finally
+      modifyInfoState ({· with trees := origTrees ++ tgtTrees})
+
   let noClash ← match sigName with
     | `(Lean.Parser.Command.declId|$x:ident) => `(Lean.Parser.Command.declId| $(addScope x):ident)
     | `(Lean.Parser.Command.declId|$x:ident.{$u:ident,*}) => `(Lean.Parser.Command.declId| $(addScope x):ident.{$u,*})
@@ -330,13 +339,14 @@ def checkSignature
       finally
         modifyInfoState ({· with trees := origTrees ++ outTrees})
 
-  -- Now actually generate the highlight and save it
+  -- Now actually generate the highlight
   let .original leading startPos _ _ := sigName.raw.getHeadInfo
     | throwErrorAt sigName "Failed to get source position"
   let .original _ _ trailing stopPos := sig.raw.getTailInfo
     | throwErrorAt sig.raw "Failed to get source position"
   let text ← getFileMap
   let str := text.source.extract leading.startPos trailing.stopPos
+  let trees := targetTrees ++ trees
   let hl ← liftTermElabM <| withDeclName `x <| do pure <| #[← highlight sigName #[] trees, ← highlight sig #[] trees]
   return (hl, str, startPos, stopPos)
 
