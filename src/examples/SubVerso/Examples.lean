@@ -23,27 +23,25 @@ class MonadMessageState (m : Type → Type v) where
   getMessages : m MessageLog
   setMessages : MessageLog → m Unit
 
-instance : MonadMessageState TermElabM where
-  getMessages := do return (← getThe Core.State).messages
-  setMessages msgs := modifyThe Core.State ({· with messages := msgs})
-
-instance : MonadMessageState CommandElabM where
-  getMessages := do return (← get).messages
-  setMessages msgs := modify ({· with messages := msgs})
-
-open MonadMessageState in
-def savingNewMessages [Monad m] [MonadFinally m] [MonadMessageState m]
-    (act : m α) : m (α × MessageLog) := do
-  let startMessages ← getMessages
-  let mut endMessages := .empty
-  setMessages .empty
-  let res ← try
+def savingNewTermMessages (act : TermElabM α) : TermElabM (α × MessageLog) := do
+  let startMessages ← Core.getMessageLog
+  Core.setMessageLog .empty
+  try
     let res ← act
-    endMessages ← getMessages
-    pure res
+    let msgs ← Core.getMessageLog
+    pure (res, msgs)
   finally
-    setMessages startMessages
-  pure (res, endMessages)
+    Core.setMessageLog startMessages
+
+def savingNewCommandMessages (act : CommandElabM α) : CommandElabM (α × MessageLog) := do
+  let startMessages := (← get).messages
+  modify ({· with messages := .empty})
+  try
+    let res ← act
+    let msgs := (← get).messages
+    pure (res, msgs)
+  finally
+    modify ({· with messages := startMessages})
 
 scoped syntax "%example" ("(" &"config" " := " term")")? ident command command* "%end" : command
 
@@ -115,12 +113,18 @@ elab_rules : command
     let allCommands := #[cmd] ++ cmds
     let (allCommands, termExamples) := allCommands.mapM extractExamples .empty
     let initSt ← get
-    let ((), newMessages) ← savingNewMessages (allCommands.forM elabCommand)
+    let ((), newMessages) ← savingNewCommandMessages (allCommands.forM elabCommand)
+    -- Run linters here, because elabCommandTopLevel would usually do it. This does mean examples
+    -- will run linters multiple times, but it seems unavoidable while maintaining portability. Note
+    -- that newMessages needs to be replayed into the main message log, but the linter messages must
+    -- not be (or there will be duplicated linter output)
+    let ((), linterMessages) ← savingNewCommandMessages (allCommands.forM runLinters)
     if config.error && !newMessages.hasErrors then
       throwErrorAt tk "Expected an error, but none occurred"
     let trees ← getInfoTrees
-    let hl ← allCommands.mapM fun c => liftTermElabM (highlight c newMessages.toList.toArray trees)
-    let freshMsgs ← newMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
+    let allNewMessages := newMessages ++ linterMessages
+    let hl ← allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees)
+    let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
     let .original leading startPos _ _ := allCommands[0]!.getHeadInfo
       | throwErrorAt allCommands[0]! "Failed to get source position"
     let .original _ _ trailing stopPos := allCommands.back.getTailInfo
@@ -131,7 +135,7 @@ elab_rules : command
     if config.error || !config.keep then set initSt
     modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
     for (tmName, term) in termExamples do
-      let hl ← liftTermElabM (highlight term newMessages.toList.toArray trees)
+      let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees)
       let .original leading startPos _ _ := term.getHeadInfo
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo

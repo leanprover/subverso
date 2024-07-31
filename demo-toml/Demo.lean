@@ -31,3 +31,12 @@ theorem test (n : Nat) : n * 1 = n := by
 def test2 [ToString α] (x : α) : Decidable (toString x = "") := by
   constructor; sorry
 %end
+
+%show_name Nat.rec
+
+%signature qs
+  Array.qsort.{u} {α : Type u} (as : Array α) (lt : α → α → Bool) (low : Nat := 0) (high : Nat := as.size - 1) : Array α
+
+%example hasSorry
+theorem bogus : 2 = 2 := by sorry
+%end

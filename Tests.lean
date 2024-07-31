@@ -112,6 +112,31 @@ def checkVersion (expected : String) (examples : NameMap (NameMap Example)) : IO
     IO.Process.exit 1
   pure ()
 
+open Lean in
+def checkHasSorry (examples : NameMap (NameMap Example)) : IO Unit := do
+  IO.println "Making sure the `hasSorry example has a sorry"
+  let demo ← examples.find? `Demo |>.map pure |>.getD (do IO.eprintln "Demo not found"; IO.Process.exit 1)
+  let hasSorry ← demo.find? `hasSorry  |>.map pure |>.getD (do IO.eprintln "hasSorry not found"; IO.Process.exit 1)
+  if hasSorry.messages == [(.warning, "declaration uses 'sorry'\n")] then pure ()
+  else
+    IO.eprintln s!"Expected a sorry warning, got {repr hasSorry.messages}"
+    IO.Process.exit 1
+
+open Lean in
+def checkIsLinted (examples : NameMap (NameMap Example)) : IO Unit := do
+  IO.println "Making sure the linted example is linted"
+  let demo ← examples.find? `Demo |>.map pure |>.getD (do IO.eprintln "Demo not found"; IO.Process.exit 1)
+  let hasSorry ← demo.find? `linted  |>.map pure |>.getD (do IO.eprintln "linted not found"; IO.Process.exit 1)
+  if let [(.warning, str)] := hasSorry.messages then
+    -- The phrasing varies a bit in Lean versions, but this is the important part
+    if "unused variable `x`".isPrefixOf str then
+      return ()
+
+  IO.eprintln s!"Expected a linter warning, got {repr hasSorry.messages}"
+  IO.Process.exit 1
+
+
+
 def main : IO UInt32 := do
   IO.println "Checking the slice log"
   if sliceLog != expectedLog then
@@ -135,19 +160,37 @@ def main : IO UInt32 := do
     IO.eprintln "No examples found"
     return 1
   checkVersion "4.3.0" examples
+  checkHasSorry examples
+  checkIsLinted examples
   let proofCount1 := proofCount examples
   IO.println s!"Found {proofCount1} proofs "
-  IO.println "Checking that the test project generates at least some deserializable JSON with a newer toolchain"
+
+  IO.println "Checking that the test project generates at least some deserializable JSON with 4.8.0"
   cleanupDemo
   let examples' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:nightly-2024-04-25")
   if examples'.isEmpty then
     IO.eprintln "No examples found with later toolchain"
     return 1
   checkVersion "4.8.0-nightly-2024-04-25" examples'
+  checkHasSorry examples'
+  checkIsLinted examples'
   let proofCount2 := proofCount examples'
   IO.println s!"Found {proofCount2} proofs "
 
-  if proofCount1 != proofCount2 then
+  IO.println "Checking that the test project generates at least some deserializable JSON with 4.10.0-rc1"
+  cleanupDemo
+  let examples'' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:4.10.0-rc1")
+  if examples''.isEmpty then
+    IO.eprintln "No examples found with later toolchain"
+    return 1
+  checkVersion "4.10.0-rc1" examples''
+  checkHasSorry examples''
+  checkIsLinted examples''
+  let proofCount3 := proofCount examples''
+  IO.println s!"Found {proofCount2} proofs "
+
+
+  if proofCount1 != proofCount2 || proofCount2 != proofCount3 then
     IO.eprintln "Example proof count mismatch"
     return 1
   pure 0

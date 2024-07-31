@@ -36,3 +36,12 @@ def test2 [ToString α] (x : α) : Decidable (toString x = "") := by
 
 %signature qs
   Array.qsort.{u} {α : Type u} (as : Array α) (lt : α → α → Bool) (low : Nat := 0) (high : Nat := as.size - 1) : Array α
+
+%example hasSorry
+theorem bogus : 2 = 2 := by sorry
+%end
+
+%example linted
+def g : α → Nat
+  | x => 3
+%end
