@@ -60,17 +60,17 @@ theorem test (n : Nat) : n * 1 = n := by
 
 open Lean Elab Command in
 elab "#evalString" s:str e:term : command => do
-  let msgs ← MonadMessageState.getMessages
+  let msgs := (← get).messages
   try
-    MonadMessageState.setMessages {}
+    modify ({· with messages := {}})
     elabCommand <| ← `(#eval $e)
-    let msgs' ← MonadMessageState.getMessages
+    let msgs' := (← get).messages
     let [msg] := msgs'.toList
       | throwError "Too many messages"
     if (← msg.toString) != s.getString then
       throwErrorAt e "Expected {String.quote s.getString}, got {String.quote (← msg.toString)}"
   finally
-    MonadMessageState.setMessages msgs
+    modify ({· with messages := msgs})
 
 #evalString "[[\"n * 1 = n\"]]\n"
   (proofEx.highlighted[0].proofStates.data.filter (·.fst == "by") |>.map (·.snd.data.map (·.conclusion)))
