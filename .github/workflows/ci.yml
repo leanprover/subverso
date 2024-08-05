@@ -16,7 +16,8 @@ jobs:
           - "4.7.0"
           - "4.8.0"
           - "4.9.0"
-          - "nightly-2024-07-12"
+          - "4.10.0"
+          - "nightly-2024-08-03"
         platform:
           - os: ubuntu-latest
             installer: |
@@ -24,7 +25,7 @@ jobs:
         # Mac runners are rare and expensive, so spot-check that the
         # subprocess support seems OK but be less thorough
         include:
-          - toolchain: "4.9.0"
+          - toolchain: "4.9.1"
             platform:
               os: macos-latest
               installer: |
