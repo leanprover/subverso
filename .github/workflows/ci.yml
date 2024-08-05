@@ -16,11 +16,8 @@ jobs:
           - "4.7.0"
           - "4.8.0"
           - "4.9.0"
-          - "4.10.0-rc2"
-          - "nightly-2024-07-12"
-          - "nightly-2024-07-17"
-          - "nightly-2024-07-22"
-          - "nightly-2024-07-27"
+          - "4.10.0"
+          - "nightly-2024-08-03"
         platform:
           - os: ubuntu-latest
             installer: |
