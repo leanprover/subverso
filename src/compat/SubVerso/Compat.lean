@@ -57,3 +57,6 @@ def refIdentCase (ri : Lsp.RefIdent)
     | .fvar id => onFVar id
     | .const x => onConst x
   ]
+
+abbrev Parsec (α : Type) : Type :=
+  %first_succeeding [(Lean.Parsec α : Type), (Lean.Parsec String.Iterator α : Type)]

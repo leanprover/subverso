@@ -7,9 +7,12 @@ import Lean.Data.Parsec
 import Lean.Data.Position
 import Lean.Syntax
 import Lean.Elab.Command
+import SubVerso.Compat
 import SubVerso.Examples.Slice.Attribute
 
-open Lean
+
+open Lean hiding Parsec
+open SubVerso.Compat (Parsec)
 
 namespace SubVerso.Examples.Slice
 
@@ -68,7 +71,7 @@ deriving Repr
 private def SliceCommand.beginRange := SliceCommand.mk true
 private def SliceCommand.endRange := SliceCommand.mk false
 
-open Parsec in
+open Lean.Parsec String in
 private def sliceCommand (range : String.Range) : Parsec SliceCommand := do
   ws
   skipString "!!"
