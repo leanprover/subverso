@@ -29,15 +29,21 @@ def realizeNameNoOverloads
 
 
 elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
+  let mut errs := #[]
   for e in es.getElems do
     try
       let expr ←
         withReader ({· with errToSorry := false}) <|
-            elabTerm e (some ty)
-      return expr
-    catch _ =>
+            elabTermEnsuringType e (some ty)
+      let ty' ← Meta.inferType expr
+      if ← Meta.isDefEq ty ty' then
+        return expr
+    catch err =>
+      errs := errs.push (e, err)
       continue
-  throwError "No alternative succeeded"
+  let msgErrs := errs.toList.map fun (tm, msg) => m!"{tm}: {indentD msg.toMessageData}"
+  throwError m!"No alternative succeeded. Attempts were: " ++
+    indentD (MessageData.joinSep msgErrs Format.line)
 
 open Command in
 elab "%if_bound" x:ident cmd:command : command => do
@@ -83,7 +89,7 @@ instance [BEq α] [Hashable α] {x : α} {hm : HashMap α β} : Decidable (x ∈
 
 instance instGetElemHashMap [BEq α] [Hashable α] [Inhabited β] : GetElem (HashMap α β) α β (fun m a => a ∈ m) :=
   %first_succeeding [
-    inferInstanceAs (GetElem (Std.HashMap α β) α β (fun m a => a ∈ m))--,
+    inferInstanceAs (GetElem (Std.HashMap α β) α β (fun m a => a ∈ m)),
     ⟨fun m a _ok => m.find! a⟩,
     ⟨fun m a _ok => m.find! a, fun m a => Lean.HashMap.find? m a, fun m a => Lean.HashMap.find! m a⟩
   ]
