@@ -83,8 +83,9 @@ instance [BEq α] [Hashable α] {x : α} {hm : HashMap α β} : Decidable (x ∈
 
 instance instGetElemHashMap [BEq α] [Hashable α] [Inhabited β] : GetElem (HashMap α β) α β (fun m a => a ∈ m) :=
   %first_succeeding [
-    inferInstanceAs (GetElem (Std.HashMap α β) α β (fun m a => a ∈ m)),
-    ⟨fun m a _ok => m.find! a⟩
+    inferInstanceAs (GetElem (Std.HashMap α β) α β (fun m a => a ∈ m))--,
+    ⟨fun m a _ok => m.find! a⟩,
+    ⟨fun m a _ok => m.find! a, fun m a => Lean.HashMap.find? m a, fun m a => Lean.HashMap.find! m a⟩
   ]
 
 def get? {_ : BEq α} {_ : Hashable α} : HashMap α β → α → Option β :=
