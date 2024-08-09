@@ -3,6 +3,7 @@ Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
+import SubVerso.Compat
 import SubVerso.Examples.Env
 
 open Lean
@@ -13,7 +14,7 @@ def main : (args : List String) → IO UInt32
     try
       initSearchPath (← findSysroot)
       let modName := mod.toName
-      let env ← importModules #[{module := modName, runtimeOnly := false}] {}
+      let env ← SubVerso.Compat.importModules #[{module := modName, runtimeOnly := false}] {}
       let modExamples := highlighted.getState env
       let useful := relevant modName modExamples
       let exJson := Json.mkObj useful

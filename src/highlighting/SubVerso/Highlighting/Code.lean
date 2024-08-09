@@ -10,10 +10,12 @@ import Lean.Widget.TaggedText
 import SubVerso.Compat
 import SubVerso.Highlighting.Highlighted
 
-open Lean Elab
+open Lean hiding HashMap
+open Elab
 open Lean.Widget (TaggedText)
 open Lean.Widget
 open Lean.PrettyPrinter (InfoPerPos)
+open SubVerso.Compat (HashMap)
 
 initialize registerTraceClass `SubVerso.Highlighting.Code
 
@@ -73,7 +75,7 @@ structure State (α : Type u) where
 def State.init [BEq α] [Hashable α] : State α := {}
 
 def insert [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (x : α) : m Nat := do
-  if let some i := (← get).indices.find? x then
+  if let some i := (← get).indices[x]? then
     pure i
   else
     let i := (← get).contents.size
@@ -139,7 +141,7 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
   match ← instantiateMVars expr with
   | Expr.fvar id =>
     let seen ←
-      if let some y := ids.find? (← Compat.mkRefIdentFVar id) then
+      if let some y := ids[(← Compat.mkRefIdentFVar id)]? then
         Compat.refIdentCase y
           (onFVar := fun x => do
             let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
