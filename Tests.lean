@@ -14,7 +14,7 @@ open Lean Elab Command
 open SubVerso.Examples.Slice
 
 elab "#test_slicing" s:str out:ident c:command : command => do
-  let {original, residual, sliced} ← sliceSyntax c
+  let {original := _, residual, sliced} ← sliceSyntax c
 
   let mut log := ""
 
@@ -24,7 +24,7 @@ elab "#test_slicing" s:str out:ident c:command : command => do
     log := log ++ s!"Slice {s}:\n{Syntax.prettyPrint stx}"
 
   let use := s.getString
-  if let some stx := sliced.find? use then
+  if let some stx := sliced[use]? then
     elabCommand stx
   else
     logInfo m!"Slice '{use}' not found"

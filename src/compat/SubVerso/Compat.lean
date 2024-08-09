@@ -39,6 +39,9 @@ elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
       continue
   throwError "No alternative succeeded"
 
+open Command in
+elab "%if_bound" x:ident cmd:command : command => do
+  if (← getEnv).contains x.getId then elabCommand cmd
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [
@@ -60,3 +63,45 @@ def refIdentCase (ri : Lsp.RefIdent)
 
 abbrev Parsec (α : Type) : Type :=
   %first_succeeding [(Lean.Parsec α : Type), (Lean.Parsec String.Iterator α : Type)]
+
+def HashMap := %first_succeeding [Std.HashMap, Lean.HashMap]
+def HashSet := %first_succeeding [Std.HashSet, Lean.HashSet]
+
+namespace HashMap
+
+instance [BEq α] [Hashable α] : Membership α (HashMap α β) :=
+  %first_succeeding [
+    inferInstanceAs (Membership α (Std.HashMap α β)),
+    ⟨fun k hm => hm.contains k⟩
+  ]
+
+instance [BEq α] [Hashable α] {x : α} {hm : HashMap α β} : Decidable (x ∈ hm) :=
+  %first_succeeding [
+    inferInstanceAs (Decidable (x ∈ (hm : Std.HashMap α β))),
+    inferInstanceAs (Decidable (hm.contains x = true))
+  ]
+
+instance instGetElemHashMap [BEq α] [Hashable α] [Inhabited β] : GetElem (HashMap α β) α β (fun m a => a ∈ m) :=
+  %first_succeeding [
+    inferInstanceAs (GetElem (Std.HashMap α β) α β (fun m a => a ∈ m)),
+    ⟨fun m a _ok => m.find! a⟩
+  ]
+
+def get? {_ : BEq α} {_ : Hashable α} : HashMap α β → α → Option β :=
+  %first_defined [Std.HashMap.get?, Lean.HashMap.find?]
+
+def get! {_ : BEq α} {_ : Hashable α} [Inhabited β] : HashMap α β → α → β :=
+  %first_defined [Std.HashMap.get!, Lean.HashMap.find!]
+
+def getD {_ : BEq α} {_ : Hashable α} [Inhabited β] : HashMap α β → α → β → β :=
+  %first_defined [Std.HashMap.getD, Lean.HashMap.findD]
+
+
+%if_bound GetElem?
+  instance [BEq α] [Hashable α] [Inhabited β] : GetElem? (HashMap α β) α β (fun m a => a ∈ m) :=
+    %first_succeeding [
+      inferInstanceAs (GetElem? (Std.HashMap α β) α β (fun m a => a ∈ m)),
+      @GetElem?.mk _ _ _ _ instGetElemHashMap (fun m a => m.get? a) (fun m a => m.get! a)
+    ]
+
+instance [BEq α] [Hashable α] : EmptyCollection (HashMap α β) := ⟨%first_succeeding [Std.HashMap.empty, Lean.HashMap.empty]⟩

@@ -11,8 +11,8 @@ import SubVerso.Compat
 import SubVerso.Examples.Slice.Attribute
 
 
-open Lean hiding Parsec
-open SubVerso.Compat (Parsec)
+open Lean hiding Parsec HashMap
+open SubVerso.Compat (Parsec HashMap)
 
 namespace SubVerso.Examples.Slice
 
@@ -160,7 +160,6 @@ private partial def removeRanges (env : Environment) (rngs : Array String.Range)
         pure <| .node info kind newSubs
     else pure stx
 
-
 private def getSlices (slices : Array SliceCommand) : Except String (HashMap String (Array String.Range)) := do
   let mut opened : HashMap String (String.Pos) := {}
   let mut closed : HashMap String (Array String.Range) := {}
@@ -170,8 +169,8 @@ private def getSlices (slices : Array SliceCommand) : Except String (HashMap Str
       if opened.contains name then .error s!"Slice '{name}' opened twice"
       else opened := opened.insert name rng.stop
     | .endRange name pos =>
-      if let some p := opened.find? name then
-        closed := closed.insert name <| closed.findD name #[] |>.push ⟨p, pos.start⟩
+      if let some p := opened[name]? then
+        closed := closed.insert name <| closed.getD name #[] |>.push ⟨p, pos.start⟩
         opened := opened.erase name
       else .error s!"Slice '{name}' not open"
   pure closed
