@@ -20,8 +20,9 @@ jobs:
           - "4.8.0"
           - "4.9.0"
           - "4.10.0"
-          - "4.11.0-rc1"
+          - "4.11.0-rc3"
           - "nightly-2024-08-09"
+          - "nightly-2024-08-29"
         platform:
           - os: ubuntu-latest
             installer: |

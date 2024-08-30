@@ -45,6 +45,28 @@ elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
   throwError m!"No alternative succeeded. Attempts were: " ++
     indentD (MessageData.joinSep msgErrs Format.line)
 
+scoped syntax "export_from_namespaces " "(" ident+ ") " "(" ident+ ")" : command
+
+elab_rules : command
+  | `(export_from_namespaces ($nss*) ($xs*)) => do
+    let env ← getEnv
+    let mut toAlias := #[]
+    for x in xs do
+      let x' := x.getId
+      let mut found := none
+      for ns in nss do
+        let ns' := ns.getId
+        let y := ns' ++ x'
+        if env.contains y then
+          found := some (ns, x)
+          break
+      if let some ok := found then
+        toAlias := toAlias.push ok
+      else
+        throwErrorAt x "'{x}' not found in namespaces {indentD <| toMessageData nss}"
+    for (ns, x) in toAlias do
+      Command.elabCommand <| ← `(export $ns ($x))
+
 open Command in
 elab "%if_bound" x:ident cmd:command : command => do
   if (← getEnv).contains x.getId then elabCommand cmd
@@ -71,7 +93,17 @@ def refIdentCase (ri : Lsp.RefIdent)
   ]
 
 abbrev Parsec (α : Type) : Type :=
-  %first_succeeding [(Lean.Parsec α : Type), (Lean.Parsec String.Iterator α : Type)]
+  %first_succeeding [
+    (Lean.Parsec α : Type),
+    (Lean.Parsec String.Iterator α : Type),
+    (Std.Internal.Parsec String.Iterator α : Type)
+  ]
+
+namespace Parsec
+export_from_namespaces
+  (Lean.Parsec.String Lean.Parsec Std.Internal.Parsec.String Std.Internal.Parsec)
+  (ws skipString skipChar many1Chars satisfy)
+end Parsec
 
 def HashMap := %first_succeeding [Std.HashMap, Lean.HashMap]
 def HashSet := %first_succeeding [Std.HashSet, Lean.HashSet]
