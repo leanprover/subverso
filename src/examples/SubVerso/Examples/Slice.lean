@@ -3,15 +3,15 @@ Copyright (c) 2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-import Lean.Data.Parsec
+import Lean.Data.Json
 import Lean.Data.Position
 import Lean.Syntax
 import Lean.Elab.Command
 import SubVerso.Compat
 import SubVerso.Examples.Slice.Attribute
 
+open Lean (SourceInfo Syntax Environment FileMap MonadEnv MonadError MonadFileMap getFileMap getEnv nullKind)
 
-open Lean hiding Parsec HashMap
 open SubVerso.Compat (Parsec HashMap)
 
 namespace SubVerso.Examples.Slice
@@ -71,7 +71,7 @@ deriving Repr
 private def SliceCommand.beginRange := SliceCommand.mk true
 private def SliceCommand.endRange := SliceCommand.mk false
 
-open Lean.Parsec String in
+open SubVerso.Compat.Parsec String in
 private def sliceCommand (range : String.Range) : Parsec SliceCommand := do
   ws
   skipString "!!"
