@@ -190,7 +190,11 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
     | .ofOptionInfo oi =>
       let docs ← findDocString? (← getEnv) oi.declName
       pure <| some <| .option oi.declName docs
-    | _ => pure none
+    | .ofCompletionInfo _ => pure none
+    | .ofTacticInfo _ => pure none
+    | _ =>
+      -- dbg_trace (← info.format ci)
+      pure none
 
 def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
     (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray InfoTree) (stx : TSyntax `ident)
@@ -487,7 +491,7 @@ partial def childHasTactics (stx : Syntax) (trees : PersistentArray Lean.Elab.In
 
 
 partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (doc : CodeWithInfos)
+    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (outer : Option Token.Kind) (doc : CodeWithInfos)
     : m Highlighted := do
   match doc with
   | .text txt => do
@@ -499,7 +503,10 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
       for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
         if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
           if !current.isEmpty then
-            toks := toks.push <| .text current
+            if let some k := outer then
+              toks := toks.push <| .token ⟨k, current⟩
+            else
+              toks := toks.push <| .text current
             current := ""
           toks := toks.push <| .token ⟨.keyword none none none, kw⟩
           todo := todo.drop kw.length
@@ -514,7 +521,10 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
         todo := todo.drop tok.length
 
     if !current.isEmpty then
-      toks := toks.push (.text current)
+      if let some k := outer then
+        toks := toks.push <| .token ⟨k, current⟩
+      else
+        toks := toks.push <| .text current
     pure <| if let #[t] := toks then t else .seq toks
   | .tag t doc' =>
     let ⟨{ctx, info, children := _}⟩ := t.info
@@ -522,8 +532,10 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
       if let some k ← infoKind ids ctx info then
         pure <| .token ⟨k, tok⟩
       else pure <| .text tok
-    else renderTagged ids doc'
-  | .append xs => .seq <$> xs.mapM (renderTagged ids)
+    else
+      let k? ← infoKind ids ctx info
+      renderTagged ids k? doc'
+  | .append xs => .seq <$> xs.mapM (renderTagged ids outer)
 where
   tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
@@ -565,17 +577,17 @@ def highlightGoals
       match decl with
       | .cdecl _index fvar name type _ _ =>
         let nk ← exprKind ids ci lctx (.fvar fvar)
-        let tyStr ← renderTagged ids (← runMeta (ppExprTagged =<< instantiateMVars type))
+        let tyStr ← renderTagged ids none (← runMeta (ppExprTagged =<< instantiateMVars type))
         hyps := hyps.push (name, nk.getD .unknown, tyStr)
       | .ldecl _index fvar name type val _ _ =>
         let nk ← exprKind ids ci lctx (.fvar fvar)
         let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
         let valDoc ← runMeta (ppExprTagged =<< instantiateMVars val)
-        let tyValStr ← renderTagged ids <| .append <| #[tyDoc].append <|
+        let tyValStr ← renderTagged ids none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
         hyps := hyps.push (name, nk.getD .unknown, tyValStr)
-    let concl ← renderTagged ids (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
+    let concl ← renderTagged ids none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
 
