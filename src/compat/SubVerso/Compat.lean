@@ -76,6 +76,7 @@ def importModules (imports : Array Import) (opts : Options) (trustLevel : UInt32
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [
+    .fvar (← getEnv).mainModule.toString id.name.toString,
     .fvar (← getEnv).mainModule id,
     .fvar id
   ]
@@ -84,6 +85,9 @@ def refIdentCase (ri : Lsp.RefIdent)
     (onFVar : FVarId → α)
     (onConst : Name → α) : α :=
   %first_succeeding [
+    match ri with
+    | .fvar _ id => onFVar ⟨id.toName⟩
+    | .const _ x => onConst x.toName,
     match ri with
     | .fvar _ id => onFVar id
     | .const _ x => onConst x,
