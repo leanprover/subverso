@@ -188,8 +188,8 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
     | .ofTermInfo termInfo => termInfoKind ids ci termInfo
     | .ofFieldInfo fieldInfo => some <$> fieldInfoKind ci fieldInfo
     | .ofOptionInfo oi =>
-      let docs ← findDocString? (← getEnv) oi.declName
-      pure <| some <| .option oi.declName docs
+      let doc := (← getOptionDecls).find? oi.optionName |>.map (·.descr)
+      pure <| some <| .option oi.optionName oi.declName doc
     | .ofCompletionInfo _ => pure none
     | .ofTacticInfo _ => pure none
     | _ =>
