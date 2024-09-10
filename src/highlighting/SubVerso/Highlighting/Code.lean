@@ -321,6 +321,12 @@ structure HighlightState where
   inMessages : List (MessageBundle ⊕ OpenTactic)
 deriving Inhabited
 
+def HighlightState.empty : HighlightState where
+  messages := #[]
+  nextMessage := none
+  output := []
+  inMessages := []
+
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     (stx : Syntax) (messages : Array Message) : m HighlightState := do
   let msgs ← bundleMessages <$> messages.filterM (isRelevant stx)
@@ -777,3 +783,9 @@ def highlight (stx : Syntax) (messages : Array Message) (trees : PersistentArray
   let st ← HighlightState.ofMessages stx messages
   let ((), {output := output, ..}) ← StateT.run (highlight' ids trees stx true) st
   pure <| .fromOutput output
+
+def highlightProofState (ci : ContextInfo) (goals : List MVarId) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM (Array (Highlighted.Goal Highlighted)) := do
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
+  let ids := build modrefs
+  let (hlGoals, _) ← StateT.run (highlightGoals ids ci goals) .empty
+  pure hlGoals
