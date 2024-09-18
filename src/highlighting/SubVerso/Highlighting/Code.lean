@@ -87,13 +87,25 @@ def insert [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (x : α) :
     }
     pure i
 
-partial def find [Inhabited α] [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (x : α) : m (Nat × α × Nat) := do
-  loop <| ← insert x
-where
-  loop (i : Nat) : m (Nat × α × Nat) := do
-    match (← get).contents[i]! with
+instance [h1 : Nonempty α] [h2 : Nonempty β] : Nonempty (α × β) :=
+  h1.elim fun x =>
+    h2.elim fun y =>
+      ⟨(x, y)⟩
+
+
+example [Inhabited α] [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (x : α) : Inhabited (m (Nat × α × Nat)) := inferInstance
+
+-- Lifted from find's where block to make sure the Inhabited instance is found
+partial def find.loop [Inhabited α] [Monad m] [MonadState (State α) m] (i : Nat) : m (Nat × α × Nat) := do
+    -- Instance needed in Lean 4.12 and onwards, where there's Nonempty but not Inhabited instances
+    -- for Sum
+    let _ : Inhabited (Nat ⊕ α × Nat) := ⟨.inl default⟩
+    match (← get).contents[i]?.get! with
     | .inl j => loop j
     | .inr (v, sz) => return (i, v, sz)
+
+def find [Inhabited α] [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (x : α) : m (Nat × α × Nat) := do
+  find.loop <| ← insert x
 
 def equate [Inhabited α] [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (x y : α) : m Unit := do
   let mut x' ← find x
