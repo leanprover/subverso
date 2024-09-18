@@ -27,6 +27,7 @@ jobs:
           - "nightly-2024-08-09"
           - "nightly-2024-08-29"
           - "nightly-2024-09-03"
+          - "nightly-2024-09-17"
         platform:
           - os: ubuntu-latest
             installer: |

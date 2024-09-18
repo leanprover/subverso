@@ -73,10 +73,10 @@ elab "#evalString" s:str e:term : command => do
     modify ({· with messages := msgs})
 
 #evalString "[[\"n * 1 = n\"]]\n"
-  (proofEx.highlighted[0].proofStates.data.filter (·.fst == "by") |>.map (·.snd.data.map (·.conclusion)))
+  (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "by") |>.map (·.snd.toList.map (·.conclusion)))
 
 #evalString "[[some `zero], [some `succ], [none], [some `succ.succ], [none]]\n"
-  (proofEx.highlighted[0].proofStates.data.filter (·.fst == "=>") |>.map (·.snd.data.map (·.name)))
+  (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
 
 
 
