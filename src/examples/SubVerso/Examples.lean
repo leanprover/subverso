@@ -271,7 +271,8 @@ private def biDesc : BinderInfo → String
 
 private partial def compare (blame : Syntax): Expr → Expr → MetaM Unit
   | .forallE x t1 b1 bi1, .forallE y t2 b2 bi2 => do
-    if x != y then logErrorAt blame m!"Mismatched parameter name: expected '{x}' but got '{y}'"
+    if x.eraseMacroScopes != y.eraseMacroScopes then
+      logErrorAt blame m!"Mismatched parameter name: expected '{x.eraseMacroScopes}' but got '{y.eraseMacroScopes}'"
     if bi1 != bi2 then logErrorAt blame m!"Mismatched binder of {x}: expected {biDesc bi1} but got {biDesc bi2}"
     if t1.isAppOfArity' ``optParam 2 then
       if t2.isAppOfArity' ``optParam 2 then
@@ -291,6 +292,9 @@ def checkSignature
     (sigName : TSyntax `Lean.Parser.Command.declId)
     (sig : TSyntax `Lean.Parser.Command.declSig)
     : CommandElabM (Array Highlighted × String × String.Pos × String.Pos) := do
+  let (sig, termExamples) := extractExamples sig .empty
+  let sig : TSyntax `Lean.Parser.Command.declSig := ⟨sig⟩
+
   -- First make sure the names won't clash - we want two different declarations to compare.
   let mod ← getMainModule
   let sc ← getCurrMacroScope
@@ -352,6 +356,16 @@ def checkSignature
   let str := text.source.extract leading.startPos trailing.stopPos
   let trees := targetTrees ++ trees
   let hl ← liftTermElabM <| withDeclName `x <| do pure <| #[← highlight sigName #[] trees, ← highlight sig #[] trees]
+
+  for (tmName, term) in termExamples do
+      let hl ← liftTermElabM (highlight term #[] trees)
+      let .original leading startPos _ _ := term.getHeadInfo
+        | throwErrorAt term "Failed to get source position"
+      let .original _ _ trailing stopPos := term.getTailInfo
+        | throwErrorAt term "Failed to get source position"
+      let str := text.source.extract leading.startPos trailing.stopPos
+      modifyEnv fun ρ =>
+        highlighted.addEntry ρ (mod, declName.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
   return (hl, str, startPos, stopPos)
 
 elab_rules : command
