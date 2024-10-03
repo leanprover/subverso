@@ -93,7 +93,7 @@ instance [h1 : Nonempty α] [h2 : Nonempty β] : Nonempty (α × β) :=
       ⟨(x, y)⟩
 
 
-example [Inhabited α] [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (x : α) : Inhabited (m (Nat × α × Nat)) := inferInstance
+example [Inhabited α] [Monad m] [MonadState (State α) m] [BEq α] [Hashable α] (_ : α) : Inhabited (m (Nat × α × Nat)) := inferInstance
 
 -- Lifted from find's where block to make sure the Inhabited instance is found
 partial def find.loop [Inhabited α] [Monad m] [MonadState (State α) m] (i : Nat) : m (Nat × α × Nat) := do
