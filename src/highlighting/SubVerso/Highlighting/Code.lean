@@ -25,6 +25,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .var .. => 2
   | .str .. => 3
   | .const .. => 5
+  | .anonCtor .. => 6
   | .option .. => 4
   | .sort => 4
   | .keyword _ _ _ => 3
@@ -219,6 +220,20 @@ def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMC
       else continue
 
   pure kind
+
+def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
+    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray InfoTree) (stx : Syntax)
+    : m (Option Token.Kind) := do
+  let mut kind : Token.Kind := .unknown
+  for t in trees do
+    for (ci, info) in infoForSyntax t stx do
+      if let some seen ← infoKind ids ci info then
+        if seen.priority > kind.priority then kind := seen
+      else continue
+  return match kind with
+  | .const n sig doc? => some <| .anonCtor n sig doc?
+  | .anonCtor .. => some kind
+  | _ => none
 
 def infoExists [Monad m] [MonadLiftT IO m] (trees : PersistentArray InfoTree) (stx : Syntax) : m Bool := do
   for t in trees do
@@ -710,6 +725,7 @@ partial def highlight'
       tactics := false
   match stx with
   | `($e.%$tk$field:ident) =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
       highlight' ids trees e tactics
       if let some ⟨pos, endPos⟩ := tk.getRange? then
         emitToken tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
@@ -724,26 +740,40 @@ partial def highlight'
       -- identifier (e.g. in `have`) and the user didn't write it.
       pure ()
     | stx@(.ident i _ x _) =>
+        withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier {x}") do
         match x.eraseMacroScopes with
         | .str (.str _ _) _ =>
           match stx.identComponents (nFields? := some 1) with
           | [y, field] =>
+            withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Perhaps a field? {y} {field}") do
             if (← infoExists trees field) then
+              withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Yes, a field!") do
               highlight' ids trees y tactics
               emitToken' <| fakeToken .unknown "."
               highlight' ids trees field tactics
             else
-              emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
-          | _ => emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
-        | _ => emitToken i ⟨← identKind ids trees ⟨stx⟩, x.toString⟩
+              withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Not a field.") do
+              let k ← identKind ids trees ⟨stx⟩
+              withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
+              emitToken i ⟨k, x.toString⟩
+          | _ =>
+            let k ← identKind ids trees ⟨stx⟩
+            withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
+            emitToken i ⟨k, x.toString⟩
+        | _ =>
+          let k ← identKind ids trees ⟨stx⟩
+          withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
+          emitToken i ⟨k, x.toString⟩
     | stx@(.atom i x) =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Keyword while looking at {lookingAt}") do
       let docs ← match lookingAt with
         | none => pure none
         | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
       if let .sort ← identKind ids trees ⟨stx⟩ then
-        emitToken i ⟨.sort, x⟩
+        withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
+          emitToken i ⟨.sort, x⟩
         return
       else
         emitToken i <| (⟨ ·,  x⟩) <|
@@ -759,17 +789,20 @@ partial def highlight'
           else .unknown
         | _ => .unknown
     | .node _ `str #[.atom i string] =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"String") do
       if let some s := Syntax.decodeStrLit string then
         emitToken i ⟨.str s, string⟩
       else
         emitToken i ⟨.unknown, string⟩
     | .node _ ``Lean.Parser.Command.docComment #[.atom i1 opener, .atom i2 body] =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Doc comment") do
       if let .original leading pos ws _ := i1 then
         if let .original ws' _ trailing endPos := i2 then
           emitToken (.original leading pos trailing endPos) ⟨.docComment, opener ++ ws.toString ++ ws'.toString ++ body⟩
           return
       emitString' (opener ++ " " ++ body ++ "\n")
     | .node _ ``Lean.Parser.Term.dotIdent #[dot@(.atom i _), name@(.ident i' _ x _)] =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Dotted identifier") do
       match i, i' with
       | .original leading pos _ _, .original _ _ trailing endPos =>
         let info := .original leading pos trailing endPos
@@ -777,7 +810,23 @@ partial def highlight'
       | _, _ =>
         highlight' ids trees dot tactics
         highlight' ids trees name tactics
+    | .node info k@``Lean.Parser.Term.anonymousCtor #[opener@(.atom oi l), children@(.node _ _ contents), closer@(.atom ci r)] =>
+      if let some tk ← anonCtorKind ids trees stx then
+        emitToken oi ⟨tk, l⟩
+        for child in contents do
+          match child with
+          | .atom commaInfo "," =>
+            emitToken commaInfo ⟨tk, ","⟩
+          | _ =>
+            highlight' ids trees child tactics
+        emitToken ci ⟨tk, r⟩
+      else
+        let pos := stx.getPos?
+        highlight' ids trees opener tactics (lookingAt := pos.map (k, ·))
+        highlight' ids trees children tactics (lookingAt := pos.map (k, ·))
+        highlight' ids trees closer tactics (lookingAt := pos.map (k, ·))
     | .node _ `choice alts =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Choice node with {alts.size} alternatives") do
       -- Arbitrarily select one of the alternatives found by the parser. Otherwise, quotations of
       -- let-bindings with antiquotations as the bound variable leads to doubled bound variables,
       -- because the parser emits a choice node in the quotation. And it's never correct to show
@@ -785,6 +834,7 @@ partial def highlight'
       if h : alts.size > 0 then
         highlight' ids trees alts[0]  tactics
     | stx@(.node _ k children) =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Other node, kind {k}, with {children.size} children") do
       let pos := stx.getPos?
       for child in children do
         highlight' ids trees child tactics (lookingAt := pos.map (k, ·))

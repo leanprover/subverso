@@ -42,6 +42,7 @@ inductive Token.Kind where
   | /-- `occurrence` is a unique identifier that unites the various keyword tokens from a given production -/
     keyword (name : Option Name) (occurrence : Option String) (docs : Option String)
   | const (name : Name) (signature : String) (docs : Option String)
+  | anonCtor (name : Name) (signature : String) (docs : Option String)
   | var (name : FVarId) (type : String)
   | str (string : String)
   | option (name : Name) (declName : Name) (docs : Option String)
@@ -56,6 +57,7 @@ instance : Quote Token.Kind where
   quote
     | .keyword n occ docs => mkCApp ``keyword #[quote n, quote occ, quote docs]
     | .const n sig docs => mkCApp ``const #[quote n, quote sig, quote docs]
+    | .anonCtor n sig docs => mkCApp ``anonCtor #[quote n, quote sig, quote docs]
     | .option n d docs => mkCApp ``option #[quote n, quote d, quote docs]
     | .var (.mk n) type => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type]
     | .str s => mkCApp ``str #[quote s]
