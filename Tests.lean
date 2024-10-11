@@ -45,7 +45,7 @@ def heya : IO Unit := do
   if x == 3 /-
     !! begin foo
   -/ || true /- !! end foo -/ then pure ()
-  let x := [1, 2/- !! begin foo-/, 3/- !! end foo-/]
+  let _ := [1, 2/- !! begin foo-/, 3/- !! end foo-/]
   pure ()
 
 def expectedLog :=
