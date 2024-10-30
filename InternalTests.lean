@@ -72,11 +72,30 @@ elab "#evalString" s:str e:term : command => do
   finally
     modify ({· with messages := msgs})
 
+open Lean Elab Command in
+elab "#evalStrings " "[" ss:str,* "] " e:term : command => do
+  let msgs := (← get).messages
+  try
+    modify ({· with messages := {}})
+    elabCommand <| ← `(#eval $e)
+    let msgs' := (← get).messages
+    let [msg] := msgs'.toList
+      | throwError "Too many messages"
+    let ok := ss.getElems.toList.map (·.getString)
+    if (← msg.toString) ∉ ok then
+      throwErrorAt e "Expected one of {ok.map String.quote}, got {String.quote (← msg.toString)}"
+  finally
+    modify ({· with messages := msgs})
+
 #evalString "[[\"n * 1 = n\"]]\n"
   (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "by") |>.map (·.snd.toList.map (·.conclusion)))
 
-#evalString "[[some `zero], [some `succ], [none], [some `succ.succ], [none]]\n"
-  (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
+#evalStrings [ -- NB #5677 changed goal displays, so the second
+               -- version here became the expected output after
+               -- nightly-2024-10-18.
+    "[[some `zero], [some `succ], [none], [some `succ.succ], [none]]\n",
+    "[[none], [some `succ.succ], [none]]\n"]
+ (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
 
 
 

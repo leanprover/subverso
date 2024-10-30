@@ -1,5 +1,6 @@
 import Lake
 open Lake DSL
+open System (FilePath)
 
 package «subverso» where
   precompileModules := true
