@@ -96,6 +96,35 @@ def refIdentCase (ri : Lsp.RefIdent)
     | .const x => onConst x
   ]
 
+/--
+If the provided syntax is the syntax of the `rw` or `rewrite` tactics, returns the syntax of the
+closing bracket of the rewrite rules. Otherwise returns `none`.
+
+This is needed because the syntax of `rw` changed in 4.14, so it's no longer possible to have a
+quasiquote that matches both versions.
+-/
+def rwTacticRightBracket? (stx : Syntax) : Option Syntax := Id.run do
+  if let .node _ k children := stx then
+    if k ∈ [``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq] then
+      for child in children do
+        match child with
+        | `(Lean.Parser.Tactic.rwRuleSeq|[$_rs,*]%$brak) => return some brak
+        | _ => continue
+  return none
+
+
+namespace List
+-- bind was renamed to flatMap in 4.14
+def flatMap (xs : List α) (f : α → List β) : List β :=
+  %first_succeeding [_root_.List.flatMap xs f, _root_.List.bind xs f]
+end List
+
+namespace Array
+-- back was renamed to back! in 4.14
+def back! [Inhabited α] (xs : Array α) : α :=
+  %first_succeeding [_root_.Array.back! xs, _root_.Array.back xs]
+end Array
+
 abbrev Parsec (α : Type) : Type :=
   %first_succeeding [
     (Lean.Parsec α : Type),

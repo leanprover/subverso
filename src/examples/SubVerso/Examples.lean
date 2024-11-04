@@ -127,8 +127,8 @@ elab_rules : command
     let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
     let .original leading startPos _ _ := allCommands[0]!.getHeadInfo
       | throwErrorAt allCommands[0]! "Failed to get source position"
-    let .original _ _ trailing stopPos := allCommands.back!.getTailInfo
-      | throwErrorAt allCommands.back! "Failed to get source position"
+    let .original _ _ trailing stopPos := Compat.Array.back! allCommands |>.getTailInfo
+      | throwErrorAt (Compat.Array.back! allCommands) "Failed to get source position"
     let text ← getFileMap
     let str := text.source.extract leading.startPos trailing.stopPos
     let mod ← getMainModule

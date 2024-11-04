@@ -701,7 +701,7 @@ partial def findTactics
 
   -- Override states - some tactics show many intermediate states, which is overwhelming in rendered
   -- output. Get the right one to show for the whole thing, then adjust its positioning.
-  if let `(tactic|rw $_c:optConfig [$_rs,*]%$brak $[$_l:location]?) := stx then
+  if let some brak := Compat.rwTacticRightBracket? stx then
     if let some (goals, _startPos, _endPos, _endPosition) ← findTactics ids trees brak then
       return some (goals, startPos.byteIdx, endPos.byteIdx, endPosition)
 
