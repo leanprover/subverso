@@ -235,9 +235,9 @@ def sliceSyntax [Monad m] [MonadEnv m] [MonadError m] [MonadFileMap m] (stx : Sy
   let env ← getEnv
   let mut sliced : HashMap String Syntax := {}
   for (s, _) in ss.toArray do
-    let rem := ss.erase s |>.toList |>.bind (·.snd.toList) |>.toArray
+    let rem := ss.erase s |>.toList |>.flatMap (·.snd.toList) |>.toArray
     sliced := sliced.insert s (removeRanges env rem stx')
-  let residual := removeRanges env (ss.toList.bind (·.snd.toList) |>.toArray) stx'
+  let residual := removeRanges env (ss.toList.flatMap (·.snd.toList) |>.toArray) stx'
 
   return {original := stx, residual, sliced}
 
