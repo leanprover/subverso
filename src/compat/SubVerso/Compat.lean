@@ -113,6 +113,14 @@ def rwTacticRightBracket? (stx : Syntax) : Option Syntax := Id.run do
   return none
 
 
+def getDeclarationRange? [Monad m] [MonadFileMap m] (stx : Syntax) : m (Option DeclarationRange) :=
+  %first_succeeding [Lean.Elab.getDeclarationRange? stx, some <$> Lean.Elab.getDeclarationRange stx]
+
+namespace NameSet
+def union (xs ys : NameSet) : NameSet :=
+  xs.mergeBy (fun _ _ _ => .unit) ys
+end NameSet
+
 namespace List
 -- bind was renamed to flatMap in 4.14
 def flatMap (xs : List α) (f : α → List β) : List β :=

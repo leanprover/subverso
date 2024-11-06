@@ -6,6 +6,7 @@ Author: David Thrane Christiansen
 import Lean.Data.Json
 import Lean.Expr
 import Lean.SubExpr -- for the To/FromJSON FVarId instances
+import SubVerso.Compat
 
 open Lean
 
@@ -41,7 +42,7 @@ private local instance : FromJson Name := ⟨altNameUnJson⟩
 inductive Token.Kind where
   | /-- `occurrence` is a unique identifier that unites the various keyword tokens from a given production -/
     keyword (name : Option Name) (occurrence : Option String) (docs : Option String)
-  | const (name : Name) (signature : String) (docs : Option String)
+  | const (name : Name) (signature : String) (docs : Option String) (isDef : Bool)
   | anonCtor (name : Name) (signature : String) (docs : Option String)
   | var (name : FVarId) (type : String)
   | str (string : String)
@@ -56,7 +57,7 @@ open Syntax (mkCApp) in
 instance : Quote Token.Kind where
   quote
     | .keyword n occ docs => mkCApp ``keyword #[quote n, quote occ, quote docs]
-    | .const n sig docs => mkCApp ``const #[quote n, quote sig, quote docs]
+    | .const n sig docs isDef => mkCApp ``const #[quote n, quote sig, quote docs, quote isDef]
     | .anonCtor n sig docs => mkCApp ``anonCtor #[quote n, quote sig, quote docs]
     | .option n d docs => mkCApp ``option #[quote n, quote d, quote docs]
     | .var (.mk n) type => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type]
@@ -120,6 +121,7 @@ inductive Highlighted where
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.empty : Highlighted := .seq #[]
+
 instance : Append Highlighted where
   append
     | .text str1, .text str2 => .text (str1 ++ str2)
@@ -127,6 +129,15 @@ instance : Append Highlighted where
     | .seq xs,  x => .seq (xs ++ #[x])
     | x, .seq xs => .seq (#[x] ++ xs)
     | x, y => .seq #[x, y]
+
+partial def Highlighted.definedNames : Highlighted → NameSet
+  | .token ⟨tok, _⟩ =>
+    match tok with
+    | .const n _ _ true => NameSet.empty.insert n
+    | _ => {}
+  | .span _ hl | .tactics _ _ _ hl => hl.definedNames
+  | .seq hls => hls.map (·.definedNames) |>.foldr Compat.NameSet.union {}
+  | .text .. | .point .. => {}
 
 open Lean Syntax in
 open Highlighted in
