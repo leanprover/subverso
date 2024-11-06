@@ -6,6 +6,7 @@ Author: David Thrane Christiansen
 import Lean.Data.Json
 import Lean.Expr
 import Lean.SubExpr -- for the To/FromJSON FVarId instances
+import SubVerso.Compat
 
 open Lean
 
@@ -135,7 +136,7 @@ partial def Highlighted.definedNames : Highlighted → NameSet
     | .const n _ _ true => NameSet.empty.insert n
     | _ => {}
   | .span _ hl | .tactics _ _ _ hl => hl.definedNames
-  | .seq hls => hls.map (·.definedNames) |>.foldr NameSet.append {}
+  | .seq hls => hls.map (·.definedNames) |>.foldr Compat.NameSet.union {}
   | .text .. | .point .. => {}
 
 open Lean Syntax in
