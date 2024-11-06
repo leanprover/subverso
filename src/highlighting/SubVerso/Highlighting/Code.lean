@@ -21,6 +21,12 @@ initialize registerTraceClass `SubVerso.Highlighting.Code
 
 namespace SubVerso.Highlighting
 
+structure Context where
+  ids : HashMap Lsp.RefIdent Lsp.RefIdent
+  definitionsPossible : Bool
+
+def Context.noDefinitions (ctxt : Context) : Context := {ctxt with definitionsPossible := false}
+
 partial def Token.Kind.priority : Token.Kind → Nat
   | .var .. => 2
   | .str .. => 3
@@ -148,13 +154,13 @@ where
       go more
 
 def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (ci : ContextInfo) (lctx : LocalContext) (expr : Expr)
-    : m (Option Token.Kind) := do
+    (ci : ContextInfo) (lctx : LocalContext) (expr : Expr)
+    : ReaderT Context m (Option Token.Kind) := do
   let runMeta {α} (act : MetaM α) : m α := ci.runMetaM lctx act
   match ← instantiateMVars expr with
   | Expr.fvar id =>
     let seen ←
-      if let some y := ids[(← Compat.mkRefIdentFVar id)]? then
+      if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
         Compat.refIdentCase y
           (onFVar := fun x => do
             let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
@@ -163,12 +169,12 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
               if localDecl.isAuxDecl then
                 let e ← runMeta <| Meta.ppExpr expr
                 -- FIXME the mkSimple is a bit of a kludge
-                return some (.const (.mkSimple (toString e)) tyStr none)
+                return some (.const (.mkSimple (toString e)) tyStr none false)
             return some (.var x tyStr))
           (onConst := fun x => do
             let sig := toString (← runMeta (PrettyPrinter.ppSignature x)).1
             let docs ← findDocString? (← getEnv) x
-            return some (.const x sig docs))
+            return some (.const x sig docs false))
       else
         let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
         let tyStr := toString (← runMeta <| Meta.ppExpr ty)
@@ -176,14 +182,38 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
   | Expr.const name _ => --TODO universe vars
     let docs ← findDocString? (← getEnv) name
     let sig := toString (← runMeta (PrettyPrinter.ppSignature name)).1
-    return some (.const name sig docs)
+    return some (.const name sig docs false)
   | Expr.sort .. => return some .sort
   | Expr.lit (.strVal s) => return some (.str s)
   | _ => return none
 
-def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
-     (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (ci : ContextInfo) (termInfo : TermInfo)
-    : m (Option Token.Kind) := exprKind ids ci termInfo.lctx termInfo.expr
+/-- Checks whether an occurrence of a name is in fact the definition of the name -/
+def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name : Name) (stx : Syntax) : m Bool := do
+  -- This gets called a lot, so it's important to bail early if it's not likely to be a global
+  -- definition. Right now, all global definitions in Lean use `declId` to enable explicit universe
+  -- polymorphism, except for constructors. This does mean that `example` and `instance` won't work
+  -- yet, but they're a more marginal use case - there's no name to hyperlink to them in rendered
+  -- HTML.
+  if !((← getEnv).isConstructor name || (← getEnv).isProjectionFn name || stx.getKind == ``Parser.Command.declId) then return false
+  if stx.getHeadInfo == .none then return false
+  let ranges :=
+    if let some r := (← findDeclarationRangesCore? name) then
+      some r
+    else (← builtinDeclRanges.get (m := IO)).find? name
+  if let some declRanges := ranges then
+    let some range ← Compat.getDeclarationRange? stx | return false
+    return range == declRanges.range || range == declRanges.selectionRange
+  return false
+
+def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
+    (ci : ContextInfo) (termInfo : TermInfo)
+    : ReaderT Context m (Option Token.Kind) := do
+  let k ← exprKind ci termInfo.lctx termInfo.expr
+  if (← read).definitionsPossible then
+    if let some (.const name sig docs _isDef) := k then
+      (some ∘ .const name sig docs) <$> (fun _ctxt => isDefinition name termInfo.stx)
+    else return k
+  else return k
 
 def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
     (ci : ContextInfo) (fieldInfo : FieldInfo)
@@ -192,13 +222,13 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
   let ty ← instantiateMVars (← runMeta <| Meta.inferType fieldInfo.val)
   let tyStr := toString (← runMeta <| Meta.ppExpr ty)
   let docs ← findDocString? (← getEnv) fieldInfo.projName
-  return .const fieldInfo.projName tyStr docs
+  return .const fieldInfo.projName tyStr docs false
 
-def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
-     (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (ci : ContextInfo) (info : Info)
-    : m (Option Token.Kind) := do
+def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
+    (ci : ContextInfo) (info : Info)
+    : ReaderT Context m (Option Token.Kind) := do
   match info with
-    | .ofTermInfo termInfo => termInfoKind ids ci termInfo
+    | .ofTermInfo termInfo => termInfoKind ci termInfo
     | .ofFieldInfo fieldInfo => some <$> fieldInfoKind ci fieldInfo
     | .ofOptionInfo oi =>
       let doc := (← getOptionDecls).find? oi.optionName |>.map (·.descr)
@@ -210,28 +240,28 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
       pure none
 
 def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray InfoTree) (stx : TSyntax `ident)
-    : m Token.Kind := do
+    (trees : PersistentArray InfoTree) (stx : TSyntax `ident)
+    : ReaderT Context m Token.Kind := do
   let mut kind : Token.Kind := .unknown
   for t in trees do
     for (ci, info) in infoForSyntax t stx do
-      if let some seen ← infoKind ids ci info then
+      if let some seen ← infoKind ci info then
         if seen.priority > kind.priority then kind := seen
       else continue
 
   pure kind
 
 def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (trees : PersistentArray InfoTree) (stx : Syntax)
-    : m (Option Token.Kind) := do
+    (trees : PersistentArray InfoTree) (stx : Syntax)
+    : ReaderT Context m (Option Token.Kind) := do
   let mut kind : Token.Kind := .unknown
   for t in trees do
     for (ci, info) in infoForSyntax t stx do
-      if let some seen ← infoKind ids ci info then
+      if let some seen ← infoKind ci info then
         if seen.priority > kind.priority then kind := seen
       else continue
   return match kind with
-  | .const n sig doc? => some <| .anonCtor n sig doc?
+  | .const n sig doc? _ => some <| .anonCtor n sig doc?
   | .anonCtor .. => some kind
   | _ => none
 
@@ -373,7 +403,7 @@ where
     else
       pure <| !(msg.pos.before s) && !(e.before msg.pos)
 
-abbrev HighlightM (α : Type) : Type := StateT HighlightState TermElabM α
+abbrev HighlightM (α : Type) : Type := ReaderT Context (StateT HighlightState TermElabM) α
 
 private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
   | [] => none
@@ -401,7 +431,7 @@ def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPo
   modify fun st => st.openTactic info startPos endPos pos
 
 instance : Inhabited (HighlightM α) where
-  default := fun _ => default
+  default := fun _ _ => default
 
 def nextMessage? : HighlightM (Option MessageBundle) := do
   let st ← get
@@ -523,9 +553,9 @@ partial def childHasTactics (stx : Syntax) (trees : PersistentArray Lean.Elab.In
   | _ => pure false
 
 
-partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent) (outer : Option Token.Kind) (doc : CodeWithInfos)
-    : m Highlighted := do
+partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
+    (outer : Option Token.Kind) (doc : CodeWithInfos)
+    : ReaderT Context m Highlighted := do
   match doc with
   | .text txt => do
     -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
@@ -562,13 +592,13 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
   | .tag t doc' =>
     let ⟨{ctx, info, children := _}⟩ := t.info
     if let .text tok := doc' then
-      if let some k ← infoKind ids ctx info then
+      if let some k ← infoKind ctx info then
         pure <| .token ⟨k, tok⟩
       else pure <| .text tok
     else
-      let k? ← infoKind ids ctx info
-      renderTagged ids k? doc'
-  | .append xs => .seq <$> xs.mapM (renderTagged ids outer)
+      let k? ← infoKind ctx info
+      renderTagged k? doc'
+  | .append xs => .seq <$> xs.mapM (renderTagged outer)
 where
   tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
@@ -586,10 +616,9 @@ partial def _root_.Lean.Widget.TaggedText.indent (doc : TaggedText α) : TaggedT
   .append #[.text "  ", indent' doc]
 
 def highlightGoals
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
     (ci : ContextInfo)
     (goals : List MVarId)
-    : HighlightM (Array (Highlighted.Goal Highlighted)) := do
+    : HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
   let mut goalView := #[]
   for g in goals do
     let mut hyps := #[]
@@ -609,23 +638,22 @@ def highlightGoals
       if decl.isAuxDecl || decl.isImplementationDetail then continue
       match decl with
       | .cdecl _index fvar name type _ _ =>
-        let nk ← exprKind ids ci lctx (.fvar fvar)
-        let tyStr ← renderTagged ids none (← runMeta (ppExprTagged =<< instantiateMVars type))
+        let nk ← exprKind ci lctx (.fvar fvar)
+        let tyStr ← renderTagged none (← runMeta (ppExprTagged =<< instantiateMVars type))
         hyps := hyps.push (name, nk.getD .unknown, tyStr)
       | .ldecl _index fvar name type val _ _ =>
-        let nk ← exprKind ids ci lctx (.fvar fvar)
+        let nk ← exprKind ci lctx (.fvar fvar)
         let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
         let valDoc ← runMeta (ppExprTagged =<< instantiateMVars val)
-        let tyValStr ← renderTagged ids none <| .append <| #[tyDoc].append <|
+        let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
         hyps := hyps.push (name, nk.getD .unknown, tyValStr)
-    let concl ← renderTagged ids none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
+    let concl ← renderTagged none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
 
 partial def findTactics'
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (stx : Syntax)
     (startPos endPos : String.Pos)
@@ -644,14 +672,13 @@ partial def findTactics'
 
         let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
         if goals.isEmpty then continue
-        let goalView ← highlightGoals ids ci goals
+        let goalView ← highlightGoals ci goals
 
         if !Output.inTacticState (← get).output goalView then
           return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
   return none
 
 partial def findTactics
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (stx : Syntax)
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) :=
@@ -677,7 +704,7 @@ partial def findTactics
           | `(Lean.Parser.Term.byTactic| by%$tk $tactics)
           | `(Lean.Parser.Term.byTactic'| by%$tk $tactics) =>
             if tk == stx then
-              return (← findTactics' ids trees tactics startPos endPos endPosition (before := true))
+              return (← findTactics' trees tactics startPos endPos endPosition (before := true))
           | _ => continue
 
   -- Special handling for =>: show the _before state_
@@ -692,7 +719,7 @@ partial def findTactics
           | `(tactic| case $_ $_* =>%$tk $rhs )
           | `(tactic| case' $_ $_* =>%$tk $rhs ) =>
             if tk == stx then
-              return (← findTactics' ids trees rhs startPos endPos endPosition (before := true))
+              return (← findTactics' trees rhs startPos endPos endPosition (before := true))
           | _ => continue
 
   -- Only show tactic output for the most specific source spans possible, with a few exceptions
@@ -702,14 +729,13 @@ partial def findTactics
   -- Override states - some tactics show many intermediate states, which is overwhelming in rendered
   -- output. Get the right one to show for the whole thing, then adjust its positioning.
   if let some brak := Compat.rwTacticRightBracket? stx then
-    if let some (goals, _startPos, _endPos, _endPosition) ← findTactics ids trees brak then
+    if let some (goals, _startPos, _endPos, _endPosition) ← findTactics trees brak then
       return some (goals, startPos.byteIdx, endPos.byteIdx, endPosition)
 
-  findTactics' ids trees stx startPos endPos endPosition
+  findTactics' trees stx startPos endPos endPosition
 
 
 partial def highlight'
-    (ids : HashMap Lsp.RefIdent Lsp.RefIdent)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (stx : Syntax)
     (tactics : Bool)
@@ -718,7 +744,7 @@ partial def highlight'
   withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting {stx}") do
   let mut tactics := tactics
   if tactics then
-    if let some (tacticInfo, startPos, endPos, position) ← findTactics ids trees stx then
+    if let some (tacticInfo, startPos, endPos, position) ← findTactics trees stx then
       HighlightM.openTactic tacticInfo startPos endPos position
       -- No nested tactics - the tactic search process should only have returned results
       -- on "leaf" nodes anyway
@@ -726,12 +752,12 @@ partial def highlight'
   match stx with
   | `($e.%$tk$field:ident) =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
-      highlight' ids trees e tactics
+      highlight' trees e tactics
       if let some ⟨pos, endPos⟩ := tk.getRange? then
         emitToken tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
       else
         emitString' "."
-      highlight' ids trees field tactics
+      highlight' trees field tactics
   | _ =>
     match stx with
     | .missing => pure () -- TODO emit unhighlighted string
@@ -748,20 +774,20 @@ partial def highlight'
             withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Perhaps a field? {y} {field}") do
             if (← infoExists trees field) then
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Yes, a field!") do
-              highlight' ids trees y tactics
+              highlight' trees y tactics
               emitToken' <| fakeToken .unknown "."
-              highlight' ids trees field tactics
+              highlight' trees field tactics
             else
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Not a field.") do
-              let k ← identKind ids trees ⟨stx⟩
+              let k ← identKind trees ⟨stx⟩
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
               emitToken i ⟨k, x.toString⟩
           | _ =>
-            let k ← identKind ids trees ⟨stx⟩
+            let k ← identKind trees ⟨stx⟩
             withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
             emitToken i ⟨k, x.toString⟩
         | _ =>
-          let k ← identKind ids trees ⟨stx⟩
+          let k ← identKind trees ⟨stx⟩
           withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
           emitToken i ⟨k, x.toString⟩
     | stx@(.atom i x) =>
@@ -771,7 +797,7 @@ partial def highlight'
         | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
-      if let .sort ← identKind ids trees ⟨stx⟩ then
+      if let .sort ← identKind trees ⟨stx⟩ then
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
           emitToken i ⟨.sort, x⟩
         return
@@ -806,25 +832,25 @@ partial def highlight'
       match i, i' with
       | .original leading pos _ _, .original _ _ trailing endPos =>
         let info := .original leading pos trailing endPos
-        emitToken info ⟨← identKind ids trees ⟨stx⟩, s!".{x.toString}"⟩
+        emitToken info ⟨← identKind trees ⟨stx⟩, s!".{x.toString}"⟩
       | _, _ =>
-        highlight' ids trees dot tactics
-        highlight' ids trees name tactics
+        highlight' trees dot tactics
+        highlight' trees name tactics
     | .node info k@``Lean.Parser.Term.anonymousCtor #[opener@(.atom oi l), children@(.node _ _ contents), closer@(.atom ci r)] =>
-      if let some tk ← anonCtorKind ids trees stx then
+      if let some tk ← anonCtorKind trees stx then
         emitToken oi ⟨tk, l⟩
         for child in contents do
           match child with
           | .atom commaInfo "," =>
             emitToken commaInfo ⟨tk, ","⟩
           | _ =>
-            highlight' ids trees child tactics
+            highlight' trees child tactics
         emitToken ci ⟨tk, r⟩
       else
         let pos := stx.getPos?
-        highlight' ids trees opener tactics (lookingAt := pos.map (k, ·))
-        highlight' ids trees children tactics (lookingAt := pos.map (k, ·))
-        highlight' ids trees closer tactics (lookingAt := pos.map (k, ·))
+        highlight' trees opener tactics (lookingAt := pos.map (k, ·))
+        highlight' trees children tactics (lookingAt := pos.map (k, ·))
+        highlight' trees closer tactics (lookingAt := pos.map (k, ·))
     | .node _ `choice alts =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Choice node with {alts.size} alternatives") do
       -- Arbitrarily select one of the alternatives found by the parser. Otherwise, quotations of
@@ -832,22 +858,22 @@ partial def highlight'
       -- because the parser emits a choice node in the quotation. And it's never correct to show
       -- both alternatives!
       if h : alts.size > 0 then
-        highlight' ids trees alts[0]  tactics
+        highlight' trees alts[0]  tactics
     | stx@(.node _ k children) =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Other node, kind {k}, with {children.size} children") do
       let pos := stx.getPos?
       for child in children do
-        highlight' ids trees child tactics (lookingAt := pos.map (k, ·))
+        highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
 def highlight (stx : Syntax) (messages : Array Message) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM Highlighted := do
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
   let st ← HighlightState.ofMessages stx messages
-  let ((), {output := output, ..}) ← StateT.run (highlight' ids trees stx true) st
+  let ((), {output := output, ..}) ← StateT.run (ReaderT.run (highlight' trees stx true) ⟨ids, true⟩) st
   pure <| .fromOutput output
 
 def highlightProofState (ci : ContextInfo) (goals : List MVarId) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM (Array (Highlighted.Goal Highlighted)) := do
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
-  let (hlGoals, _) ← StateT.run (highlightGoals ids ci goals) .empty
+  let (hlGoals, _) ← StateT.run (ReaderT.run (highlightGoals ci goals) ⟨ids, false⟩) .empty
   pure hlGoals
