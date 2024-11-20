@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
 import Lean.Elab
+import Lean.Util.Paths
 
 open Lean Elab Term
 
@@ -115,6 +116,17 @@ def rwTacticRightBracket? (stx : Syntax) : Option Syntax := Id.run do
 
 def getDeclarationRange? [Monad m] [MonadFileMap m] (stx : Syntax) : m (Option DeclarationRange) :=
   %first_succeeding [Lean.Elab.getDeclarationRange? stx, some <$> Lean.Elab.getDeclarationRange stx]
+
+def messageLogArray (msgs : Lean.MessageLog) : Array Lean.Message := %first_succeeding [msgs.toArray, msgs.msgs.toArray]
+
+def initSrcSearchPath (pkgSearchPath : SearchPath := ∅) : IO SearchPath := do
+  %first_succeeding [
+    Lean.initSrcSearchPath (pkgSearchPath := pkgSearchPath),
+    Lean.initSrcSearchPath (sp := pkgSearchPath),
+    -- leanSysRoot seems to never have been used by this function
+    Lean.initSrcSearchPath (leanSysroot := "") (sp := pkgSearchPath),
+    Lean.initSrcSearchPath (_leanSysroot := "") (sp := pkgSearchPath)
+  ]
 
 namespace NameSet
 def union (xs ys : NameSet) : NameSet :=
