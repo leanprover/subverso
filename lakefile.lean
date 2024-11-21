@@ -116,10 +116,12 @@ library_facet examples lib : FilePath := do
   moduleJobs.bindSync fun () trace => do
     pure (hlDir, trace)
 
+
 package_facet highlighted pkg : FilePath := do
   let ws ← getWorkspace
   let libs := pkg.leanLibs
-  let libJobs ← BuildJob.mixArray <| ← libs.mapM (fetch <| ·.facet `highlighted)
+  let exes := pkg.leanExes.map (·.toLeanLib)
+  let libJobs ← BuildJob.mixArray <| ← (libs ++ exes).mapM (fetch <| ·.facet `highlighted)
   let buildDir := ws.root.buildDir
   let hlDir := buildDir / "highlighted"
   libJobs.bindSync fun () trace => do
