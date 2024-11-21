@@ -24,7 +24,7 @@ def main : (args : List String) → IO UInt32
         if let some fname ← sp.findModuleWithExt "lean" modName then
           pure fname
         else
-          throw <| IO.userError s!"Failed to load {modName}"
+          throw <| IO.userError s!"Failed to load {modName} from {sp}"
       let ictx := Parser.mkInputContext (← IO.FS.readFile fname) fname.toString
       let (headerStx, parserState, msgs) ← Parser.parseHeader ictx
       let imports := headerToImports headerStx
