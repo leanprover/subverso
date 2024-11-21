@@ -20,6 +20,7 @@ def main : (args : List String) → IO UInt32
       let modName := mod.toName
 
       let sp ← Compat.initSrcSearchPath
+      let sp : SearchPath := (sp : List System.FilePath) ++ [("." : System.FilePath)]
       let fname ← do
         if let some fname ← sp.findModuleWithExt "lean" modName then
           pure fname
