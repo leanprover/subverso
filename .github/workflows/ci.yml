@@ -96,6 +96,7 @@ jobs:
           pushd demo
           lake update
           lake build :examples
+          lake build :highlighted
           popd
 
       - name: Run tests
