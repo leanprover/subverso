@@ -18,10 +18,10 @@ elab "#test_slicing" s:str out:ident c:command : command => do
 
   let mut log := ""
 
-  log := log ++ s!"Original:\n{Syntax.prettyPrint c}"
-  log := log ++ s!"Residual:\n{Syntax.prettyPrint residual}"
+  log := log ++ s!"Original:\n{Syntax.prettyPrint c}\n"
+  log := log ++ s!"Residual:\n{Syntax.prettyPrint residual}\n"
   for (s, stx) in sliced.toArray do
-    log := log ++ s!"Slice {s}:\n{Syntax.prettyPrint stx}"
+    log := log ++ s!"Slice {s}:\n{Syntax.prettyPrint stx}\n"
 
   let use := s.getString
   if let some stx := sliced[use]? then
@@ -48,8 +48,13 @@ def heya : IO Unit := do
   let _ := [1, 2/- !! begin foo-/, 3/- !! end foo-/]
   pure ()
 
+/-- Lean versions 4.10.0 and earlier had some issues with Syntax.prettyPrint. They were fixed in 4.11, but as that's not really what's being tested, both are OK. -/
+def expectedLogOld :=
+  "Original:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  -- !! begin foo\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  -- !! end foo\n  let x := 33 -- !! begin foo\n  if x > 3 then pure () -- !! end foo\n  if x == 3 /-\n    !! begin foo\n  -/ || true /- !! end foo -/ then pure ()\n  let _ := [1, 2/- !! begin foo-/, 3/- !! end foo-/]\n  pure ( ) \nResidual:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  let x := 33 \n  if x == 3  then pure ()\n  let _ := [1, 2]\n  pure ( ) \nSlice foo:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  let x := 33 \n  if x > 3 then pure () \n  if x == 3  || true  then pure ()\n  let _ := [1, 2, 3]\n  pure ( ) \n"
+
+
 def expectedLog :=
-  "Original:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  -- !! begin foo\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  -- !! end foo\n  let x := 33 -- !! begin foo\n  if x > 3 then pure () -- !! end foo\n  if x == 3 /-\n    !! begin foo\n  -/ || true /- !! end foo -/ then pure ()\n  let x := [1, 2/- !! begin foo-/, 3/- !! end foo-/]\n  pure ( ) Residual:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  let x := 33 \n  if x == 3  then pure ()\n  let x := [1, 2]\n  pure ( ) Slice foo:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  let x := 33 \n  if x > 3 then pure () \n  if x == 3  || true  then pure ()\n  let x := [1, 2, 3]\n  pure ( ) "
+  "Original:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  -- !! begin foo\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  -- !! end foo\n  let x := 33 -- !! begin foo\n  if x > 3 then pure () -- !! end foo\n  if x == 3 /-\n    !! begin foo\n  -/ || true /- !! end foo -/ then pure ()\n  let _ := [1, 2/- !! begin foo-/, 3/- !! end foo-/]\n  pure ()\nResidual:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  let x := 33 \n  if x == 3  then pure ()\n  let _ := [1, 2]\n  pure ()\nSlice foo:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  let x := 33 \n  if x > 3 then pure () \n  if x == 3  || true  then pure ()\n  let _ := [1, 2, 3]\n  pure ()\n"
 
 end
 
@@ -139,11 +144,13 @@ def checkIsLinted (examples : NameMap (NameMap Example)) : IO Unit := do
 
 def main : IO UInt32 := do
   IO.println "Checking the slice log"
-  if sliceLog != expectedLog then
+  -- The pretty-printer used to show the modified syntax had some bug-fixes. We can just check both.
+  if sliceLog != expectedLog && sliceLog != expectedLogOld then
     IO.println "Mismatch between expected:"
-    IO.println sliceLog
-    IO.println "and actual:"
     IO.println expectedLog
+    IO.println "and actual:"
+    IO.println sliceLog
+    return 1
 
   IO.println "Checking that the TOML project will load"
   cleanupDemo (demo := "demo-toml")
