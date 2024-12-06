@@ -38,7 +38,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .docComment => 1
   | .unknown => 0
 
--- Find all info nodes whose canonical span matches the given syntax
+/-- Finds all info nodes whose canonical span matches the given syntax -/
 def infoForSyntax (t : InfoTree) (stx : Syntax) : List (ContextInfo × Info) :=
   t.collectNodesBottomUp fun ci info _ soFar =>
     if info.stx.getPos? true == stx.getPos? true &&
@@ -157,35 +157,40 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
     (ci : ContextInfo) (lctx : LocalContext) (expr : Expr)
     : ReaderT Context m (Option Token.Kind) := do
   let runMeta {α} (act : MetaM α) : m α := ci.runMetaM lctx act
-  match ← instantiateMVars expr with
-  | Expr.fvar id =>
-    let seen ←
-      if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
-        Compat.refIdentCase y
-          (onFVar := fun x => do
-            let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
-            let tyStr := toString (← runMeta <| Meta.ppExpr ty)
-            if let some localDecl := lctx.find? x then
-              if localDecl.isAuxDecl then
-                let e ← runMeta <| Meta.ppExpr expr
-                -- FIXME the mkSimple is a bit of a kludge
-                return some (.const (.mkSimple (toString e)) tyStr none false)
-            return some (.var x tyStr))
-          (onConst := fun x => do
-            let sig := toString (← runMeta (PrettyPrinter.ppSignature x)).1
-            let docs ← findDocString? (← getEnv) x
-            return some (.const x sig docs false))
-      else
-        let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
-        let tyStr := toString (← runMeta <| Meta.ppExpr ty)
-        return some (.var id tyStr)
-  | Expr.const name _ => --TODO universe vars
-    let docs ← findDocString? (← getEnv) name
-    let sig := toString (← runMeta (PrettyPrinter.ppSignature name)).1
-    return some (.const name sig docs false)
-  | Expr.sort .. => return some .sort
-  | Expr.lit (.strVal s) => return some (.str s)
-  | _ => return none
+  let rec findKind? e := do
+    match e with
+    | Expr.fvar id =>
+      let seen ←
+        if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
+          Compat.refIdentCase y
+            (onFVar := fun x => do
+              let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
+              let tyStr := toString (← runMeta <| Meta.ppExpr ty)
+              if let some localDecl := lctx.find? x then
+                if localDecl.isAuxDecl then
+                  let e ← runMeta <| Meta.ppExpr expr
+                  -- FIXME the mkSimple is a bit of a kludge
+                  return some (.const (.mkSimple (toString e)) tyStr none false)
+              return some (.var x tyStr))
+            (onConst := fun x => do
+              let sig := toString (← runMeta (PrettyPrinter.ppSignature x)).1
+              let docs ← findDocString? (← getEnv) x
+              return some (.const x sig docs false))
+        else
+          let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
+          let tyStr := toString (← runMeta <| Meta.ppExpr ty)
+          return some (.var id tyStr)
+    | Expr.const name _ =>
+      let docs ← findDocString? (← getEnv) name
+      let sig := toString (← runMeta (PrettyPrinter.ppSignature name)).1
+      return some (.const name sig docs false)
+    | Expr.sort .. => return some .sort
+    | Expr.lit (.strVal s) => return some (.str s)
+    | Expr.mdata _ e =>
+      findKind? e
+    | _other =>
+      return none
+  findKind? (← instantiateMVars expr)
 
 /-- Checks whether an occurrence of a name is in fact the definition of the name -/
 def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name : Name) (stx : Syntax) : m Bool := do
@@ -208,6 +213,10 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
 def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
     (ci : ContextInfo) (termInfo : TermInfo)
     : ReaderT Context m (Option Token.Kind) := do
+  let text ← fun _ => getFileMap
+  let p := do
+    let pos ← termInfo.stx.getPos?
+    pure <| text.utf8PosToLspPos pos
   let k ← exprKind ci termInfo.lctx termInfo.expr
   if (← read).definitionsPossible then
     if let some (.const name sig docs _isDef) := k then
@@ -235,8 +244,10 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMa
       pure <| some <| .option oi.optionName oi.declName doc
     | .ofCompletionInfo _ => pure none
     | .ofTacticInfo _ => pure none
+    | .ofCommandInfo _ => pure none
+    | .ofMacroExpansionInfo _ => pure none
+    | .ofUserWidgetInfo _ => pure none
     | _ =>
-      -- dbg_trace (← info.format ci)
       pure none
 
 def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
@@ -248,7 +259,6 @@ def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMC
       if let some seen ← infoKind ci info then
         if seen.priority > kind.priority then kind := seen
       else continue
-
   pure kind
 
 def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
