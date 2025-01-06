@@ -2,6 +2,47 @@ import Lake
 open Lake DSL
 open System (FilePath)
 
+-- Minimal compatibility infrastructure to make this file cross-compatible with more Lean/Lake versions
+namespace Compat
+
+open Lean Elab Term in
+elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
+  let mut errs := #[]
+  let msgs ← Core.getMessageLog
+  for e in es.getElems do
+    Core.setMessageLog msgs
+    try
+      let expr ←
+        withReader ({· with errToSorry := false}) <|
+            elabTermEnsuringType e (some ty)
+      let ty' ← Meta.inferType expr
+      if ← Meta.isDefEq ty ty' then
+        return expr
+    catch err =>
+      errs := errs.push (e, err)
+      continue
+  let msgErrs := errs.toList.map fun (tm, msg) => m!"{tm}: {indentD msg.toMessageData}"
+  throwError m!"No alternative succeeded. Attempts were: " ++
+    indentD (MessageData.joinSep msgErrs Format.line)
+
+-- Compatibility shims for older Lake (where logging was manual) and
+-- newer Lake (where it isn't). Necessary from Lean 4.8.0 and up.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let m := mkIdent `m
+  if !env.contains `Lake.logStep || Linter.isDeprecated env `Lake.logStep then
+    elabCommand <| ← `(def $(mkIdent `logStep) [Pure $m] (message : String) : $m Unit := pure ())
+  else
+    elabCommand <| ← `(def $(mkIdent `logStep) := @Lake.logStep)
+  if !env.contains `Lake.logInfo || Linter.isDeprecated env `Lake.logStep then
+    elabCommand <| ← `(def $(mkIdent `logInfo) [Pure $m] (message : String) : $m Unit := pure ())
+  else
+    elabCommand <| ← `(def $(mkIdent `logInfo) := @Lake.logInfo)
+
+end Compat
+-- End compatibility infrastructure
+
 package «subverso» where
   precompileModules := true
   -- add package configuration options here
@@ -39,18 +80,6 @@ lean_exe «subverso-extract-mod» where
   supportInterpreter := true
 
 
--- Compatibility shims for older Lake (where logging was manual) and
--- newer Lake (where it isn't). Necessary from Lean 4.8.0 and up.
-section
-open Lean Elab Command
-#eval show CommandElabM Unit from do
-  let env ← getEnv
-  if !env.contains `Lake.logStep then
-    elabCommand <| ← `(def $(mkIdent `logStep) [Pure $(mkIdent `m)] (message : String) : $(mkIdent `m) Unit := pure ())
-  if !env.contains `Lake.logInfo then
-    elabCommand <| ← `(def $(mkIdent `logInfo) [Pure $(mkIdent `m)] (message : String) : $(mkIdent `m) Unit := pure ())
-end
-
 module_facet highlighted mod : FilePath := do
   let ws ← getWorkspace
   let some extract ← findLeanExe? `«subverso-extract-mod»
@@ -62,17 +91,28 @@ module_facet highlighted mod : FilePath := do
   let buildDir := ws.root.buildDir
   let hlFile := mod.filePath (buildDir / "highlighted") "json"
 
-  exeJob.bindAsync fun exeFile exeTrace =>
-    modJob.bindSync fun _oleanPath modTrace => do
-      let depTrace := mixTrace exeTrace modTrace
-      let trace ← buildFileUnlessUpToDate hlFile depTrace do
-        logStep s!"Exporting highlighted source file JSON for '{mod.name}'"
-        proc {
-          cmd := exeFile.toString
-          args := #[mod.name.toString, hlFile.toString]
-          env := ← getAugmentedEnv
-        }
-      pure (hlFile, trace)
+  %first_succeeding [
+    exeJob.bindM fun exeFile =>
+      modJob.mapM fun _oleanPath => do
+        buildFileUnlessUpToDate' (text := true) hlFile <|
+          proc {
+            cmd := exeFile.toString
+            args :=  #[mod.name.toString, hlFile.toString]
+            env := ← getAugmentedEnv
+          }
+        pure hlFile,
+    exeJob.bindAsync fun exeFile exeTrace =>
+      modJob.bindSync fun _oleanPath modTrace => do
+        let depTrace := mixTrace exeTrace modTrace
+        let trace ← buildFileUnlessUpToDate hlFile depTrace do
+          Compat.logStep s!"Exporting highlighted source file JSON for '{mod.name}'"
+          proc {
+            cmd := exeFile.toString
+            args := #[mod.name.toString, hlFile.toString]
+            env := ← getAugmentedEnv
+          }
+        pure (hlFile, trace)
+  ]
 
 module_facet examples mod : FilePath := do
   let ws ← getWorkspace
@@ -85,17 +125,28 @@ module_facet examples mod : FilePath := do
   let buildDir := ws.root.buildDir
   let hlFile := mod.filePath (buildDir / "examples") "json"
 
-  exeJob.bindAsync fun exeFile exeTrace =>
-    modJob.bindSync fun _oleanPath modTrace => do
-      let depTrace := mixTrace exeTrace modTrace
-      let trace ← buildFileUnlessUpToDate hlFile depTrace do
-        logStep s!"Exporting highlighted example JSON for '{mod.name}'"
-        proc {
-          cmd := exeFile.toString
-          args := #[mod.name.toString, hlFile.toString]
-          env := ← getAugmentedEnv
-        }
-      pure (hlFile, trace)
+  %first_succeeding [
+    exeJob.bindM fun exeFile =>
+      modJob.mapM fun _oleanPath => do
+        buildFileUnlessUpToDate' (text := true) hlFile do
+          proc {
+            cmd := exeFile.toString
+            args := #[mod.name.toString, hlFile.toString]
+            env := ← getAugmentedEnv
+          }
+        pure hlFile,
+    exeJob.bindAsync fun exeFile exeTrace =>
+      modJob.bindSync fun _oleanPath modTrace => do
+        let depTrace := mixTrace exeTrace modTrace
+        let trace ← buildFileUnlessUpToDate hlFile depTrace do
+          Compat.logStep s!"Exporting highlighted example JSON for '{mod.name}'"
+          proc {
+            cmd := exeFile.toString
+            args := #[mod.name.toString, hlFile.toString]
+            env := ← getAugmentedEnv
+          }
+        pure (hlFile, trace)
+  ]
 
 library_facet highlighted lib : FilePath := do
   let ws ← getWorkspace
@@ -125,7 +176,7 @@ package_facet highlighted pkg : FilePath := do
   let buildDir := ws.root.buildDir
   let hlDir := buildDir / "highlighted"
   libJobs.bindSync fun () trace => do
-    logInfo s!"Highlighted code written to '{hlDir}'"
+    Compat.logInfo s!"Highlighted code written to '{hlDir}'"
     pure (hlDir, trace)
 
 package_facet examples pkg : FilePath := do
@@ -135,5 +186,5 @@ package_facet examples pkg : FilePath := do
   let buildDir := ws.root.buildDir
   let hlDir := buildDir / "examples"
   libJobs.bindSync fun () trace => do
-    logInfo s!"Highlighted code written to '{hlDir}'"
+    Compat.logInfo s!"Highlighted code written to '{hlDir}'"
     pure (hlDir, trace)

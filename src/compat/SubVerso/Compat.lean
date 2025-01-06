@@ -31,7 +31,9 @@ def realizeNameNoOverloads
 
 elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
   let mut errs := #[]
+  let msgs ← Core.getMessageLog
   for e in es.getElems do
+    Core.setMessageLog msgs
     try
       let expr ←
         withReader ({· with errToSorry := false}) <|

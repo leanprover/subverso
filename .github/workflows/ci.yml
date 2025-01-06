@@ -26,8 +26,9 @@ jobs:
           - "4.12.0"
           - "4.13.0"
           - "4.14.0"
-          - "4.15.0-rc1"
-          - "nightly-2024-11-04"
+          - "4.15.0"
+          - "4.16.0-rc1"
+          - "nightly-2025-01-05"
         platform:
           - os: ubuntu-latest
             installer: |
