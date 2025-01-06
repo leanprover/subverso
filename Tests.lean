@@ -160,7 +160,7 @@ def main : IO UInt32 := do
     return 1
   else IO.println s!"Found {proofCount examplesToml} proofs"
 
-  IO.println "Checking that the test project generates at least some deserializable JSON"
+  IO.println "Checking that the test project generates at least some deserializable JSON with 4.3.0"
   cleanupDemo
   let examples ← loadExamples "demo"
   if examples.isEmpty then
@@ -174,23 +174,23 @@ def main : IO UInt32 := do
 
   IO.println "Checking that the test project generates at least some deserializable JSON with 4.8.0"
   cleanupDemo
-  let examples' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:nightly-2024-04-25")
+  let examples' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:v4.8.0")
   if examples'.isEmpty then
     IO.eprintln "No examples found with later toolchain"
     return 1
-  checkVersion "4.8.0-nightly-2024-04-25" examples'
+  checkVersion "4.8.0" examples'
   checkHasSorry examples'
   checkIsLinted examples'
   let proofCount2 := proofCount examples'
   IO.println s!"Found {proofCount2} proofs "
 
-  IO.println "Checking that the test project generates at least some deserializable JSON with 4.10.0-rc1"
+  IO.println "Checking that the test project generates at least some deserializable JSON with 4.10.0"
   cleanupDemo
-  let examples'' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:4.10.0-rc1")
+  let examples'' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:4.10.0")
   if examples''.isEmpty then
     IO.eprintln "No examples found with later toolchain"
     return 1
-  checkVersion "4.10.0-rc1" examples''
+  checkVersion "4.10.0" examples''
   checkHasSorry examples''
   checkIsLinted examples''
   let proofCount3 := proofCount examples''

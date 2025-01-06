@@ -7,6 +7,7 @@ namespace Compat
 
 open Lean Elab Term in
 elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
+  dbg_trace "heya"
   let mut errs := #[]
   let msgs ← Core.getMessageLog
   for e in es.getElems do
