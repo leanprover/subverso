@@ -9,7 +9,7 @@ library will maintain broader compatibility with various Lean versions.
 ## Versions and Compatibility
 
 SubVerso's CI currently validates it on every Lean release since
-4.3.0, along with whatever version or snapshot is currently targeted
+4.0.0, along with whatever version or snapshot is currently targeted
 by Verso itself.
 
 There should be no expectations of compatibility between different
@@ -64,4 +64,3 @@ def f (n : Nat) : Nat := %ex{plus23}{$ex{N}{n} + 23}
 then three pieces of highlighted code are saved, named `F` (the whole
 block), `plus23` (which contains `n + 23`), and `N` (which contains
 `n`).
-
