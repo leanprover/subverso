@@ -5,26 +5,11 @@ open System (FilePath)
 -- Minimal compatibility infrastructure to make this file cross-compatible with more Lean/Lake versions
 namespace Compat
 
-open Lean Elab Term in
-elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
-  dbg_trace "heya"
-  let mut errs := #[]
-  let msgs ← Core.getMessageLog
-  for e in es.getElems do
-    Core.setMessageLog msgs
-    try
-      let expr ←
-        withReader ({· with errToSorry := false}) <|
-            elabTermEnsuringType e (some ty)
-      let ty' ← Meta.inferType expr
-      if ← Meta.isDefEq ty ty' then
-        return expr
-    catch err =>
-      errs := errs.push (e, err)
-      continue
-  let msgErrs := errs.toList.map fun (tm, msg) => m!"{tm}: {indentD msg.toMessageData}"
-  throwError m!"No alternative succeeded. Attempts were: " ++
-    indentD (MessageData.joinSep msgErrs Format.line)
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let useOldBind := mkIdent `useOldBind
+  elabCommand <| ← `(def $useOldBind := !$(quote <| env.contains `Lake.buildFileUnlessUpToDate'))
 
 -- Compatibility shims for older Lake (where logging was manual) and
 -- newer Lake (where it isn't). Necessary from Lean 4.8.0 and up.
@@ -80,28 +65,18 @@ lean_exe «subverso-extract-mod» where
   root := `ExtractModule
   supportInterpreter := true
 
+meta if Compat.useOldBind then
+  module_facet highlighted mod : FilePath := do
+    let ws ← getWorkspace
+    let some extract ← findLeanExe? `«subverso-extract-mod»
+      | error "The subverso-extract-mod executable was not found"
 
-module_facet highlighted mod : FilePath := do
-  let ws ← getWorkspace
-  let some extract ← findLeanExe? `«subverso-extract-mod»
-    | error "The subverso-extract-mod executable was not found"
+    let exeJob ← extract.exe.fetch
+    let modJob ← mod.olean.fetch
 
-  let exeJob ← extract.exe.fetch
-  let modJob ← mod.olean.fetch
+    let buildDir := ws.root.buildDir
+    let hlFile := mod.filePath (buildDir / "highlighted") "json"
 
-  let buildDir := ws.root.buildDir
-  let hlFile := mod.filePath (buildDir / "highlighted") "json"
-
-  %first_succeeding [
-    exeJob.bindM fun exeFile =>
-      modJob.mapM fun _oleanPath => do
-        buildFileUnlessUpToDate' (text := true) hlFile <|
-          proc {
-            cmd := exeFile.toString
-            args :=  #[mod.name.toString, hlFile.toString]
-            env := ← getAugmentedEnv
-          }
-        pure hlFile,
     exeJob.bindAsync fun exeFile exeTrace =>
       modJob.bindSync fun _oleanPath modTrace => do
         let depTrace := mixTrace exeTrace modTrace
@@ -113,29 +88,41 @@ module_facet highlighted mod : FilePath := do
             env := ← getAugmentedEnv
           }
         pure (hlFile, trace)
-  ]
 
-module_facet examples mod : FilePath := do
-  let ws ← getWorkspace
-  let some extract ← findLeanExe? `«subverso-extract»
-    | error "The subverso-extract executable was not found"
+else
+  module_facet highlighted mod : FilePath := do
+    let ws ← getWorkspace
+    let some extract ← findLeanExe? `«subverso-extract-mod»
+      | error "The subverso-extract-mod executable was not found"
 
-  let exeJob ← extract.exe.fetch
-  let modJob ← mod.olean.fetch
+    let exeJob ← extract.exe.fetch
+    let modJob ← mod.olean.fetch
 
-  let buildDir := ws.root.buildDir
-  let hlFile := mod.filePath (buildDir / "examples") "json"
+    let buildDir := ws.root.buildDir
+    let hlFile := mod.filePath (buildDir / "highlighted") "json"
 
-  %first_succeeding [
     exeJob.bindM fun exeFile =>
       modJob.mapM fun _oleanPath => do
-        buildFileUnlessUpToDate' (text := true) hlFile do
+        buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
-            args := #[mod.name.toString, hlFile.toString]
+            args :=  #[mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
-        pure hlFile,
+        pure hlFile
+
+meta if Compat.useOldBind then
+  module_facet examples mod : FilePath := do
+    let ws ← getWorkspace
+    let some extract ← findLeanExe? `«subverso-extract»
+      | error "The subverso-extract executable was not found"
+
+    let exeJob ← extract.exe.fetch
+    let modJob ← mod.olean.fetch
+
+    let buildDir := ws.root.buildDir
+    let hlFile := mod.filePath (buildDir / "examples") "json"
+
     exeJob.bindAsync fun exeFile exeTrace =>
       modJob.bindSync fun _oleanPath modTrace => do
         let depTrace := mixTrace exeTrace modTrace
@@ -147,7 +134,28 @@ module_facet examples mod : FilePath := do
             env := ← getAugmentedEnv
           }
         pure (hlFile, trace)
-  ]
+
+else
+  module_facet examples mod : FilePath := do
+    let ws ← getWorkspace
+    let some extract ← findLeanExe? `«subverso-extract»
+      | error "The subverso-extract executable was not found"
+
+    let exeJob ← extract.exe.fetch
+    let modJob ← mod.olean.fetch
+
+    let buildDir := ws.root.buildDir
+    let hlFile := mod.filePath (buildDir / "examples") "json"
+
+    exeJob.bindM fun exeFile =>
+      modJob.mapM fun _oleanPath => do
+        buildFileUnlessUpToDate' (text := true) hlFile do
+          proc {
+            cmd := exeFile.toString
+            args := #[mod.name.toString, hlFile.toString]
+            env := ← getAugmentedEnv
+          }
+        pure hlFile
 
 library_facet highlighted lib : FilePath := do
   let ws ← getWorkspace
