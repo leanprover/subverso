@@ -138,7 +138,7 @@ end NameSet
 namespace List
 -- bind was renamed to flatMap in 4.14
 def flatMap (xs : List α) (f : α → List β) : List β :=
-  %first_succeeding [_root_.List.flatMap xs f, _root_.List.bind xs f]
+  %first_succeeding [_root_.List.flatMap xs f, _root_.List.bind xs f, _root_.List.flatMap f xs]
 end List
 
 namespace Array
