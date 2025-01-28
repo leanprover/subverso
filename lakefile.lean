@@ -33,12 +33,13 @@ open Lean Elab Command Term in
     let t ← Meta.inferType e
     Meta.ppExpr t
   let ty := toString ty
-  dbg_trace ty
   if ty == "LeanLib → FetchM (Job (Array Lake.Module))" then
     elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : FetchM (Array Lake.Module) := do return ← (← lib.modules.fetch).await)
   else if ty == "LeanLib → FetchM (Array Lake.Module)" then
     elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : FetchM (Array Lake.Module) := lib.modules.fetch)
-  else throwError "Didn't recognize type of lib.modules.fetch to define compatibility shim for 'getMods'"
+  else if ty == "LeanLib → IndexBuildM (Array Lake.Module)" then
+    elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : IndexBuildM (Array Lake.Module) := lib.modules.fetch)
+  else throwError "Didn't recognize type of lib.modules.fetch to define compatibility shim for 'getMods': {ty}"
 end Compat
 -- End compatibility infrastructure
 
