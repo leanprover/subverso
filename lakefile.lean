@@ -26,6 +26,20 @@ open Lean Elab Command in
   else
     elabCommand <| ← `(def $(mkIdent `logInfo) := @Lake.logInfo)
 
+open Lean Elab Command Term in
+#eval show CommandElabM Unit from do
+  let ty ← liftTermElabM do
+    let e ← elabTerm (← `(fun (lib : Lake.LeanLib) => lib.modules.fetch)) none
+    let t ← Meta.inferType e
+    Meta.ppExpr t
+  let ty := toString ty
+  if ty == "LeanLib → FetchM (Job (Array Lake.Module))" then
+    elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : FetchM (Array Lake.Module) := do return ← (← lib.modules.fetch).await)
+  else if ty == "LeanLib → FetchM (Array Lake.Module)" then
+    elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : FetchM (Array Lake.Module) := lib.modules.fetch)
+  else if ty == "LeanLib → IndexBuildM (Array Lake.Module)" then
+    elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : IndexBuildM (Array Lake.Module) := lib.modules.fetch)
+  else throwError "Didn't recognize type of lib.modules.fetch to define compatibility shim for 'getMods': {ty}"
 end Compat
 -- End compatibility infrastructure
 
@@ -159,17 +173,16 @@ else
 
 library_facet highlighted lib : FilePath := do
   let ws ← getWorkspace
-  let mods ← lib.modules.fetch
+  let mods ← Compat.getMods lib
   let moduleJobs ← BuildJob.mixArray <| ← mods.mapM (fetch <| ·.facet `highlighted)
   let buildDir := ws.root.buildDir
   let hlDir := buildDir / "highlighted"
   moduleJobs.bindSync fun () trace => do
     pure (hlDir, trace)
 
-
 library_facet examples lib : FilePath := do
   let ws ← getWorkspace
-  let mods ← lib.modules.fetch
+  let mods ← Compat.getMods lib
   let moduleJobs ← BuildJob.mixArray <| ← mods.mapM (fetch <| ·.facet `examples)
   let buildDir := ws.root.buildDir
   let hlDir := buildDir / "examples"

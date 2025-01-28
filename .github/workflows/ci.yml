@@ -30,6 +30,7 @@ jobs:
           - "4.16.0-rc2"
           - "nightly-2025-01-05"
           - "nightly-2025-01-19"
+          - "nightly-2025-01-28"
         platform:
           - os: ubuntu-latest
             installer: |
