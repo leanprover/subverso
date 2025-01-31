@@ -35,7 +35,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .option .. => 4
   | .sort => 4
   | .keyword _ _ _ => 3
-  | .docComment => 1
+  | .docComment | .withType .. => 1
   | .unknown => 0
 
 /-- Finds all info nodes whose canonical span matches the given syntax -/
@@ -155,9 +155,13 @@ where
 
 def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
     (ci : ContextInfo) (lctx : LocalContext) (expr : Expr)
-    : ReaderT Context m (Option Token.Kind) := do
-  let runMeta {α} (act : MetaM α) : m α := ci.runMetaM lctx act
-  let rec findKind? e := do
+    : ReaderT Context m Token.Kind := do
+  let runMeta {α} (act : MetaM α) (lctx := lctx) : m α := ci.runMetaM lctx act
+  -- Print the signature in an empty local context to avoid local auxiliary definitions from
+  -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
+  -- qualifiers
+  let ppSig x := (toString ∘ FormatWithInfos.fmt) <$> runMeta (lctx := {}) (PrettyPrinter.ppSignature x)
+  let rec findKind e := do
     match e with
     | Expr.fvar id =>
       let seen ←
@@ -170,27 +174,29 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
                 if localDecl.isAuxDecl then
                   let e ← runMeta <| Meta.ppExpr expr
                   -- FIXME the mkSimple is a bit of a kludge
-                  return some (.const (.mkSimple (toString e)) tyStr none false)
-              return some (.var x tyStr))
+                  return .const (.mkSimple (toString e)) tyStr none false
+              return .var x tyStr)
             (onConst := fun x => do
-              let sig := toString (← runMeta (PrettyPrinter.ppSignature x)).1
+              let sig ← ppSig x
               let docs ← findDocString? (← getEnv) x
-              return some (.const x sig docs false))
+              return .const x sig docs false)
         else
           let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
           let tyStr := toString (← runMeta <| Meta.ppExpr ty)
-          return some (.var id tyStr)
+          return .var id tyStr
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
-      let sig := toString (← runMeta (PrettyPrinter.ppSignature name)).1
-      return some (.const name sig docs false)
-    | Expr.sort .. => return some .sort
-    | Expr.lit (.strVal s) => return some (.str s)
+
+      let sig ← ppSig name
+      return .const name sig docs false
+    | Expr.sort .. => return .sort
+    | Expr.lit (.strVal s) => return .str s
     | Expr.mdata _ e =>
-      findKind? e
-    | _other =>
-      return none
-  findKind? (← instantiateMVars expr)
+      findKind e
+    | other =>
+      let t ← runMeta <| Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
+      return .withType (toString t)
+  findKind (← instantiateMVars expr)
 
 /-- Checks whether an occurrence of a name is in fact the definition of the name -/
 def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name : Name) (stx : Syntax) : m Bool := do
@@ -212,15 +218,15 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
 
 def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
     (ci : ContextInfo) (termInfo : TermInfo)
-    : ReaderT Context m (Option Token.Kind) := do
+    : ReaderT Context m Token.Kind := do
   let text ← fun _ => getFileMap
   let p := do
     let pos ← termInfo.stx.getPos?
     pure <| text.utf8PosToLspPos pos
   let k ← exprKind ci termInfo.lctx termInfo.expr
   if (← read).definitionsPossible then
-    if let some (.const name sig docs _isDef) := k then
-      (some ∘ .const name sig docs) <$> (fun _ctxt => isDefinition name termInfo.stx)
+    if let .const name sig docs _isDef := k then
+      (.const name sig docs) <$> (fun _ctxt => isDefinition name termInfo.stx)
     else return k
   else return k
 
@@ -650,7 +656,7 @@ def highlightGoals
       | .cdecl _index fvar name type _ _ =>
         let nk ← exprKind ci lctx (.fvar fvar)
         let tyStr ← renderTagged none (← runMeta (ppExprTagged =<< instantiateMVars type))
-        hyps := hyps.push (name, nk.getD .unknown, tyStr)
+        hyps := hyps.push (name, nk, tyStr)
       | .ldecl _index fvar name type val _ _ =>
         let nk ← exprKind ci lctx (.fvar fvar)
         let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
@@ -658,7 +664,7 @@ def highlightGoals
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
-        hyps := hyps.push (name, nk.getD .unknown, tyValStr)
+        hyps := hyps.push (name, nk, tyValStr)
     let concl ← renderTagged none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView

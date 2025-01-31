@@ -49,6 +49,8 @@ inductive Token.Kind where
   | option (name : Name) (declName : Name) (docs : Option String)
   | docComment
   | sort
+  | /-- The token represents some otherwise-undescribed Expr whose type is known -/
+    withType (type : String)
   | unknown
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
@@ -64,6 +66,7 @@ instance : Quote Token.Kind where
     | .str s => mkCApp ``str #[quote s]
     | .docComment => mkCApp ``docComment #[]
     | .sort => mkCApp ``sort #[]
+    | .withType t => mkCApp ``withType #[quote t]
     | .unknown => mkCApp ``unknown #[]
 
 structure Token where
