@@ -194,8 +194,13 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
     | Expr.mdata _ e =>
       findKind e
     | other =>
-      let t ← runMeta <| Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
-      return .withType (toString t)
+      runMeta do
+        try
+          let t ← Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
+          return .withType <| toString t
+        catch _ =>
+          return .unknown
+
   findKind (← instantiateMVars expr)
 
 /-- Checks whether an occurrence of a name is in fact the definition of the name -/
