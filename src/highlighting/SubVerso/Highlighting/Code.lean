@@ -841,6 +841,10 @@ partial def highlight'
         emitToken i ⟨.str s, string⟩
       else
         emitToken i ⟨.unknown, string⟩
+    | .node _ `num #[.atom i n] =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Numeral") do
+        let k ← identKind trees ⟨stx⟩
+        emitToken i ⟨k, n⟩
     | .node _ ``Lean.Parser.Command.docComment #[.atom i1 opener, .atom i2 body] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Doc comment") do
       if let .original leading pos ws _ := i1 then
