@@ -155,7 +155,8 @@ where
 
 def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
     (ci : ContextInfo) (lctx : LocalContext) (expr : Expr)
-    : ReaderT Context m Token.Kind := do
+    (allowUnknownTyped : Bool := false)
+    : ReaderT Context m (Option Token.Kind) := do
   let runMeta {α} (act : MetaM α) (lctx := lctx) : m α := ci.runMetaM lctx act
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
@@ -174,32 +175,35 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
                 if localDecl.isAuxDecl then
                   let e ← runMeta <| Meta.ppExpr expr
                   -- FIXME the mkSimple is a bit of a kludge
-                  return .const (.mkSimple (toString e)) tyStr none false
-              return .var x tyStr)
+                  return some <| .const (.mkSimple (toString e)) tyStr none false
+              return some <| .var x tyStr)
             (onConst := fun x => do
               let sig ← ppSig x
               let docs ← findDocString? (← getEnv) x
-              return .const x sig docs false)
+              return some <| .const x sig docs false)
         else
           let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
           let tyStr := toString (← runMeta <| Meta.ppExpr ty)
-          return .var id tyStr
+          return some <| .var id tyStr
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
 
       let sig ← ppSig name
-      return .const name sig docs false
-    | Expr.sort .. => return .sort
-    | Expr.lit (.strVal s) => return .str s
+      return some <| .const name sig docs false
+    | Expr.sort .. => return some .sort
+    | Expr.lit (.strVal s) => return some <| .str s
     | Expr.mdata _ e =>
       findKind e
     | other =>
-      runMeta do
-        try
-          let t ← Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
-          return .withType <| toString t
-        catch _ =>
-          return .unknown
+      if allowUnknownTyped then
+        runMeta do
+          try
+            let t ← Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
+            return some <| .withType <| toString t
+          catch _ =>
+            return none
+      else
+        return none
 
   findKind (← instantiateMVars expr)
 
@@ -222,16 +226,12 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
   return false
 
 def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
-    (ci : ContextInfo) (termInfo : TermInfo)
-    : ReaderT Context m Token.Kind := do
-  let text ← fun _ => getFileMap
-  let p := do
-    let pos ← termInfo.stx.getPos?
-    pure <| text.utf8PosToLspPos pos
-  let k ← exprKind ci termInfo.lctx termInfo.expr
+    (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false)
+    : ReaderT Context m (Option Token.Kind) := do
+  let k ← exprKind ci termInfo.lctx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
-    if let .const name sig docs _isDef := k then
-      (.const name sig docs) <$> (fun _ctxt => isDefinition name termInfo.stx)
+    if let some (.const name sig docs _isDef) := k then
+      (some ∘ .const name sig docs) <$> (fun _ctxt => isDefinition name termInfo.stx)
     else return k
   else return k
 
@@ -245,10 +245,10 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
   return .const fieldInfo.projName tyStr docs false
 
 def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
-    (ci : ContextInfo) (info : Info)
+    (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false)
     : ReaderT Context m (Option Token.Kind) := do
   match info with
-    | .ofTermInfo termInfo => termInfoKind ci termInfo
+    | .ofTermInfo termInfo => termInfoKind ci termInfo (allowUnknownTyped := allowUnknownTyped)
     | .ofFieldInfo fieldInfo => some <$> fieldInfoKind ci fieldInfo
     | .ofOptionInfo oi =>
       let doc := (← getOptionDecls).find? oi.optionName |>.map (·.descr)
@@ -263,11 +263,12 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMa
 
 def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
     (trees : PersistentArray InfoTree) (stx : TSyntax `ident)
+    (allowUnknownTyped : Bool := false)
     : ReaderT Context m Token.Kind := do
   let mut kind : Token.Kind := .unknown
   for t in trees do
     for (ci, info) in infoForSyntax t stx do
-      if let some seen ← infoKind ci info then
+      if let some seen ← infoKind ci info (allowUnknownTyped := allowUnknownTyped) then
         if seen.priority > kind.priority then kind := seen
       else continue
   pure kind
@@ -661,7 +662,7 @@ def highlightGoals
       | .cdecl _index fvar name type _ _ =>
         let nk ← exprKind ci lctx (.fvar fvar)
         let tyStr ← renderTagged none (← runMeta (ppExprTagged =<< instantiateMVars type))
-        hyps := hyps.push (name, nk, tyStr)
+        hyps := hyps.push (name, nk.getD .unknown, tyStr)
       | .ldecl _index fvar name type val _ _ =>
         let nk ← exprKind ci lctx (.fvar fvar)
         let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
@@ -669,7 +670,7 @@ def highlightGoals
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
-        hyps := hyps.push (name, nk, tyValStr)
+        hyps := hyps.push (name, nk.getD .unknown, tyValStr)
     let concl ← renderTagged none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
@@ -843,7 +844,7 @@ partial def highlight'
         emitToken i ⟨.unknown, string⟩
     | .node _ `num #[.atom i n] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Numeral") do
-        let k ← identKind trees ⟨stx⟩
+        let k ← identKind trees ⟨stx⟩ (allowUnknownTyped := true)
         emitToken i ⟨k, n⟩
     | .node _ ``Lean.Parser.Command.docComment #[.atom i1 opener, .atom i2 body] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Doc comment") do
@@ -861,7 +862,7 @@ partial def highlight'
       | _, _ =>
         highlight' trees dot tactics
         highlight' trees name tactics
-    | .node info k@``Lean.Parser.Term.anonymousCtor #[opener@(.atom oi l), children@(.node _ _ contents), closer@(.atom ci r)] =>
+    | .node _ k@``Lean.Parser.Term.anonymousCtor #[opener@(.atom oi l), children@(.node _ _ contents), closer@(.atom ci r)] =>
       if let some tk ← anonCtorKind trees stx then
         emitToken oi ⟨tk, l⟩
         for child in contents do
