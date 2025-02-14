@@ -155,7 +155,7 @@ private partial def removeRanges (env : Environment) (rngs : Array String.Range)
       --    x /- !! begin foo  -/ + 3 /- !! end foo -/
       -- which should become just x.
       if h : subs.any (· matches .atom ..) ∧ subs.size > 1 ∧ newSubs.size = 1 ∧ newSubs[0]? matches some (Syntax.node ..) then
-        pure <| newSubs[0]'(by cases h; simp_arith [*])
+        pure <| newSubs[0]'(by cases h; compat_simp_arith_all)
       else
         pure <| .node info kind newSubs
     else pure stx
