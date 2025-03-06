@@ -28,9 +28,9 @@ jobs:
           - "4.14.0"
           - "4.15.0"
           - "4.16.0"
-          - "4.17.0-rc1"
-          - "nightly-2025-02-11"
-          - "nightly-2025-02-13" # after simp_arith deprecation
+          - "4.17.0"
+          - "4.18.0-rc1"
+          - "nightly-2025-03-06"
         platform:
           - os: ubuntu-latest
             installer: |
