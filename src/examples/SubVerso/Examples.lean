@@ -108,7 +108,7 @@ macro_rules
 deriving instance Repr for MessageSeverity
 
 elab_rules : command
-  | `(%example%$tk ( config := $cfg:term ) $name:ident $cmd $cmds* %end) => do
+  | `(%example%$tk ( config := $cfg:term ) $name:ident $cmd $cmds* %end) => Compat.commandWithoutAsync do
     let config ← liftTermElabM <| elabExampleConfig cfg
     let allCommands := #[cmd] ++ cmds
     let (allCommands, termExamples) := allCommands.mapM extractExamples .empty

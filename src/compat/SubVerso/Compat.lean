@@ -201,7 +201,10 @@ def getD {_ : BEq α} {_ : Hashable α} [Inhabited β] : HashMap α β → α �
       @GetElem?.mk _ _ _ _ instGetElemHashMap (fun m a => m.get? a) (fun m a => m.get! a)
     ]
 
-instance [BEq α] [Hashable α] : EmptyCollection (HashMap α β) := ⟨%first_succeeding [Std.HashMap.empty, Lean.HashMap.empty]⟩
+instance [BEq α] [Hashable α] : EmptyCollection (HashMap α β) :=
+  ⟨%first_succeeding [Std.HashMap.emptyWithCapacity, Std.HashMap.empty, Lean.HashMap.empty]⟩
+
+end HashMap
 
 -- In nightly-2025-02-13, simp_arith became an error. Falling back to the old version is complicated
 -- because there's no fully-backwards-compatible syntax to use here that works all the way back to Lean 4.0.0.
@@ -214,3 +217,11 @@ open Lean Elab Command in
   | .error _ =>
     let cmd ← `(macro "compat_simp_arith_all":tactic => `(tactic| first | simp_arith [*] | simp (config := {arith := true}) [*]))
     elabCommand cmd
+
+-- Elab.async got turned on in nightly-2025-03-16, but that means that the info tree is not always
+-- ready when elaboration returns from an example. Thus, we need to turn it off for examples,
+-- because otherwise proof states are not present when the highlighted code is generated.
+open Lean Elab Command in
+def commandWithoutAsync : (act : CommandElabM α) → CommandElabM α :=
+  withScope fun sc =>
+    {sc with opts := sc.opts.setBool `Elab.async false}
