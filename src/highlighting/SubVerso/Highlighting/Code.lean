@@ -193,7 +193,6 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
     | Expr.sort u =>
       if let some stx := stx? then
         let k := stx.getKind
-        dbg_trace stx
         let docs? ← findDocString? (← getEnv) k
         return some (.sort u docs?)
       else return some (.sort u none)
