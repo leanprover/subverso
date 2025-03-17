@@ -35,9 +35,31 @@ private def altNameUnJson (json : Json) : Except String Name := do
     | other => .error s!"Expected a string or number as a name component, got '{other}'"
   pure n
 
-private local instance : ToJson Name := ⟨altNameJson⟩
-private local instance : FromJson Name := ⟨altNameUnJson⟩
+private local instance nameToJson : ToJson Name := ⟨altNameJson⟩
+private local instance nameFromJson : FromJson Name := ⟨altNameUnJson⟩
 
+private partial local instance : ToJson Level where
+  toJson := go
+where
+  go
+    | .zero => .arr #["zero"]
+    | .succ l => .arr #["succ", go l]
+    | .param n => .arr #["param", nameToJson.toJson n]
+    | .max l l' => .arr #["max", go l, go l']
+    | .imax l l' => .arr #["imax", go l, go l']
+    | .mvar ⟨m⟩ => .arr #["mvar", nameToJson.toJson m]
+
+private partial local instance : FromJson Level where
+  fromJson? v := go v
+where
+  go
+    | .arr #["zero"] => pure .zero
+    | .arr #["succ", l] => .succ <$> go l
+    | .arr #["param", n] => .param <$> nameFromJson.fromJson? n
+    | .arr #["max", l, l'] => .max <$> go l <*> go l'
+    | .arr #["imax", l, l'] => .imax <$> go l <*> go l'
+    | .arr #["mvar", m] => (.mvar ⟨·⟩) <$> nameFromJson.fromJson? m
+    | other => throw s!"Failed to decode {other} as a level"
 
 inductive Token.Kind where
   | /-- `occurrence` is a unique identifier that unites the various keyword tokens from a given production -/
@@ -48,15 +70,30 @@ inductive Token.Kind where
   | str (string : String)
   | option (name : Name) (declName : Name) (docs : Option String)
   | docComment
-  | sort
+  | sort (level : Level) (doc? : Option String)
   | /-- The token represents some otherwise-undescribed Expr whose type is known -/
     withType (type : String)
   | unknown
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
+open Lean.Syntax in
+instance : Quote LevelMVarId where
+  quote | ⟨m⟩ => mkCApp ``LevelMVarId.mk #[quote m]
+
+open Lean.Syntax in
+private partial def quoteLevel : Level → Term
+  | .zero => mkCApp ``Level.zero #[]
+  | .succ l => mkCApp ``Level.succ #[quoteLevel l]
+  | .param n => mkCApp ``Level.param #[quote n]
+  | .max l l' => mkCApp ``Level.max #[quoteLevel l, quoteLevel l']
+  | .imax l l' => mkCApp ``Level.imax #[quoteLevel l, quoteLevel l']
+  | .mvar mv => mkCApp ``Level.mvar #[quote mv]
+
+instance : Quote Level := ⟨quoteLevel⟩
+
 open Token.Kind in
 open Syntax (mkCApp) in
-instance : Quote Token.Kind where
+partial instance : Quote Token.Kind where
   quote
     | .keyword n occ docs => mkCApp ``keyword #[quote n, quote occ, quote docs]
     | .const n sig docs isDef => mkCApp ``const #[quote n, quote sig, quote docs, quote isDef]
@@ -65,7 +102,7 @@ instance : Quote Token.Kind where
     | .var (.mk n) type => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type]
     | .str s => mkCApp ``str #[quote s]
     | .docComment => mkCApp ``docComment #[]
-    | .sort => mkCApp ``sort #[]
+    | .sort l doc? => mkCApp ``sort #[quote l, quote doc?]
     | .withType t => mkCApp ``withType #[quote t]
     | .unknown => mkCApp ``unknown #[]
 
