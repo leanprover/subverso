@@ -33,7 +33,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .const .. => 5
   | .anonCtor .. => 6
   | .option .. => 4
-  | .sort => 4
+  | .sort .. => 4
   | .keyword _ _ _ => 3
   | .docComment | .withType .. => 1
   | .unknown => 0
@@ -154,7 +154,7 @@ where
       go more
 
 def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
-    (ci : ContextInfo) (lctx : LocalContext) (expr : Expr)
+    (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false)
     : ReaderT Context m (Option Token.Kind) := do
   let runMeta {α} (act : MetaM α) (lctx := lctx) : m α := ci.runMetaM lctx act
@@ -190,7 +190,13 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
 
       let sig ← ppSig name
       return some <| .const name sig docs false
-    | Expr.sort .. => return some .sort
+    | Expr.sort u =>
+      if let some stx := stx? then
+        let k := stx.getKind
+        dbg_trace stx
+        let docs? ← findDocString? (← getEnv) k
+        return some (.sort u docs?)
+      else return some (.sort u none)
     | Expr.lit (.strVal s) => return some <| .str s
     | Expr.mdata _ e =>
       findKind e
@@ -228,7 +234,7 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
 def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false)
     : ReaderT Context m (Option Token.Kind) := do
-  let k ← exprKind ci termInfo.lctx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
+  let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
     if let some (.const name sig docs _isDef) := k then
       (some ∘ .const name sig docs) <$> (fun _ctxt => isDefinition name termInfo.stx)
@@ -660,11 +666,11 @@ def highlightGoals
       if decl.isAuxDecl || decl.isImplementationDetail then continue
       match decl with
       | .cdecl _index fvar name type _ _ =>
-        let nk ← exprKind ci lctx (.fvar fvar)
+        let nk ← exprKind ci lctx none (.fvar fvar)
         let tyStr ← renderTagged none (← runMeta (ppExprTagged =<< instantiateMVars type))
         hyps := hyps.push (name, nk.getD .unknown, tyStr)
       | .ldecl _index fvar name type val _ _ =>
-        let nk ← exprKind ci lctx (.fvar fvar)
+        let nk ← exprKind ci lctx none (.fvar fvar)
         let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
         let valDoc ← runMeta (ppExprTagged =<< instantiateMVars val)
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
@@ -819,9 +825,9 @@ partial def highlight'
         | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
-      if let .sort ← identKind trees ⟨stx⟩ then
+      if let .sort u docs? ← identKind trees ⟨stx⟩ then
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
-          emitToken i ⟨.sort, x⟩
+          emitToken i ⟨.sort u docs?, x⟩
         return
       else
         emitToken i <| (⟨ ·,  x⟩) <|
