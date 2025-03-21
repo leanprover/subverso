@@ -225,3 +225,26 @@ open Lean Elab Command in
 def commandWithoutAsync : (act : CommandElabM α) → CommandElabM α :=
   withScope fun sc =>
     {sc with opts := sc.opts.setBool `Elab.async false}
+
+-- When a name is removed, hiding it is an error. This makes it tough to be compatible - we want to
+-- hide Lean.HashMap in versions prior to nightly-2025-03-21, but cannot do so later.
+
+/--
+Opens the namespace, hiding those of the identifiers that actually exist.
+-/
+syntax "open" ident  "hiding" &"perhaps" "(" ident* ")" : command
+
+open Lean Elab Command in
+elab_rules : command
+  | `(open $ns hiding perhaps ( $xs* )) => do
+    let env ← getEnv
+    let xs ← xs.filterM fun x => do
+      let x := x.getId
+      let nss ← resolveNamespace ns
+      let names := nss.filter fun ns => env.contains (ns ++ x)
+      return !names.isEmpty
+
+    if xs.isEmpty then
+      elabCommand (← `(open $ns:ident))
+    else
+      elabCommand (← `(open $ns:ident hiding $xs*))

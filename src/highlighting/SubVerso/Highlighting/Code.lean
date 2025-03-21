@@ -10,7 +10,7 @@ import Lean.Widget.TaggedText
 import SubVerso.Compat
 import SubVerso.Highlighting.Highlighted
 
-open Lean hiding HashMap
+open Lean hiding perhaps (HashMap)
 open Elab
 open Lean.Widget (TaggedText)
 open Lean.Widget
