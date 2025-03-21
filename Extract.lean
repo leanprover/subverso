@@ -9,11 +9,12 @@ import SubVerso.Examples.Env
 open Lean
 open SubVerso.Examples
 
-def main : (args : List String) → IO UInt32
+unsafe def main : (args : List String) → IO UInt32
   | [mod, outFile] => do
     try
       initSearchPath (← findSysroot)
       let modName := mod.toName
+      enableInitializersExecution
       let env ← SubVerso.Compat.importModules #[{module := modName, runtimeOnly := false}] {}
       let modExamples := highlighted.getState env
       let useful := relevant modName modExamples
