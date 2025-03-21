@@ -12,8 +12,7 @@ open Lean.Elab.Command (liftTermElabM)
 open SubVerso Examples
 open SubVerso.Highlighting (Highlighted highlight)
 
-
-def main : (args : List String) → IO UInt32
+unsafe def main : (args : List String) → IO UInt32
   | [mod, outFile] => do
     try
       initSearchPath (← findSysroot)
@@ -29,6 +28,7 @@ def main : (args : List String) → IO UInt32
       let ictx := Parser.mkInputContext (← IO.FS.readFile fname) fname.toString
       let (headerStx, parserState, msgs) ← Parser.parseHeader ictx
       let imports := headerToImports headerStx
+      enableInitializersExecution
       let env ← importModules imports {}
       let pctx : Context := {inputCtx := ictx}
 
@@ -55,6 +55,3 @@ def main : (args : List String) → IO UInt32
   | other => do
     IO.eprintln s!"Didn't understand args: {other}"
     pure 1
-where
-  relevant (mod : Name) (examples : NameMap (NameMap Json)) : List (String × Json) :=
-    examples.find? mod |>.getD {} |>.toList |>.map fun p => {p with fst := p.fst.toString (escape := false)}
