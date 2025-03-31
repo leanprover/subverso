@@ -11,6 +11,15 @@ open Lean Elab Command in
   let useOldBind := mkIdent `useOldBind
   elabCommand <| ← `(def $useOldBind := !$(quote <| env.contains `Lake.buildFileUnlessUpToDate'))
 
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let oldMixArray := `Lake.BuildJob.mixArray
+  let useOld := (env.contains oldMixArray) && !Linter.isDeprecated env oldMixArray
+  let useOldMixArray := mkIdent `useOldMixArray
+  elabCommand <| ← `(def $useOldMixArray := $(quote useOld))
+
+
 -- Compatibility shims for older Lake (where logging was manual) and
 -- newer Lake (where it isn't). Necessary from Lean 4.8.0 and up.
 open Lean Elab Command in
@@ -171,42 +180,82 @@ else
           }
         pure hlFile
 
-library_facet highlighted lib : FilePath := do
-  let ws ← getWorkspace
-  let mods ← Compat.getMods lib
-  let moduleJobs ← BuildJob.mixArray <| ← mods.mapM (fetch <| ·.facet `highlighted)
-  let buildDir := ws.root.buildDir
-  let hlDir := buildDir / "highlighted"
-  moduleJobs.bindSync fun () trace => do
-    pure (hlDir, trace)
+meta if Compat.useOldMixArray then
+  library_facet highlighted lib : FilePath := do
+    let ws ← getWorkspace
+    let mods ← Compat.getMods lib
+    let moduleJobs ← BuildJob.mixArray <| ← mods.mapM (fetch <| ·.facet `highlighted)
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "highlighted"
+    moduleJobs.bindSync fun () trace => do
+      pure (hlDir, trace)
+else
+  library_facet highlighted lib : FilePath := do
+    let ws ← getWorkspace
+    let mods ← Compat.getMods lib
+    let moduleJobs := Job.mixArray <$> mods.mapM (·.facet `highlighted |>.fetch)
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "highlighted"
+    moduleJobs <&> fun _ => pure hlDir
 
-library_facet examples lib : FilePath := do
-  let ws ← getWorkspace
-  let mods ← Compat.getMods lib
-  let moduleJobs ← BuildJob.mixArray <| ← mods.mapM (fetch <| ·.facet `examples)
-  let buildDir := ws.root.buildDir
-  let hlDir := buildDir / "examples"
-  moduleJobs.bindSync fun () trace => do
-    pure (hlDir, trace)
+meta if Compat.useOldMixArray then
+  library_facet examples lib : FilePath := do
+    let ws ← getWorkspace
+    let mods ← Compat.getMods lib
+    let moduleJobs ← BuildJob.mixArray <| ← mods.mapM (fetch <| ·.facet `examples)
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "examples"
+    moduleJobs.bindSync fun () trace => do
+      pure (hlDir, trace)
+else
+  library_facet examples lib : FilePath := do
+    let ws ← getWorkspace
+    let mods ← Compat.getMods lib
+    let moduleJobs := Job.mixArray <$> mods.mapM (·.facet `examples |>.fetch)
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "examples"
+    moduleJobs <&> fun _ => pure hlDir
 
+meta if Compat.useOldMixArray then
+  package_facet highlighted pkg : FilePath := do
+    let ws ← getWorkspace
+    let libs := pkg.leanLibs
+    let exes := pkg.leanExes.map (·.toLeanLib)
+    let libJobs ← BuildJob.mixArray <| ← (libs ++ exes).mapM (fetch <| ·.facet `highlighted)
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "highlighted"
+    libJobs.bindSync fun () trace => do
+      Compat.logInfo s!"Highlighted code written to '{hlDir}'"
+      pure (hlDir, trace)
+else
+  package_facet highlighted pkg : FilePath := do
+    let ws ← getWorkspace
+    let libs := pkg.leanLibs
+    let exes := pkg.leanExes.map (·.toLeanLib)
+    let libJobs := (libs ++ exes).mapM fun x => x.facet `highlighted |>.fetch
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "highlighted"
+    libJobs >>= fun _ => do
+      Compat.logInfo s!"Highlighted code written to '{hlDir}'"
+      pure (pure hlDir)
 
-package_facet highlighted pkg : FilePath := do
-  let ws ← getWorkspace
-  let libs := pkg.leanLibs
-  let exes := pkg.leanExes.map (·.toLeanLib)
-  let libJobs ← BuildJob.mixArray <| ← (libs ++ exes).mapM (fetch <| ·.facet `highlighted)
-  let buildDir := ws.root.buildDir
-  let hlDir := buildDir / "highlighted"
-  libJobs.bindSync fun () trace => do
-    Compat.logInfo s!"Highlighted code written to '{hlDir}'"
-    pure (hlDir, trace)
-
-package_facet examples pkg : FilePath := do
-  let ws ← getWorkspace
-  let libs := pkg.leanLibs
-  let libJobs ← BuildJob.mixArray <| ← libs.mapM (fetch <| ·.facet `examples)
-  let buildDir := ws.root.buildDir
-  let hlDir := buildDir / "examples"
-  libJobs.bindSync fun () trace => do
-    Compat.logInfo s!"Highlighted code written to '{hlDir}'"
-    pure (hlDir, trace)
+meta if Compat.useOldMixArray then
+  package_facet examples pkg : FilePath := do
+    let ws ← getWorkspace
+    let libs := pkg.leanLibs
+    let libJobs ← BuildJob.mixArray <| ← libs.mapM (fetch <| ·.facet `examples)
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "examples"
+    libJobs.bindSync fun () trace => do
+      Compat.logInfo s!"Highlighted code written to '{hlDir}'"
+      pure (hlDir, trace)
+else
+  package_facet examples pkg : FilePath := do
+    let ws ← getWorkspace
+    let libs := pkg.leanLibs
+    let libJobs := libs.mapM (·.facet `examples |>.fetch)
+    let buildDir := ws.root.buildDir
+    let hlDir := buildDir / "examples"
+    libJobs >>= fun _ => do
+      logInfo s!"Highlighted code written to '{hlDir}'"
+      pure (pure hlDir)

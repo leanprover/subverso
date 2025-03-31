@@ -34,6 +34,7 @@ jobs:
           - "nightly-2025-03-12"
           - "nightly-2025-03-16"
           - "nightly-2025-03-21"
+          - "nightly-2025-03-29"
         platform:
           - os: ubuntu-latest
             installer: |
