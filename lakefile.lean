@@ -56,17 +56,9 @@ package «subverso» where
   precompileModules := true
   -- add package configuration options here
 
-lean_lib SubVersoCompat where
-  srcDir := "src/compat"
-  roots := #[`SubVerso.Compat]
-
-lean_lib SubVersoHighlighting where
-  srcDir := "src/highlighting"
-  roots := #[`SubVerso.Highlighting]
-
-lean_lib SubVersoExamples where
-  srcDir := "src/examples"
-  roots := #[`SubVerso.Examples]
+lean_lib SubVerso where
+  srcDir := "src/"
+  roots := #[`SubVerso]
 
 @[default_target]
 lean_exe «subverso-tests» where
