@@ -53,7 +53,7 @@ end Compat
 -- End compatibility infrastructure
 
 package «subverso» where
-  precompileModules := true
+  precompileModules := false -- temporarily disabled due to nightly-2025-03-30: true
   -- add package configuration options here
 
 lean_lib SubVerso where
