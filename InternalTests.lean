@@ -36,6 +36,8 @@ partial def SubVerso.Highlighting.Highlighted.proofStates (hl : Highlighting.Hig
   | _ => pure ()
   out
 
+set_option pp.rawOnError true
+
 %example proof
 theorem test (n : Nat) : n * 1 = n := by
   induction n with
@@ -54,6 +56,26 @@ theorem test (n : Nat) : n * 1 = n := by
 
 %dumpE proof into proofEx
 
+%example proof2
+example :
+    (fun (x y z : Nat) =>
+      x + (y + z))
+    =
+    (fun x y z =>
+      (z + x) + y)
+  := by
+  conv =>
+    lhs
+    intro x y z
+    conv =>
+      arg 2
+      rw [Nat.add_comm]
+    rw [← Nat.add_assoc]
+    arg 1
+    rw [Nat.add_comm]
+%end
+
+%dumpE proof2 into proofEx2
 
 
 -- We don't have #guard_msgs in all supported Lean versions, so here's a low-tech replacement:
@@ -96,7 +118,5 @@ elab "#evalStrings " "[" ss:str,* "] " e:term : command => do
     "[[some `zero], [some `succ], [none], [some `succ.succ], [none]]\n",
     "[[none], [some `succ.succ], [none]]\n"]
  (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
-
-
 
 def main : IO Unit := pure ()

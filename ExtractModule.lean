@@ -41,12 +41,18 @@ unsafe def main : (args : List String) → IO UInt32
       let infos := (← cmdSt.get).commandState.infoState.trees
       let msgs := Compat.messageLogArray (← cmdSt.get).commandState.messages
 
-      let mut hls := Highlighted.empty
+      let mut hls : Array Json := #[]
       for cmd in #[headerStx] ++ cmdStx do
-        hls := hls ++ (← (Frontend.runCommandElabM <| liftTermElabM <| highlight cmd msgs infos) pctx cmdSt)
+        let hl ← (Frontend.runCommandElabM <| liftTermElabM <| highlight cmd msgs infos) pctx cmdSt
+        let defs := hl.definedNames.toArray.map (·.toString)
+        hls := hls.push <| Json.mkObj [
+          ("defines", ToJson.toJson defs),
+          ("kind", ToJson.toJson cmd.getKind),
+          ("code", ToJson.toJson hl)
+        ]
       if let some p := (outFile : System.FilePath).parent then
         IO.FS.createDirAll p
-      IO.FS.writeFile outFile (toString (ToJson.toJson hls) ++ "\n")
+      IO.FS.writeFile outFile (toString (Json.arr hls) ++ "\n")
       return (0 : UInt32)
 
     catch e =>

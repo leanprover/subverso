@@ -8,6 +8,14 @@ import Lean.Util.Paths
 
 open Lean Elab Term
 
+-- This was introduced in #3159, so we need a shim:
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Lean.Elab.PartialContextInfo then
+    dbg_trace "lkj"
+    let cmd ← `(def $(mkIdent `Lean.Elab.ContextInfo.mergeIntoOuter?) (inner: ContextInfo) (_outer : Option ContextInfo) : ContextInfo := inner)
+    elabCommand cmd
+
 namespace SubVerso.Compat
 
 elab "%first_defined" "[" xs:ident,* "]" : term => do
