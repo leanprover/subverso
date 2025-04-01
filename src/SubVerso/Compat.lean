@@ -230,9 +230,23 @@ open Lean Elab Command in
 -- ready when elaboration returns from an example. Thus, we need to turn it off for examples,
 -- because otherwise proof states are not present when the highlighted code is generated.
 open Lean Elab Command in
-def commandWithoutAsync : (act : CommandElabM α) → CommandElabM α :=
-  withScope fun sc =>
-    {sc with opts := sc.opts.setBool `Elab.async false}
+def commandWithoutAsync (act : CommandElabM α) : CommandElabM α := do
+  -- withScope doesn't work here, because it restores other changes made to the scopes by the
+  -- commands (e.g. variables, `open`, etc)
+  match (← get).scopes with
+  | [] => act
+  | h :: t =>
+    let mut orig : Option Bool := none
+    try
+      orig := h.opts.get? `Elab.async
+      modify fun s => { s with scopes := {h with opts := h.opts.setBool `Elab.async false} :: t }
+      act
+    finally
+      if let h :: t := (← get).scopes then
+        if let some v := orig then
+          modify fun s => { s with scopes := {h with opts := h.opts.setBool `Elab.async v} :: t }
+        else
+          modify fun s => { s with scopes := {h with opts := h.opts.erase `Elab.async} :: t }
 
 -- When a name is removed, hiding it is an error. This makes it tough to be compatible - we want to
 -- hide Lean.HashMap in versions prior to nightly-2025-03-21, but cannot do so later.
