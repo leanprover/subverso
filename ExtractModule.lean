@@ -45,7 +45,11 @@ unsafe def main : (args : List String) → IO UInt32
       for cmd in #[headerStx] ++ cmdStx do
         let hl ← (Frontend.runCommandElabM <| liftTermElabM <| highlight cmd msgs infos) pctx cmdSt
         let defs := hl.definedNames.toArray.map (·.toString)
-        hls := hls.push <| json%{"defines": $defs, "kind": $(cmd.getKind), "code": $(ToJson.toJson hl)}
+        hls := hls.push <| Json.mkObj [
+          ("defines", ToJson.toJson defs),
+          ("kind", ToJson.toJson cmd.getKind),
+          ("code", ToJson.toJson hl)
+        ]
       if let some p := (outFile : System.FilePath).parent then
         IO.FS.createDirAll p
       IO.FS.writeFile outFile (toString (Json.arr hls) ++ "\n")
