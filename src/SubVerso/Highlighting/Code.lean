@@ -21,6 +21,49 @@ initialize registerTraceClass `SubVerso.Highlighting.Code
 
 namespace SubVerso.Highlighting
 
+/--
+A table that maps source regions to info.
+
+SubVerso has very different access patterns from the language server, and was needing to re-traverse
+the info tree in ways that took too much time while finding proof states. This solution
+pre-processes it once, saving the info in an easier-to-query form for this use case.
+
+Other info types may be added as needed for performance in the future.
+-/
+structure InfoTable where
+  tacticInfo : Compat.HashMap String.Range (Array (ContextInfo × TacticInfo)) := {}
+
+instance : Inhabited InfoTable := ⟨⟨{}⟩⟩
+
+/--
+Adds info to the table, doing nothing if it's not a type that the table supports.
+-/
+def InfoTable.add (ctx : ContextInfo) (i : Info) (table : InfoTable) : InfoTable :=
+  match i with
+  | .ofTacticInfo ti =>
+    if let some rng := ti.stx.getRange? (canonicalOnly := true) then
+      { table with tacticInfo := table.tacticInfo.insert rng <|
+        ((Compat.HashMap.get? table.tacticInfo rng).getD #[]).push (ctx, ti)
+      }
+    else table
+  | _ => table
+
+partial def InfoTable.ofInfoTree (t : InfoTree) (init : InfoTable := {}) : InfoTable := go none t init
+where
+  go (ctx? : Option ContextInfo) (t : InfoTree) (table : InfoTable) : InfoTable :=
+    match ctx?, t with
+    | ctx?, .context ctx t => go (ctx.mergeIntoOuter? ctx?) t table
+    | some ctx, .node i cs => cs.foldl (init := table.add ctx i) fun tbl' t' => go (some ctx) t' tbl'
+    | none, .node .. => panic! "Unexpected contextless node"
+    | _, .hole _ => table
+
+def InfoTable.ofInfoTrees (ts : PersistentArray InfoTree) (init : InfoTable := {}) : InfoTable :=
+  ts.foldl (init := init) (fun tbl t => .ofInfoTree t (init := tbl))
+
+def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (ContextInfo × TacticInfo)) := do
+  let rng ← stx.getRange? (canonicalOnly := true)
+  Compat.HashMap.get? table.tacticInfo rng |>.map (·.filter (·.2.stx == stx))
+
 structure Context where
   ids : HashMap Lsp.RefIdent Lsp.RefIdent
   definitionsPossible : Bool
@@ -403,7 +446,12 @@ structure HighlightState where
   output : List Output
   /-- Messages being displayed -/
   inMessages : List (MessageBundle ⊕ OpenTactic)
-deriving Inhabited
+  /-- Memoized results of searching for tactic info (by canonical range) -/
+  hasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
+  /-- Memoized results of searching for tactic info in children (by canonical range) -/
+  childHasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
+
+instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -430,7 +478,7 @@ where
     else
       pure <| !(msg.pos.before s) && !(e.before msg.pos)
 
-abbrev HighlightM (α : Type) : Type := ReaderT Context (StateT HighlightState TermElabM) α
+abbrev HighlightM (α : Type) : Type := ReaderT Context (ReaderT InfoTable (StateRefT HighlightState TermElabM)) α
 
 private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
   | [] => none
@@ -458,7 +506,7 @@ def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPo
   modify fun st => st.openTactic info startPos endPos pos
 
 instance : Inhabited (HighlightM α) where
-  default := fun _ _ => default
+  default := fun _ _ _ => default
 
 def nextMessage? : HighlightM (Option MessageBundle) := do
   let st ← get
@@ -560,24 +608,51 @@ partial def subsyntaxes (stx : Syntax) : Array Syntax := Id.run do
     stxs
   | _ => #[]
 
-def hasTactics (stx : Syntax) (trees : PersistentArray Lean.Elab.InfoTree) : HighlightM Bool := do
-  for t in trees do
-    for (_, i) in infoForSyntax t stx do
-      if not i.isOriginal then continue
-      if let .ofTacticInfo _ := i then
+def hasTactics (stx : Syntax) : HighlightM Bool := do
+  let rng? := stx.getRange?
+  if let some rng := rng? then
+    if let some m := Compat.HashMap.get? (← get).hasTacticCache rng then
+      for (stx', res) in m do
+        if stx' == stx then return res
+
+  if let some info := (← readThe InfoTable).tacticInfo? stx then
+    for (_, ti) in info do
+      if ti.stx == stx then
+        if let some rng := rng? then
+          modify fun st =>
+            let v := Compat.HashMap.get? st.hasTacticCache rng |>.getD #[] |>.push (stx, true)
+            {st with hasTacticCache := st.hasTacticCache.insert rng v}
         return true
+
+  if let some rng := rng? then
+    modify fun st =>
+      let v := Compat.HashMap.get? st.hasTacticCache rng |>.getD #[] |>.push (stx, false)
+      {st with hasTacticCache := st.hasTacticCache.insert rng v}
   return false
 
-partial def childHasTactics (stx : Syntax) (trees : PersistentArray Lean.Elab.InfoTree) : HighlightM Bool := do
-  match stx with
-  | .node _ _ children =>
+partial def childHasTactics (stx : Syntax) : HighlightM Bool := do
+  let rng? := stx.getRange?
+  if let some rng := rng? then
+    if let some m := Compat.HashMap.get? (← get).childHasTacticCache rng then
+      for (stx', res) in m do
+        if stx' == stx then return res
+
+  let mut res := false
+  if let .node _ _ children := stx then
     for s in children do
-      if ← hasTactics s trees then
-        return true
-      if ← childHasTactics s trees then
-        return true
-    pure false
-  | _ => pure false
+      if ← hasTactics s then
+        res := true
+        break
+      if ← childHasTactics s then
+        res := true
+        break
+
+  if let some rng := rng? then
+    modify fun st =>
+      let v := Compat.HashMap.get? st.childHasTacticCache rng |>.getD #[] |>.push (stx, res)
+      {st with childHasTacticCache := st.childHasTacticCache.insert rng v}
+
+  return res
 
 
 partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
@@ -681,32 +756,29 @@ def highlightGoals
   pure goalView
 
 partial def findTactics'
-    (trees : PersistentArray Lean.Elab.InfoTree)
     (stx : Syntax)
     (startPos endPos : String.Pos)
     (endPosition : Position)
     (before : Bool := false)
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) := do
-  for t in trees do
-    -- The info is reversed here so that the _last_ state computed is shown.
-    -- This makes `repeat` do the right thing, rather than either spamming
-    -- states or showing the first one.
-    for i in infoForSyntax t stx |>.reverse do
-      if not i.2.isOriginal then continue
-      if let (ci, .ofTacticInfo tacticInfo) := i then
-        if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
-          return some (#[], startPos.byteIdx, endPos.byteIdx, endPosition)
 
-        let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
-        if goals.isEmpty then continue
-        let goalView ← highlightGoals ci goals
+  if let some res := (← readThe InfoTable).tacticInfo? stx then
+    for (ci, tacticInfo) in res.reverse do
+      if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
+        return some (#[], startPos.byteIdx, endPos.byteIdx, endPosition)
 
-        if !Output.inTacticState (← get).output goalView then
-          return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
+      let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
+      let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
+      if goals.isEmpty then continue
+      let goalView ← highlightGoals ci goals
+
+      if !Output.inTacticState (← get).output goalView then
+        return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
+
   return none
 
 partial def findTactics
-    (trees : PersistentArray Lean.Elab.InfoTree)
+    (trees : PersistentArray Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) :=
   withTraceNode `SubVerso.Highlighting.Code (fun x => pure m!"findTactics {stx} ==> {match x with | .error _ => "err" | .ok v => v.map (fun _ => "yes") |>.getD "no"}") <| do
@@ -731,7 +803,7 @@ partial def findTactics
           | `(Lean.Parser.Term.byTactic| by%$tk $tactics)
           | `(Lean.Parser.Term.byTactic'| by%$tk $tactics) =>
             if tk == stx then
-              return (← findTactics' trees tactics startPos endPos endPosition (before := true))
+              return (← findTactics' tactics startPos endPos endPosition (before := true))
           | _ => continue
 
   -- Special handling for =>: show the _before state_
@@ -743,15 +815,18 @@ partial def findTactics
           match tacticInfo.stx with
           | `(Lean.Parser.Tactic.inductionAlt| $_lhs =>%$tk $rhs )
           | `(tactic| next $_* =>%$tk $rhs )
+          | `(tactic| conv =>%$tk $rhs )
+          | `(tactic| conv at $_ =>%$tk $rhs )
+          | `(tactic| conv in $_:term =>%$tk $rhs )
           | `(tactic| case $_ $_* =>%$tk $rhs )
           | `(tactic| case' $_ $_* =>%$tk $rhs ) =>
             if tk == stx then
-              return (← findTactics' trees rhs startPos endPos endPosition (before := true))
+              return (← findTactics' rhs startPos endPos endPosition (before := true))
           | _ => continue
 
   -- Only show tactic output for the most specific source spans possible, with a few exceptions
   if stx.getKind ∉ [``Lean.Parser.Tactic.rwSeq,``Lean.Parser.Tactic.simp] then
-    if ← childHasTactics stx trees then return none
+    if ← childHasTactics stx then return none
 
   -- Override states - some tactics show many intermediate states, which is overwhelming in rendered
   -- output. Get the right one to show for the whole thing, then adjust its positioning.
@@ -759,7 +834,7 @@ partial def findTactics
     if let some (goals, _startPos, _endPos, _endPosition) ← findTactics trees brak then
       return some (goals, startPos.byteIdx, endPos.byteIdx, endPosition)
 
-  findTactics' trees stx startPos endPos endPosition
+  findTactics' stx startPos endPos endPosition
 
 
 partial def highlight'
@@ -900,11 +975,14 @@ def highlight (stx : Syntax) (messages : Array Message) (trees : PersistentArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
   let st ← HighlightState.ofMessages stx messages
-  let ((), {output := output, ..}) ← StateT.run (ReaderT.run (highlight' trees stx true) ⟨ids, true⟩) st
+  let infoTable : InfoTable := .ofInfoTrees trees
+
+  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 def highlightProofState (ci : ContextInfo) (goals : List MVarId) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM (Array (Highlighted.Goal Highlighted)) := do
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
-  let (hlGoals, _) ← StateT.run (ReaderT.run (highlightGoals ci goals) ⟨ids, false⟩) .empty
+  let infoTable : InfoTable := .ofInfoTrees trees
+  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false⟩ |>.run infoTable |>.run .empty
   pure hlGoals
