@@ -43,7 +43,11 @@ def savingNewCommandMessages (act : CommandElabM α) : CommandElabM (α × Messa
   finally
     modify ({· with messages := startMessages})
 
-scoped syntax "%example" ("(" &"config" " := " term")")? ident command command* "%end" : command
+scoped syntax (name:=exampleClassicConfig) "%example" ("(" &"config" " := " term")")? ident command command* "%end" : command
+
+syntax exampleFlag := ("+" <|> "-") noWs ident
+
+scoped syntax (name:=exampleSimpleConfig) "%example" exampleFlag+ ident command command* "%end" : command
 
 example : TermElabM Unit := logError "foo"
 
@@ -78,11 +82,14 @@ structure ExampleConfig where
   /-- This example should be thrown away after elaboration (implied by `error`) -/
   keep : Bool := true
 
-def elabExampleConfig (stx : TSyntax `term) : TermElabM ExampleConfig :=
+instance : Quote ExampleConfig where
+  quote | ⟨error, keep⟩ => Syntax.mkCApp ``ExampleConfig.mk #[quote error, quote keep]
+
+def elabExampleConfig (stx : TSyntax `term) : TermElabM ExampleConfig := do
   match stx with
   | `({}) => pure {}
   | `({ $items:structInstField,* }) => mkConfig items.getElems {}
-  | other => throwErrorAt other "Expected structure literal"
+  | other => throwErrorAt other "Expected structure literal: {other}"
 where
   asBool (stx : TSyntax `term) : TermElabM Bool := do
     match stx with
@@ -99,53 +106,75 @@ where
         if field.getId == `error then config := {config with error := ← asBool val}
         else if field.getId == `keep then config := {config with keep := ← asBool val}
         else throwErrorAt field "Unknown field - expected 'error' or 'keep'"
-      else throwErrorAt item "Exptected field initializer"
+      else throwErrorAt item "Expected field initializer"
     pure config
 
-macro_rules
-  | `(%example $name:ident $cmd $cmds* %end) => `(%example (config := {}) $name $cmd $cmds* %end)
+
+def getSimpleExampleConfig (flags : TSyntaxArray ``exampleFlag) : TermElabM ExampleConfig := do
+  let mut config : ExampleConfig := {}
+  for flag in flags do
+    match flag with
+    | `(exampleFlag|+error) => config := {config with error := true}
+    | `(exampleFlag|+keep) => config := {config with keep := true}
+    | `(exampleFlag|-error) => config := {config with error := false}
+    | `(exampleFlag|-keep) => config := {config with keep := false}
+    | other => throwErrorAt other "Unknown flag syntax - should start with '+' or '-'"
+  pure config
+
+macro_rules (kind := exampleClassicConfig)
+  | `(%example $name:ident $cmd $cmds* %end) =>
+    `(%example (config := {}) $name $cmd $cmds* %end)
+
 
 deriving instance Repr for MessageSeverity
 
-elab_rules : command
-  | `(%example%$tk ( config := $cfg:term ) $name:ident $cmd $cmds* %end) => Compat.commandWithoutAsync do
-    let config ← liftTermElabM <| elabExampleConfig cfg
-    let allCommands := #[cmd] ++ cmds
-    let (allCommands, termExamples) := allCommands.mapM extractExamples .empty
-    let initSt ← get
-    let ((), newMessages) ← savingNewCommandMessages (allCommands.forM elabCommand)
-    -- Run linters here, because elabCommandTopLevel would usually do it. This does mean examples
-    -- will run linters multiple times, but it seems unavoidable while maintaining portability. Note
-    -- that newMessages needs to be replayed into the main message log, but the linter messages must
-    -- not be (or there will be duplicated linter output)
-    let ((), linterMessages) ← savingNewCommandMessages (allCommands.forM runLinters)
-    if config.error && !newMessages.hasErrors then
-      throwErrorAt tk "Expected an error, but none occurred"
-    let trees ← getInfoTrees
-    let allNewMessages := newMessages ++ linterMessages
-    let hl ← allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees)
-    let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
-    let .original leading startPos _ _ := allCommands[0]!.getHeadInfo
-      | throwErrorAt allCommands[0]! "Failed to get source position"
-    let .original _ _ trailing stopPos := Compat.Array.back! allCommands |>.getTailInfo
-      | throwErrorAt (Compat.Array.back! allCommands) "Failed to get source position"
-    let text ← getFileMap
+def elabExample
+    (tok : Syntax) (config : ExampleConfig) (name : Ident) (allCommands : Array (TSyntax `command)) :
+    CommandElabM Unit := Compat.commandWithoutAsync do
+  let (allCommands, termExamples) := allCommands.mapM extractExamples .empty
+  let initSt ← get
+  let ((), newMessages) ← savingNewCommandMessages (allCommands.forM elabCommand)
+  -- Run linters here, because elabCommandTopLevel would usually do it. This does mean examples
+  -- will run linters multiple times, but it seems unavoidable while maintaining portability. Note
+  -- that newMessages needs to be replayed into the main message log, but the linter messages must
+  -- not be (or there will be duplicated linter output)
+  let ((), linterMessages) ← savingNewCommandMessages (allCommands.forM runLinters)
+  if config.error && !newMessages.hasErrors then
+    throwErrorAt tok "Expected an error, but none occurred"
+  let trees ← getInfoTrees
+  let allNewMessages := newMessages ++ linterMessages
+  let hl ← allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees)
+  let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
+  let .original leading startPos _ _ := allCommands[0]!.getHeadInfo
+    | throwErrorAt allCommands[0]! "Failed to get source position"
+  let .original _ _ trailing stopPos := Compat.Array.back! allCommands |>.getTailInfo
+    | throwErrorAt (Compat.Array.back! allCommands) "Failed to get source position"
+  let text ← getFileMap
+  let str := text.source.extract leading.startPos trailing.stopPos
+  let mod ← getMainModule
+  if config.error || !config.keep then set initSt
+  modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+  for (tmName, term) in termExamples do
+    let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees)
+    let .original leading startPos _ _ := term.getHeadInfo
+      | throwErrorAt term "Failed to get source position"
+    let .original _ _ trailing stopPos := term.getTailInfo
+      | throwErrorAt term "Failed to get source position"
     let str := text.source.extract leading.startPos trailing.stopPos
-    let mod ← getMainModule
-    if config.error || !config.keep then set initSt
-    modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
-    for (tmName, term) in termExamples do
-      let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees)
-      let .original leading startPos _ _ := term.getHeadInfo
-        | throwErrorAt term "Failed to get source position"
-      let .original _ _ trailing stopPos := term.getTailInfo
-        | throwErrorAt term "Failed to get source position"
-      let str := text.source.extract leading.startPos trailing.stopPos
-      modifyEnv fun ρ =>
-        highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
-    for msg in if config.error then newMessages.errorsToWarnings.toList else newMessages.toList do
-      logMessage msg
+    modifyEnv fun ρ =>
+      highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+  for msg in if config.error then newMessages.errorsToWarnings.toList else newMessages.toList do
+    logMessage msg
 
+elab_rules : command
+  | `(%example%$tk ( config := $cfg:term ) $name:ident $cmd $cmds* %end) => do
+    let config ← liftTermElabM <| elabExampleConfig cfg
+    elabExample tk config name (#[cmd] ++ cmds)
+
+elab_rules  (kind := exampleSimpleConfig) : command
+  | `(%example%$tk $items* $name:ident $cmd $cmds* %end) => do
+    let config ← liftTermElabM <| getSimpleExampleConfig items
+    elabExample tk config name (#[cmd] ++ cmds)
 
 scoped syntax "%dump " ident : command
 
