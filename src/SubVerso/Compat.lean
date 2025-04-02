@@ -12,8 +12,16 @@ open Lean Elab Term
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
   if !(← getEnv).contains `Lean.Elab.PartialContextInfo then
-    dbg_trace "lkj"
     let cmd ← `(def $(mkIdent `Lean.Elab.ContextInfo.mergeIntoOuter?) (inner: ContextInfo) (_outer : Option ContextInfo) : ContextInfo := inner)
+    elabCommand cmd
+
+-- This was introduced in Lean 4.3.0. Older versions need the definition.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Lean.KVMap.erase then
+    let cmd ←
+      `(def $(mkIdent `Lean.KVMap.erase) : KVMap → Name → KVMap
+          | ⟨m⟩, k => ⟨m.filter fun a => a.1 ≠ k⟩)
     elabCommand cmd
 
 namespace SubVerso.Compat
@@ -239,14 +247,15 @@ def commandWithoutAsync (act : CommandElabM α) : CommandElabM α := do
     let mut orig : Option Bool := none
     try
       orig := h.opts.get? `Elab.async
-      modify fun s => { s with scopes := {h with opts := h.opts.setBool `Elab.async false} :: t }
+      modify fun s => { s with scopes := { h with opts := h.opts.setBool `Elab.async false } :: t }
       act
     finally
+      -- It's important to just narrowly undo the option change here, and otherwise leave the scope alone
       if let h :: t := (← get).scopes then
-        if let some v := orig then
-          modify fun s => { s with scopes := {h with opts := h.opts.setBool `Elab.async v} :: t }
-        else
-          modify fun s => { s with scopes := {h with opts := h.opts.erase `Elab.async} :: t }
+        let opts := orig.map (h.opts.setBool `Elab.async) |>.getD (h.opts.erase `Elab.async)
+        modify fun s => { s with scopes := { h with opts := opts } :: t }
+
+
 
 -- When a name is removed, hiding it is an error. This makes it tough to be compatible - we want to
 -- hide Lean.HashMap in versions prior to nightly-2025-03-21, but cannot do so later.
