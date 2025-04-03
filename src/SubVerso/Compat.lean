@@ -91,7 +91,10 @@ elab "%if_bound" x:ident cmd:command : command => do
   if (← getEnv).contains x.getId then elabCommand cmd
 
 def importModules (imports : Array Import) (opts : Options) (trustLevel : UInt32 := 0) : IO Environment :=
-  Lean.importModules (%first_succeeding [imports, imports.toList]) opts (trustLevel := trustLevel)
+  %first_succeeding [
+    Lean.importModules (%first_succeeding [imports, imports.toList]) opts (trustLevel := trustLevel) (loadExts := true),
+    Lean.importModules (%first_succeeding [imports, imports.toList]) opts (trustLevel := trustLevel)
+  ]
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [

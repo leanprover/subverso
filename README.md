@@ -64,3 +64,38 @@ def f (n : Nat) : Nat := %ex{plus23}{$ex{N}{n} + 23}
 then three pieces of highlighted code are saved, named `F` (the whole
 block), `plus23` (which contains `n + 23`), and `N` (which contains
 `n`).
+
+### Module Extraction
+
+SubVerso can be used to extract a representation of a module's code
+together with metata. Run:
+
+```
+$ subverso-extract-mod MODNAME OUT.json
+```
+
+to extract metadata about module `MODNAME` into `OUT.json`. The
+resulting JSON file contains an array of objects. Lean modules are
+sequences of commands, and each object represents one of them. The
+objects have the following keys:
+ * `kind` - the syntax kind of the command
+ * `defines` - names defined by the command (useful e.g. for automatic hyperlink insertion in rendered HTML)
+ * `code` - the internal SubVerso JSON format for the highlighted
+   code, including proof states, which is intended to be deserialized
+   using the `FromJson Highlighted` instance from SubVerso.
+   
+
+### Helper Process
+
+SubVerso can also be used as a helper for other tools that need to be
+more interactive than module extraction, and yet still cross Lean
+version boundaries. Verso uses this feature to attempt to highlight
+code samples in Markdown module docstrings when using its "literate
+Lean" blog post feature.
+
+To start up the helper, run `subverso-helper`. It communicates with a
+protocol reminiscent of JSON-RPC, but this is an implementation
+detail - it should be used via the API in `SubVerso.Helper`. It can
+presently be used to elaborate and highlight terms in the context of a
+module.
+ 

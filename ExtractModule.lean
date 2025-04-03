@@ -8,7 +8,7 @@ import SubVerso.Examples.Env
 import Lean.Util.Paths
 
 open Lean Elab Frontend
-open Lean.Elab.Command (liftTermElabM)
+open Lean.Elab.Command hiding Context
 open SubVerso Examples
 open SubVerso.Highlighting (Highlighted highlight)
 
@@ -29,15 +29,17 @@ unsafe def main : (args : List String) → IO UInt32
       let (headerStx, parserState, msgs) ← Parser.parseHeader ictx
       let imports := headerToImports headerStx
       enableInitializersExecution
-      let env ← importModules imports {}
+      let env ← Compat.importModules imports {}
       let pctx : Context := {inputCtx := ictx}
 
       let commandState := {env, maxRecDepth := defaultMaxRecDepth, messages := msgs}
       let cmdPos := parserState.pos
       let cmdSt ← IO.mkRef {commandState, parserState, cmdPos}
+
       processCommands pctx cmdSt
 
       let cmdStx := (← cmdSt.get).commands
+
       let infos := (← cmdSt.get).commandState.infoState.trees
       let msgs := Compat.messageLogArray (← cmdSt.get).commandState.messages
 

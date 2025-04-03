@@ -80,6 +80,11 @@ lean_exe «subverso-extract-mod» where
   root := `ExtractModule
   supportInterpreter := true
 
+@[default_target]
+lean_exe «subverso-helper» where
+  root := `Helper
+  supportInterpreter := true
+
 meta if Compat.useOldBind then
   module_facet highlighted mod : FilePath := do
     let ws ← getWorkspace
