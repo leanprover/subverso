@@ -99,7 +99,7 @@ def sendThe (α) [ToJson α] (stream : IO.FS.Stream) (message : α) : IO Unit :=
 def receive [FromJson α] (stream : IO.FS.Stream) : IO (Option α) := do
   let some str ← readNetstring stream
     | return none
-  let str := String.fromUTF8! str
+  let str := Compat.decodeUTF8 str
   let json ← IO.ofExcept (Json.parse str)
   IO.ofExcept (fromJson? json)
 

@@ -3,6 +3,8 @@ Copyright (c) 2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
+import SubVerso.Compat
+
 namespace SubVerso.Helper
 
 /-!
@@ -11,6 +13,11 @@ officially-recommended transports for JSON-RPC. It's a very lightweight way of l
 messages.
 -/
 
+/--
+Reads a netstring from a stream, returning its bytes, or `none` if an EOF is the first thing in the stream.
+
+If the stream doesn't contain a valid netstring, or an EOF occurs during the netstring, an exception is thrown.
+-/
 def readNetstring (stream : IO.FS.Stream) : IO (Option ByteArray) := do
   -- This byte-at-atime reading is a bit silly, but expedient, and unlikely to be the bottleneck
   let mut len : String := ""
@@ -40,6 +47,9 @@ def readNetstring (stream : IO.FS.Stream) : IO (Option ByteArray) := do
   else
     throw <| .userError s!"Expected trailing comma, got '{lastChar}'"
 
+/--
+Writes the provided bytes to the stream as a netstring.
+-/
 def writeNetstring (stream : IO.FS.Stream) (message : ByteArray) : IO Unit := do
   stream.putStr (s!"{message.size}:")
   stream.write message

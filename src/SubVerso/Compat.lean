@@ -15,6 +15,18 @@ open Lean Elab Command in
     let cmd ← `(def $(mkIdent `Lean.Elab.ContextInfo.mergeIntoOuter?) (inner: ContextInfo) (_outer : Option ContextInfo) : ContextInfo := inner)
     elabCommand cmd
 
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `ByteArray.usize then
+    let cmd ← `(def $(mkIdent `ByteArray.usize) (arr : ByteArray) : USize := arr.size.toUSize)
+    elabCommand cmd
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Lean.MessageLog.toArray then
+    let cmd ← `(def $(mkIdent `Lean.MessageLog.toArray) (msgs : Lean.MessageLog) : Array Lean.Message := msgs.toList.toArray)
+    elabCommand cmd
+
 -- This was introduced in Lean 4.3.0. Older versions need the definition.
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
@@ -90,10 +102,23 @@ open Command in
 elab "%if_bound" x:ident cmd:command : command => do
   if (← getEnv).contains x.getId then elabCommand cmd
 
-def importModules (imports : Array Import) (opts : Options) (trustLevel : UInt32 := 0) : IO Environment :=
+class CanBeArrayOrList (f : Type u → Type v) where
+  asArray {α} : f α → Array α
+  asList {α} : f α → List α
+
+instance : CanBeArrayOrList Array where
+  asArray := id
+  asList := Array.toList
+
+instance : CanBeArrayOrList List where
+  asArray := List.toArray
+  asList := id
+
+open CanBeArrayOrList in
+def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) : IO Environment :=
   %first_succeeding [
-    Lean.importModules (%first_succeeding [imports, imports.toList]) opts (trustLevel := trustLevel) (loadExts := true),
-    Lean.importModules (%first_succeeding [imports, imports.toList]) opts (trustLevel := trustLevel)
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true),
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
@@ -116,6 +141,17 @@ def refIdentCase (ri : Lsp.RefIdent)
     match ri with
     | .fvar id => onFVar id
     | .const x => onConst x
+  ]
+
+/--
+Decodes a byte array to a string.
+
+Invalid encodings may panic or produce an unspecified result, depending on the Lean version in use.
+-/
+def decodeUTF8 (arr : ByteArray) : String :=
+  %first_succeeding [
+    String.fromUTF8! arr,
+    String.fromUTF8Unchecked arr
   ]
 
 /--

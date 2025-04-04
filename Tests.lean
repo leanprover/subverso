@@ -9,6 +9,7 @@ import Lean.Data.NameMap
 open SubVerso.Examples (loadExamples Example)
 open Lean.FromJson (fromJson?)
 
+open SubVerso
 
 section
 open Lean Elab Command
@@ -149,7 +150,7 @@ def testNetstring (str : String) : IO Unit := do
   buf.modify ({· with pos := 0})
   let some bytes ← readNetstring stream
     | throw <| .userError "Didn't read netstring (unexpected EOF)"
-  let str2 := String.fromUTF8! bytes
+  let str2 := Compat.decodeUTF8 bytes
   if str == str2 then pure ()
   else throw <| .userError s!"Mismatch: expected '{str}' but got '{str2}'"
 
