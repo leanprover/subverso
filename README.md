@@ -68,7 +68,7 @@ block), `plus23` (which contains `n + 23`), and `N` (which contains
 ### Module Extraction
 
 SubVerso can be used to extract a representation of a module's code
-together with metata. Run:
+together with metadata. Run:
 
 ```
 $ subverso-extract-mod MODNAME OUT.json
