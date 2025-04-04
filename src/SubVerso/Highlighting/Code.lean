@@ -196,15 +196,17 @@ where
       for y in getRefs info do UnionFind.equate x y
       go more
 
-def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
+def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative m]
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false)
     : ReaderT Context m (Option Token.Kind) := do
-  let runMeta {α} (act : MetaM α) (lctx := lctx) : m α := ci.runMetaM lctx act
+  let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := {ci with env := env}.runMetaM lctx act
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
   -- qualifiers
-  let ppSig x := (toString ∘ FormatWithInfos.fmt) <$> runMeta (lctx := {}) (PrettyPrinter.ppSignature x)
+  let ppSig x (env := ci.env) :=
+    (toString ∘ FormatWithInfos.fmt) <$>
+      runMeta (env := env) (lctx := {}) (PrettyPrinter.ppSignature x)
   let rec findKind e := do
     match e with
     | Expr.fvar id =>
@@ -221,7 +223,10 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
                   return some <| .const (.mkSimple (toString e)) tyStr none false
               return some <| .var x tyStr)
             (onConst := fun x => do
-              let sig ← ppSig x
+              -- This is a bit of a hack. The environment in the ContextInfo may not have some
+              -- helper constants from where blocks yet, so we retry in the final environment if the
+              -- first one fails.
+              let sig ← ppSig x <|> ppSig (env := (← getEnv)) x
               let docs ← findDocString? (← getEnv) x
               return some <| .const x sig docs false)
         else
@@ -230,7 +235,6 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m]
           return some <| .var id tyStr
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
-
       let sig ← ppSig name
       return some <| .const name sig docs false
     | Expr.sort u =>
@@ -273,7 +277,7 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
     return range == declRanges.range || range == declRanges.selectionRange
   return false
 
-def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
+def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false)
     : ReaderT Context m (Option Token.Kind) := do
   let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
@@ -292,7 +296,7 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
   let docs ← findDocString? (← getEnv) fieldInfo.projName
   return .const fieldInfo.projName tyStr docs false
 
-def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
+def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
     (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false)
     : ReaderT Context m (Option Token.Kind) := do
   match info with
@@ -309,7 +313,7 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMa
     | _ =>
       pure none
 
-def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
+def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
     (trees : PersistentArray InfoTree) (stx : TSyntax `ident)
     (allowUnknownTyped : Bool := false)
     : ReaderT Context m Token.Kind := do
@@ -321,7 +325,7 @@ def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMC
       else continue
   pure kind
 
-def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m]
+def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
     (trees : PersistentArray InfoTree) (stx : Syntax)
     : ReaderT Context m (Option Token.Kind) := do
   let mut kind : Token.Kind := .unknown
@@ -655,7 +659,7 @@ partial def childHasTactics (stx : Syntax) : HighlightM Bool := do
   return res
 
 
-partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m]
+partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
     (outer : Option Token.Kind) (doc : CodeWithInfos)
     : ReaderT Context m Highlighted := do
   match doc with
