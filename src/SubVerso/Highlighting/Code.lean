@@ -17,7 +17,7 @@ open Lean.Widget
 open Lean.PrettyPrinter (InfoPerPos)
 open SubVerso.Compat (HashMap)
 
-initialize registerTraceClass `SubVerso.Highlighting.Code
+--initialize registerTraceClass `SubVerso.Highlighting.Code
 
 namespace SubVerso.Highlighting
 

@@ -2,12 +2,14 @@ import SubVerso.Highlighting
 import SubVerso.Examples
 import SubVerso.Examples.Env
 import SubVerso.Examples.Slice
+import SubVerso.Helper.Netstring
 import Lean.Data.Json
 import Lean.Data.NameMap
 
 open SubVerso.Examples (loadExamples Example)
 open Lean.FromJson (fromJson?)
 
+open SubVerso
 
 section
 open Lean Elab Command
@@ -140,6 +142,26 @@ def checkIsLinted (examples : NameMap (NameMap Example)) : IO Unit := do
   IO.eprintln s!"Expected a linter warning, got {repr hasSorry.messages}"
   IO.Process.exit 1
 
+open SubVerso.Helper in
+def testNetstring (str : String) : IO Unit := do
+  let buf ← IO.mkRef {}
+  let stream := IO.FS.Stream.ofBuffer buf
+  writeNetstring stream str.toUTF8
+  buf.modify ({· with pos := 0})
+  let some bytes ← readNetstring stream
+    | throw <| .userError "Didn't read netstring (unexpected EOF)"
+  let str2 := Compat.decodeUTF8 bytes
+  if str == str2 then pure ()
+  else throw <| .userError s!"Mismatch: expected '{str}' but got '{str2}'"
+
+def testNetstrings := do
+  testNetstring ""
+  testNetstring "abc"
+  testNetstring "abc{}\n"
+  let mut longStr := "hello\n"
+  for i in [0:100] do
+    longStr := s!"{i}({longStr}{longStr})"
+  testNetstring longStr
 
 
 def main : IO UInt32 := do
@@ -195,7 +217,6 @@ def main : IO UInt32 := do
   checkIsLinted examples''
   let proofCount3 := proofCount examples''
   IO.println s!"Found {proofCount2} proofs "
-
 
   if proofCount1 != proofCount2 || proofCount2 != proofCount3 then
     IO.eprintln "Example proof count mismatch"
