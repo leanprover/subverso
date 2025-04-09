@@ -7,7 +7,6 @@ import Lean.Data.Json
 import Lean.Expr
 import Lean.SubExpr -- for the To/FromJSON FVarId instances
 import SubVerso.Compat
-import SubVerso.Highlighting.InterningQuote
 
 open Lean
 
@@ -107,21 +106,6 @@ instance : Quote Token.Kind where
     | .withType t => mkCApp ``withType #[quote t]
     | .unknown => mkCApp ``unknown #[]
 
-open Token.Kind in
-open Syntax (mkCApp) in
-instance : InterningQuote Token.Kind where
-  quote
-    | .keyword n occ docs => do pure <| mkCApp ``keyword #[quote n, quote occ, ← iquote docs]
-    | .const n sig docs isDef => do pure <| mkCApp ``const #[quote n, ← iquote sig, ← iquote docs, quote isDef]
-    | .anonCtor n sig docs => do pure <| mkCApp ``anonCtor #[quote n, ← iquote sig, ← iquote docs]
-    | .option n d docs => do pure <| mkCApp ``option #[quote n, quote d, ← iquote docs]
-    | .var (.mk n) type => do pure <| mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], ← iquote type]
-    | .str s => do pure <| mkCApp ``str #[← iquote s]
-    | .docComment => pure <| mkCApp ``docComment #[]
-    | .sort l doc? => do pure <| mkCApp ``sort #[quote l, ← iquote doc?]
-    | .withType t => do pure <| mkCApp ``withType #[← iquote t]
-    | .unknown => pure <| mkCApp ``unknown #[]
-
 structure Token where
   kind : Token.Kind
   content : String
@@ -132,12 +116,6 @@ instance : Quote Token where
   quote
     | (.mk kind content) =>
       mkCApp ``Token.mk #[quote kind, quote content]
-
-open Syntax in
-instance : InterningQuote Token where
-  quote
-    | (.mk kind content) => do
-      return mkCApp ``Token.mk #[← iquote kind, ← iquote content]
 
 structure Highlighted.Goal (expr) where
   name : Option Name
@@ -150,11 +128,6 @@ def Highlighted.Goal.map (f : α → β) (g : Goal α) : Goal β :=
   {g with
     hypotheses := g.hypotheses.map (fun (x, k, e) => (x, k, f e))
     conclusion := f g.conclusion}
-
-instance [InterningQuote expr] : InterningQuote (Highlighted.Goal expr) where
-  quote
-    | {name, goalPrefix, hypotheses, conclusion} => do
-      return Syntax.mkCApp ``Highlighted.Goal.mk #[quote name, quote goalPrefix, ← iquote hypotheses, ← iquote conclusion]
 
 instance [Quote expr] : Quote (Highlighted.Goal expr) where
   quote
@@ -229,41 +202,24 @@ partial def Highlighted.compress : Highlighted → Highlighted
 
 open Lean Syntax in
 open Highlighted in
-partial instance : InterningQuote Highlighted where
+partial instance : Quote Highlighted where
  quote hl := quote' (compress hl)
 where
   quote'
-    | .token tok => do return mkCApp ``token #[← iquote tok]
-    | .text str => do return mkCApp ``text #[quote str]
+    | .token tok => mkCApp ``token #[quote tok]
+    | .text str => mkCApp ``text #[quote str]
     | .seq hls => quoteSeq hls
-    | .span info content => do return mkCApp ``span #[quote info, ← quote' content]
-    | .tactics info startPos endPos content => do
-      have : InterningQuote Highlighted := ⟨quote'⟩
-      return mkCApp ``tactics #[← iquote info, quote startPos, quote endPos, ← quote' content]
-    | .point k info => do return mkCApp ``point #[quote k, ← iquote info]
+    | .span info content => mkCApp ``span #[quote info, quote' content]
+    | .tactics info startPos endPos content =>
+      have : Quote Highlighted := ⟨quote'⟩
+      mkCApp ``tactics #[quote info, quote startPos, quote endPos, quote' content]
+    | .point k info => mkCApp ``point #[quote k, quote info]
 
-  quoteSeq (xs : Array Highlighted) : CoreM Term := do
+  quoteSeq (xs : Array Highlighted) : Term :=
     if xs.size ≤ 10 then
-      return mkCApp (`SubVerso.Highlighting.Highlighted ++ s!"seq{xs.size}".toName) (← xs.mapM quote')
+      mkCApp (`SubVerso.Highlighting.Highlighted ++ s!"seq{xs.size}".toName) (xs.map quote')
     else
       let n := xs.size / 2
       let pre := xs.extract 0 n
       let post := xs.extract n xs.size
-      ``(Highlighted.append $(← quoteSeq pre) $(← quoteSeq post))
-
--- open Lean Syntax in
--- open Highlighted in
--- partial instance : Quote Highlighted where
---  quote := quote'
--- where
---   quote'
---     | .token tok => mkCApp ``token #[quote tok]
---     | .text str => mkCApp ``text #[quote str]
---     | .seq hls =>
---       have : Quote Highlighted := ⟨quote'⟩
---       mkCApp ``seq #[quote hls]
---     | .span info content => mkCApp ``span #[quote info, quote' content]
---     | .tactics info startPos endPos content =>
---       have : Quote Highlighted := ⟨quote'⟩
---       mkCApp ``tactics #[quote info, quote startPos, quote endPos, quote' content]
---     | .point k info => mkCApp ``point #[quote k, quote info]
+      mkCApp ``Highlighted.append #[quoteSeq pre, quoteSeq post]

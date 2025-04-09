@@ -202,28 +202,6 @@ instance : Quote JsonNumber where
     | ⟨mantissa, exponent⟩ => mkCApp ``JsonNumber.mk #[quote mantissa, quote exponent]
 
 open Syntax in
-partial instance : InterningQuote Json where
-  quote := q
-where
-  -- This funny quoting is because the RBMap quotes to an application of Json.mkObj, which is
-  -- non-dependent
-  quoteField {α : _} (_inst : InterningQuote α) (f : (_ : String) × α) : CoreM (TSyntax `term) := do
-    return mkCApp ``Prod.mk #[← iquote f.fst, ← iquote f.snd]
-  q
-    | .null => do return mkCApp ``Json.null #[]
-    | .str s => do return mkCApp ``Json.str #[← iquote s]
-    | .bool b => do return mkCApp ``Json.bool #[quote b]
-    | .num n => do return mkCApp ``Json.num #[quote n]
-    | .arr xs => do
-      have : InterningQuote Json := ⟨q⟩
-      return mkCApp ``Json.arr #[← iquote xs]
-    | .obj fields => do
-      have : InterningQuote ((_ : String) × Json) := ⟨quoteField ⟨q⟩⟩
-      let fieldList ← iquote fields.toArray.toList
-      return mkCApp ``Json.mkObj #[fieldList]
-
-
-open Syntax in
 partial instance : Quote Json where
   quote := q
 where
@@ -268,14 +246,14 @@ instance : Quote Lean.Position where
   quote s :=
     mkCApp ``Lean.Position.mk #[quote s.line, quote s.column]
 
-instance : InterningQuote Example where
-  quote ex := do
-    return Syntax.mkCApp ``Example.mk #[
-      ← iquote ex.highlighted,
-      ← iquote ex.messages,
-      ← iquote ex.original,
-      ← iquote ex.start,
-      ← iquote ex.stop
+instance : Quote Example where
+  quote ex :=
+    Syntax.mkCApp ``Example.mk #[
+      quote ex.highlighted,
+      quote ex.messages,
+      quote ex.original,
+      quote ex.start,
+      quote ex.stop
     ]
 
 elab_rules : command
@@ -285,7 +263,7 @@ elab_rules : command
     if let some json := st.find? name.getId then
       match FromJson.fromJson? json with
       | .ok (e : Example) =>
-        elabCommand <| ← `(def $x : Example := $(← liftTermElabM <| iquote e))
+        elabCommand <| ← `(def $x : Example := $(quote e))
       | .error err =>
         throwErrorAt name "Couldn't deserialize JSON: {err}"
     else
