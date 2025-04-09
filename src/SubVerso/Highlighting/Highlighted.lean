@@ -1,5 +1,5 @@
 /-
-Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
+Copyright (c) 2023-2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
@@ -93,7 +93,7 @@ instance : Quote Level := ⟨quoteLevel⟩
 
 open Token.Kind in
 open Syntax (mkCApp) in
-partial instance : Quote Token.Kind where
+instance : Quote Token.Kind where
   quote
     | .keyword n occ docs => mkCApp ``keyword #[quote n, quote occ, quote docs]
     | .const n sig docs isDef => mkCApp ``const #[quote n, quote sig, quote docs, quote isDef]
@@ -134,7 +134,6 @@ instance [Quote expr] : Quote (Highlighted.Goal expr) where
     | {name, goalPrefix, hypotheses, conclusion} =>
       Syntax.mkCApp ``Highlighted.Goal.mk #[quote name, quote goalPrefix, quote hypotheses, quote conclusion]
 
-
 inductive Highlighted.Span.Kind where
   | error
   | warning
@@ -162,13 +161,15 @@ deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.empty : Highlighted := .seq #[]
 
+def Highlighted.append : Highlighted → Highlighted → Highlighted
+  | .text str1, .text str2 => .text (str1 ++ str2)
+  | .seq xs, .seq ys => .seq (xs ++ ys)
+  | .seq xs,  x => .seq (xs ++ #[x])
+  | x, .seq xs => .seq (#[x] ++ xs)
+  | x, y => .seq #[x, y]
+
 instance : Append Highlighted where
-  append
-    | .text str1, .text str2 => .text (str1 ++ str2)
-    | .seq xs, .seq ys => .seq (xs ++ ys)
-    | .seq xs,  x => .seq (xs ++ #[x])
-    | x, .seq xs => .seq (#[x] ++ xs)
-    | x, y => .seq #[x, y]
+  append := Highlighted.append
 
 partial def Highlighted.definedNames : Highlighted → NameSet
   | .token ⟨tok, _⟩ =>
@@ -179,21 +180,46 @@ partial def Highlighted.definedNames : Highlighted → NameSet
   | .seq hls => hls.map (·.definedNames) |>.foldr Compat.NameSet.union {}
   | .text .. | .point .. => {}
 
+def Highlighted.seq0 : Highlighted := .seq #[]
+def Highlighted.seq1 (x0 : Highlighted) : Highlighted := .seq #[x0]
+def Highlighted.seq2 (x0 x1 : Highlighted) : Highlighted := .seq #[x0, x1]
+def Highlighted.seq3 (x0 x1 x2 : Highlighted) : Highlighted := .seq #[x0, x1, x2]
+def Highlighted.seq4 (x0 x1 x2 x3 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3]
+def Highlighted.seq5 (x0 x1 x2 x3 x4 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4]
+def Highlighted.seq6 (x0 x1 x2 x3 x4 x5 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4, x5]
+def Highlighted.seq7 (x0 x1 x2 x3 x4 x5 x6 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4, x5, x6]
+def Highlighted.seq8 (x0 x1 x2 x3 x4 x5 x6 x7 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4, x5, x6, x7]
+def Highlighted.seq9 (x0 x1 x2 x3 x4 x5 x6 x7 x8 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4, x5, x6, x7, x8]
+def Highlighted.seq10 (x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4, x5, x6, x7, x8, x9]
+
+/-- Makes highlighted code quote into smaller terms -/
+partial def Highlighted.compress : Highlighted → Highlighted
+  | .seq xs =>
+    xs.map (·.compress) |>.foldl (init := .seq #[]) (· ++ ·)
+  | .span info content => .span info content.compress
+  | .tactics info s e content => .tactics info s e content.compress
+  | t => t
+
 open Lean Syntax in
 open Highlighted in
 partial instance : Quote Highlighted where
- quote := quote'
+ quote hl := quote' (compress hl)
 where
-  quoteArray {α : _} (_inst : Quote α) (xs : Array α) : TSyntax `term :=
-    mkCApp ``List.toArray #[quote xs.toList]
-
-  quoteHl {α} [Quote α] : Quote (Goal α) := inferInstance
-
   quote'
     | .token tok => mkCApp ``token #[quote tok]
     | .text str => mkCApp ``text #[quote str]
-    | .seq hls => mkCApp ``seq #[quoteArray ⟨quote'⟩ hls]
+    | .seq hls => quoteSeq hls
     | .span info content => mkCApp ``span #[quote info, quote' content]
     | .tactics info startPos endPos content =>
-      mkCApp ``tactics #[quoteArray (@quoteHl _ ⟨quote'⟩) info, quote startPos, quote endPos, quote' content]
+      have : Quote Highlighted := ⟨quote'⟩
+      mkCApp ``tactics #[quote info, quote startPos, quote endPos, quote' content]
     | .point k info => mkCApp ``point #[quote k, quote info]
+
+  quoteSeq (xs : Array Highlighted) : Term :=
+    if xs.size ≤ 10 then
+      mkCApp (`SubVerso.Highlighting.Highlighted ++ s!"seq{xs.size}".toName) (xs.map quote')
+    else
+      let n := xs.size / 2
+      let pre := xs.extract 0 n
+      let post := xs.extract n xs.size
+      mkCApp ``Highlighted.append #[quoteSeq pre, quoteSeq post]

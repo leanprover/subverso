@@ -205,18 +205,20 @@ open Syntax in
 partial instance : Quote Json where
   quote := q
 where
-  quoteArray {α : _} (_inst : Quote α) (xs : Array α) : TSyntax `term :=
-    mkCApp ``List.toArray #[quote xs.toList]
+  -- This funny quoting is because the RBMap quotes to an application of Json.mkObj, which is
+  -- non-dependent
   quoteField {α : _} (_inst : Quote α) (f : (_ : String) × α) : TSyntax `term :=
-    quote (f.fst, f.snd)
+    mkCApp ``Prod.mk #[quote f.fst, quote f.snd]
   q
     | .null => mkCApp ``Json.null #[]
     | .str s => mkCApp ``Json.str #[quote s]
     | .bool b => mkCApp ``Json.bool #[quote b]
     | .num n => mkCApp ``Json.num #[quote n]
-    | .arr xs => mkCApp ``Json.arr #[(quoteArray ⟨q⟩ xs)]
+    | .arr xs =>
+      have : Quote Json := ⟨q⟩
+      mkCApp ``Json.arr #[quote xs]
     | .obj fields =>
-      let _fieldInst : Quote ((_ : String) × Json) := ⟨quoteField ⟨q⟩⟩
+      have : Quote ((_ : String) × Json) := ⟨quoteField ⟨q⟩⟩
       let fieldList := quote fields.toArray.toList
       mkCApp ``Json.mkObj #[fieldList]
 
@@ -244,10 +246,15 @@ instance : Quote Lean.Position where
   quote s :=
     mkCApp ``Lean.Position.mk #[quote s.line, quote s.column]
 
-open Syntax in
 instance : Quote Example where
   quote ex :=
-    mkCApp ``Example.mk #[quote ex.highlighted, quote ex.messages, quote ex.original, quote ex.start, quote ex.stop]
+    Syntax.mkCApp ``Example.mk #[
+      quote ex.highlighted,
+      quote ex.messages,
+      quote ex.original,
+      quote ex.start,
+      quote ex.stop
+    ]
 
 elab_rules : command
   | `(%dumpE $name:ident into $x) => do
