@@ -248,7 +248,6 @@ def get! {_ : BEq α} {_ : Hashable α} [Inhabited β] : HashMap α β → α �
 def getD {_ : BEq α} {_ : Hashable α} [Inhabited β] : HashMap α β → α → β → β :=
   %first_defined [Std.HashMap.getD, Lean.HashMap.findD]
 
-
 %if_bound GetElem?
   instance [BEq α] [Hashable α] [Inhabited β] : GetElem? (HashMap α β) α β (fun m a => a ∈ m) :=
     %first_succeeding [
@@ -258,6 +257,8 @@ def getD {_ : BEq α} {_ : Hashable α} [Inhabited β] : HashMap α β → α �
 
 instance [BEq α] [Hashable α] : EmptyCollection (HashMap α β) :=
   ⟨%first_succeeding [Std.HashMap.emptyWithCapacity, Std.HashMap.empty, Lean.HashMap.empty]⟩
+
+instance [BEq α] [Hashable α] : Inhabited (HashMap α β) := ⟨{}⟩
 
 end HashMap
 
@@ -294,7 +295,8 @@ def commandWithoutAsync (act : CommandElabM α) : CommandElabM α := do
         let opts := orig.map (h.opts.setBool `Elab.async) |>.getD (h.opts.erase `Elab.async)
         modify fun s => { s with scopes := { h with opts := opts } :: t }
 
-
+def registerEnvExtension (mkInitial : IO σ) :=
+  %first_succeeding [Lean.registerEnvExtension mkInitial (asyncMode := .sync), Lean.registerEnvExtension mkInitial]
 
 -- When a name is removed, hiding it is an error. This makes it tough to be compatible - we want to
 -- hide Lean.HashMap in versions prior to nightly-2025-03-21, but cannot do so later.
