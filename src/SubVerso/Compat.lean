@@ -176,13 +176,15 @@ def getDeclarationRange? [Monad m] [MonadFileMap m] (stx : Syntax) : m (Option D
 
 def messageLogArray (msgs : Lean.MessageLog) : Array Lean.Message := %first_succeeding [msgs.toArray, msgs.msgs.toArray]
 
+set_option linter.unusedVariables false in
 def initSrcSearchPath (pkgSearchPath : SearchPath := ∅) : IO SearchPath := do
   %first_succeeding [
     Lean.initSrcSearchPath (pkgSearchPath := pkgSearchPath),
     Lean.initSrcSearchPath (sp := pkgSearchPath),
     -- leanSysRoot seems to never have been used by this function
     Lean.initSrcSearchPath (leanSysroot := "") (sp := pkgSearchPath),
-    Lean.initSrcSearchPath (_leanSysroot := "") (sp := pkgSearchPath)
+    Lean.initSrcSearchPath (_leanSysroot := "") (sp := pkgSearchPath),
+    Lean.getSrcSearchPath
   ]
 
 namespace NameSet
