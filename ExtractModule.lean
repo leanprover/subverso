@@ -14,7 +14,7 @@ open SubVerso Examples Module
 open SubVerso.Highlighting (Highlighted highlight)
 
 def helpText : String :=
-r##"Extract a module's highlighted representation as JSON
+"Extract a module's highlighted representation as JSON
 
 Usage: subverso-extract-mod MOD [OUT]
 
@@ -24,18 +24,18 @@ If OUT is not specified, the JSON is emitted to standard output.
 Each command in the module is represented as a JSON object with the following
 fields:
 
- * "kind": the syntax kind of the command, as emitted by the Lean parser
+ * \"kind\": the syntax kind of the command, as emitted by the Lean parser
 
- * "range": the start and end source positions of the command. Line and column
-   numbers are one-based, so the start of the file is {"line": 1, "column": 1},
+ * \"range\": the start and end source positions of the command. Line and column
+   numbers are one-based, so the start of the file is {\"line\": 1, \"column\": 1},
    and columns are in terms of Unicode code points.
 
- * "defines": the names defined in the command, as an array of strings.
+ * \"defines\": the names defined in the command, as an array of strings.
 
- * "code": the JSON serialization of SubVerso's highlighted code datatype. The
+ * \"code\": the JSON serialization of SubVerso's highlighted code datatype. The
    specifics of this representation are an implementation detail, and it should
    be deserialized using the same version of SubVerso.
-"##
+"
 
 
 unsafe def go (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
