@@ -81,9 +81,15 @@ structure ExampleConfig where
   error : Bool := false
   /-- This example should be thrown away after elaboration (implied by `error`) -/
   keep : Bool := true
+  /--
+  The example's output (info, warnings, and errors) should be logged even when there's no error to
+  report.
+  -/
+  output : Bool := true
+
 
 instance : Quote ExampleConfig where
-  quote | ⟨error, keep⟩ => Syntax.mkCApp ``ExampleConfig.mk #[quote error, quote keep]
+  quote | ⟨error, keep, output⟩ => Syntax.mkCApp ``ExampleConfig.mk #[quote error, quote keep, quote output]
 
 def elabExampleConfig (stx : TSyntax `term) : TermElabM ExampleConfig := do
   match stx with
@@ -105,7 +111,8 @@ where
       if let `(Lean.Parser.Term.structInstField|$field:ident := $val:term) := item then
         if field.getId == `error then config := {config with error := ← asBool val}
         else if field.getId == `keep then config := {config with keep := ← asBool val}
-        else throwErrorAt field "Unknown field - expected 'error' or 'keep'"
+        else if field.getId == `output then config := {config with output := ← asBool val}
+        else throwErrorAt field "Unknown field - expected 'error' or 'keep' or 'output'"
       else throwErrorAt item "Expected field initializer"
     pure config
 
@@ -116,8 +123,10 @@ def getSimpleExampleConfig (flags : TSyntaxArray ``exampleFlag) : TermElabM Exam
     match flag with
     | `(exampleFlag|+error) => config := {config with error := true}
     | `(exampleFlag|+keep) => config := {config with keep := true}
+    | `(exampleFlag|+output) => config := {config with output := true}
     | `(exampleFlag|-error) => config := {config with error := false}
     | `(exampleFlag|-keep) => config := {config with keep := false}
+    | `(exampleFlag|-output) => config := {config with output := false}
     | other => throwErrorAt other "Unknown flag syntax - should start with '+' or '-'"
   pure config
 
@@ -163,8 +172,12 @@ def elabExample
     let str := text.source.extract leading.startPos trailing.stopPos
     modifyEnv fun ρ =>
       highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
-  for msg in if config.error then newMessages.errorsToWarnings.toList else newMessages.toList do
-    logMessage msg
+
+  -- If there's an unexpected error, always report output. Otherwise, follow the config.
+  if (newMessages.hasErrors && !config.error) || config.output then
+    let toReport := if config.error then newMessages.errorsToWarnings else newMessages
+    for msg in toReport.toList ++ linterMessages.toList do
+      logMessage msg
 
 elab_rules : command
   | `(%example%$tk ( config := $cfg:term ) $name:ident $cmd $cmds* %end) => do
@@ -493,7 +506,7 @@ where
     return out
 
 
-%example test3
+%example -output test3
 def wxyz (n : Nat) := 1 + 3 + n
 #check wxyz
 def xyz (n : Nat) := 1 + %ex{test2}{3 + n}
