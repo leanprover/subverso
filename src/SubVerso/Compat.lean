@@ -114,6 +114,11 @@ instance : CanBeArrayOrList List where
   asArray := List.toArray
   asList := id
 
+def mkImport (module : Name) : Import :=
+  %first_succeeding [
+    {module}, {module, runtimeOnly := false}
+  ]
+
 open CanBeArrayOrList in
 def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) : IO Environment :=
   %first_succeeding [
