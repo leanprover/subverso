@@ -15,7 +15,7 @@ unsafe def main : (args : List String) → IO UInt32
       initSearchPath (← findSysroot)
       let modName := mod.toName
       enableInitializersExecution
-      let env ← SubVerso.Compat.importModules #[{module := modName, runtimeOnly := false}] {}
+      let env ← SubVerso.Compat.importModules #[SubVerso.Compat.mkImport modName] {}
       let modExamples := highlighted.getState env
       let useful := relevant modName modExamples
       let exJson := Json.mkObj useful
