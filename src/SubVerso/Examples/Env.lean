@@ -44,6 +44,15 @@ structure Example where
   original : String
   start : Lean.Position
   stop : Lean.Position
+  /--
+  Does the example follow some particular hierarchical structure?
+
+  Libraries that build on top of SubVerso are encouraged to distinguish examples that encode a
+  special structure by setting their kind. For instance, an example that includes a term and its
+  type as named sub-terms might have the kind `` `typedTerm ``. The code that loads and renders such
+  examples can then check for the kind, and throw a user-friendly error if it's the wrong kind.
+  -/
+  kind : Option Name := none
 deriving ToJson, FromJson, Repr
 
 initialize highlighted : PersistentEnvExtension (NameMap (NameMap Json)) (Name × Name × Example) (NameMap (NameMap Json)) ←
