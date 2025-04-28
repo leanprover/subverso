@@ -585,11 +585,17 @@ def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := 
 def emitString' (string : String) : HighlightM Unit :=
   modify fun st => {st with output := Output.addText st.output string}
 
-def emitToken (info : SourceInfo) (token : Token) : HighlightM Unit := do
-  let .original leading pos trailing endPos := info
-    | throwError "Syntax not original, can't highlight"
-  emitString' leading.toString
+def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM Unit := do
   let text ← getFileMap
+
+  let .original leading pos trailing endPos := info
+    | match info with
+      | .synthetic b e =>
+        let str := text.source.extract b e
+        throwError "Syntax {blame} not original, can't highlight: '{str}'"
+      | _ => throwError "Syntax {blame} not original, can't highlight: {repr info}"
+
+  emitString' leading.toString
   openUntil <| text.toPosition pos
   modify fun st => {st with output := Output.addToken st.output token}
   closeUntil <| text.toPosition endPos
@@ -860,7 +866,7 @@ partial def highlight'
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
       highlight' trees e tactics
       if let some ⟨pos, endPos⟩ := tk.getRange? then
-        emitToken tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
+        emitToken stx tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
       else
         emitString' "."
       highlight' trees field tactics
@@ -887,15 +893,15 @@ partial def highlight'
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Not a field.") do
               let k ← identKind trees ⟨stx⟩
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
-              emitToken i ⟨k, x.toString⟩
+              emitToken stx i ⟨k, x.toString⟩
           | _ =>
             let k ← identKind trees ⟨stx⟩
             withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
-            emitToken i ⟨k, x.toString⟩
+            emitToken stx i ⟨k, x.toString⟩
         | _ =>
           let k ← identKind trees ⟨stx⟩
           withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Identifier token for {stx} is {repr k}") do
-          emitToken i ⟨k, x.toString⟩
+          emitToken stx i ⟨k, x.toString⟩
     | stx@(.atom i x) =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Keyword while looking at {lookingAt}") do
       let docs ← match lookingAt with
@@ -905,10 +911,10 @@ partial def highlight'
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
       if let .sort u docs? ← identKind trees ⟨stx⟩ then
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
-          emitToken i ⟨.sort u docs?, x⟩
+          emitToken stx i ⟨.sort u docs?, x⟩
         return
       else
-        emitToken i <| (⟨ ·,  x⟩) <|
+        emitToken stx i <| (⟨ ·,  x⟩) <|
         match x.get? 0 with
         | some '#' =>
           match x.get? ((0 : String.Pos) + '#') with
@@ -923,18 +929,18 @@ partial def highlight'
     | .node _ `str #[.atom i string] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"String") do
       if let some s := Syntax.decodeStrLit string then
-        emitToken i ⟨.str s, string⟩
+        emitToken stx i ⟨.str s, string⟩
       else
-        emitToken i ⟨.unknown, string⟩
+        emitToken stx i ⟨.unknown, string⟩
     | .node _ `num #[.atom i n] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Numeral") do
         let k ← identKind trees ⟨stx⟩ (allowUnknownTyped := true)
-        emitToken i ⟨k, n⟩
+        emitToken stx i ⟨k, n⟩
     | .node _ ``Lean.Parser.Command.docComment #[.atom i1 opener, .atom i2 body] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Doc comment") do
       if let .original leading pos ws _ := i1 then
         if let .original ws' _ trailing endPos := i2 then
-          emitToken (.original leading pos trailing endPos) ⟨.docComment, opener ++ ws.toString ++ ws'.toString ++ body⟩
+          emitToken stx (.original leading pos trailing endPos) ⟨.docComment, opener ++ ws.toString ++ ws'.toString ++ body⟩
           return
       emitString' (opener ++ " " ++ body ++ "\n")
     | .node _ ``Lean.Parser.Term.dotIdent #[dot@(.atom i _), name@(.ident i' _ x _)] =>
@@ -942,20 +948,20 @@ partial def highlight'
       match i, i' with
       | .original leading pos _ _, .original _ _ trailing endPos =>
         let info := .original leading pos trailing endPos
-        emitToken info ⟨← identKind trees ⟨stx⟩, s!".{x.toString}"⟩
+        emitToken stx info ⟨← identKind trees ⟨stx⟩, s!".{x.toString}"⟩
       | _, _ =>
         highlight' trees dot tactics
         highlight' trees name tactics
     | .node _ k@``Lean.Parser.Term.anonymousCtor #[opener@(.atom oi l), children@(.node _ _ contents), closer@(.atom ci r)] =>
       if let some tk ← anonCtorKind trees stx then
-        emitToken oi ⟨tk, l⟩
+        emitToken stx oi ⟨tk, l⟩
         for child in contents do
           match child with
           | .atom commaInfo "," =>
-            emitToken commaInfo ⟨tk, ","⟩
+            emitToken stx commaInfo ⟨tk, ","⟩
           | _ =>
             highlight' trees child tactics
-        emitToken ci ⟨tk, r⟩
+        emitToken stx ci ⟨tk, r⟩
       else
         let pos := stx.getPos?
         highlight' trees opener tactics (lookingAt := pos.map (k, ·))

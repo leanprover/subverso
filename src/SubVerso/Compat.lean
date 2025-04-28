@@ -148,6 +148,42 @@ def refIdentCase (ri : Lsp.RefIdent)
     | .const x => onConst x
   ]
 
+section
+/- Backports of syntax position functions from later Lean versions-/
+
+def getInfoTrailing? (info : SourceInfo) : Option Substring :=
+  match info with
+  | .original (trailing := trailing) .. => some trailing
+  | _ => none
+
+/--
+Gets the end position information from a `SourceInfo`, if available.
+If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
+will also return `none`.
+-/
+def getInfoTailPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
+  match info, canonicalOnly with
+  | .original (endPos := endPos) ..,  _
+  | .synthetic (endPos := endPos) (canonical := true) .., _
+  | .synthetic (endPos := endPos) .., false => some endPos
+  | _, _     => none
+
+/--
+Gets the end position information of the trailing whitespace of a `SourceInfo`, if available.
+If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
+will also return `none`.
+-/
+def getInfoTrailingTailPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
+  match getInfoTrailing? info with
+  | some trailing => some trailing.stopPos
+  | none => getInfoTailPos? info canonicalOnly
+
+
+def getTrailingTailPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
+  getInfoTrailingTailPos? stx.getTailInfo canonicalOnly
+
+end
+
 /--
 Decodes a byte array to a string.
 

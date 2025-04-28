@@ -16,8 +16,10 @@ open SubVerso Highlighting
 open Lean Elab Command Term
 
 scoped syntax "%ex" "{" ident (" : " term)? "}" "{" term "}" : term
+scoped syntax "%ex" "{" ident (" : " term)? "}" "{" docComment term "}" : term
 scoped syntax "%ex" "{" ident "}" "{" tactic "}" : tactic
 scoped syntax "%ex" "{" ident "}" "{" doElem "}" : doElem
+scoped syntax "%ex" "{" ident "}" "{" term "}" : term
 
 class MonadMessageState (m : Type → Type v) where
   getMessages : m MessageLog
@@ -46,17 +48,24 @@ def savingNewCommandMessages (act : CommandElabM α) : CommandElabM (α × Messa
 scoped syntax (name:=exampleClassicConfig) "%example" ("(" &"config" " := " term")")? ident command command* "%end" : command
 
 syntax exampleFlag := ("+" <|> "-") noWs ident
+syntax exampleKind := "(" &"kind" " := " ident ")"
+syntax exampleItem := exampleFlag <|> exampleKind
 
-scoped syntax (name:=exampleSimpleConfig) "%example" exampleFlag+ ident command command* "%end" : command
+scoped syntax (name:=exampleSimpleConfig) "%example" exampleItem+ ident command command* "%end" : command
 
 example : TermElabM Unit := logError "foo"
 
 partial def extractExamples (stx : Syntax) : StateT (NameMap Syntax) Id Syntax := do
-  if let `(term|%ex { $n:ident }{ $tm:term }%$tk) := stx then
+  if let `(term|%ex { $n:ident }{  $tm:term }%$tk) := stx then
     let next ← extractExamples tm
     -- Save the erased version in case there's nested examples
     let next := augmentTrailing next tk
     modify fun st => st.insert n.getId next
+    pure next
+  else if let `(term|%ex { $n:ident }{ $doc:docComment $tm:term }%$tk) := stx then
+    let next ← extractExamples tm
+    let next := augmentTrailing next tk
+    modify fun st => st.insert n.getId doc
     pure next
   else
     match stx with
@@ -86,10 +95,20 @@ structure ExampleConfig where
   report.
   -/
   output : Bool := true
+  /--
+  If `true`, only embedded named examples are highlighted.
+  -/
+  embeddedOnly : Bool := false
+  /--
+  The example's kind, stored in the resulting environment.
+  -/
+  kind : Option Name := none
 
 
 instance : Quote ExampleConfig where
-  quote | ⟨error, keep, output⟩ => Syntax.mkCApp ``ExampleConfig.mk #[quote error, quote keep, quote output]
+  quote
+    | ⟨error, keep, output, embeddedOnly, kind⟩ =>
+      Syntax.mkCApp ``ExampleConfig.mk #[quote error, quote keep, quote output, quote embeddedOnly, quote kind]
 
 def elabExampleConfig (stx : TSyntax `term) : TermElabM ExampleConfig := do
   match stx with
@@ -105,6 +124,11 @@ where
       | ``false => pure false
       | other => throwErrorAt stx "Expected Boolean literal, got {other}"
     | _ => throwErrorAt stx "Expected Boolean literal"
+  asName (stx : TSyntax `term) : TermElabM Name := do
+    match stx with
+    | `($x:ident) =>
+      pure x.getId.eraseMacroScopes
+    | _ => throwErrorAt stx "Expected identifer"
   mkConfig (items : Array (TSyntax `Lean.Parser.Term.structInstField)) (config : ExampleConfig) : TermElabM ExampleConfig := do
     let mut config := config
     for item in items do
@@ -112,21 +136,26 @@ where
         if field.getId == `error then config := {config with error := ← asBool val}
         else if field.getId == `keep then config := {config with keep := ← asBool val}
         else if field.getId == `output then config := {config with output := ← asBool val}
+        else if field.getId == `embeddedOnly then config := {config with embeddedOnly := ← asBool val}
+        else if field.getId == `kind then config := {config with kind := ← asName val}
         else throwErrorAt field "Unknown field - expected 'error' or 'keep' or 'output'"
       else throwErrorAt item "Expected field initializer"
     pure config
 
 
-def getSimpleExampleConfig (flags : TSyntaxArray ``exampleFlag) : TermElabM ExampleConfig := do
+def getSimpleExampleConfig (items : TSyntaxArray ``exampleItem) : TermElabM ExampleConfig := do
   let mut config : ExampleConfig := {}
-  for flag in flags do
-    match flag with
-    | `(exampleFlag|+error) => config := {config with error := true}
-    | `(exampleFlag|+keep) => config := {config with keep := true}
-    | `(exampleFlag|+output) => config := {config with output := true}
-    | `(exampleFlag|-error) => config := {config with error := false}
-    | `(exampleFlag|-keep) => config := {config with keep := false}
-    | `(exampleFlag|-output) => config := {config with output := false}
+  for item in items do
+    match item with
+    | `(exampleItem|(kind := $k)) => config := { config with kind := some k.getId.eraseMacroScopes }
+    | `(exampleItem|+error) => config := { config with error := true }
+    | `(exampleItem|+keep) => config := { config with keep := true }
+    | `(exampleItem|+output) => config := { config with output := true }
+    | `(exampleItem|+embeddedOnly) => config := { config with embeddedOnly := true }
+    | `(exampleItem|-error) => config := { config with error := false }
+    | `(exampleItem|-keep) => config := { config with keep := false }
+    | `(exampleItem|-output) => config := { config with output := false }
+    | `(exampleItem|-embeddedOnly) => config := { config with embeddedOnly := false }
     | other => throwErrorAt other "Unknown flag syntax - should start with '+' or '-'"
   pure config
 
@@ -152,17 +181,24 @@ def elabExample
     throwErrorAt tok "Expected an error, but none occurred"
   let trees ← getInfoTrees
   let allNewMessages := newMessages ++ linterMessages
-  let hl ← allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees)
+  let hl ←
+    if config.embeddedOnly then
+      pure #[]
+    else
+      allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees)
   let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
-  let .original leading startPos _ _ := allCommands[0]!.getHeadInfo
+  let some b := allCommands[0]!.getPos?
     | throwErrorAt allCommands[0]! "Failed to get source position"
-  let .original _ _ trailing stopPos := Compat.Array.back! allCommands |>.getTailInfo
+  let some e := (Compat.Array.back! allCommands).getTailPos?
     | throwErrorAt (Compat.Array.back! allCommands) "Failed to get source position"
+  let some e' := Compat.getTrailingTailPos? (Compat.Array.back! allCommands)
+    | throwErrorAt (Compat.Array.back! allCommands) "Failed to get ending source position"
+
   let text ← getFileMap
-  let str := text.source.extract leading.startPos trailing.stopPos
+  let str := text.source.extract b e'
   let mod ← getMainModule
   if config.error || !config.keep then set initSt
-  modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+  modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition b, stop := text.toPosition e, messages := freshMsgs, kind := config.kind})
   for (tmName, term) in termExamples do
     let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees)
     let .original leading startPos _ _ := term.getHeadInfo
@@ -171,7 +207,7 @@ def elabExample
       | throwErrorAt term "Failed to get source position"
     let str := text.source.extract leading.startPos trailing.stopPos
     modifyEnv fun ρ =>
-      highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs})
+      highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs, kind := config.kind.map (· ++ `inner)})
 
   -- If there's an unexpected error, always report output. Otherwise, follow the config.
   if (newMessages.hasErrors && !config.error) || config.output then
@@ -184,7 +220,7 @@ elab_rules : command
     let config ← liftTermElabM <| elabExampleConfig cfg
     elabExample tk config name (#[cmd] ++ cmds)
 
-elab_rules  (kind := exampleSimpleConfig) : command
+elab_rules (kind := exampleSimpleConfig) : command
   | `(%example%$tk $items* $name:ident $cmd $cmds* %end) => do
     let config ← liftTermElabM <| getSimpleExampleConfig items
     elabExample tk config name (#[cmd] ++ cmds)
@@ -260,14 +296,16 @@ instance : Quote Lean.Position where
     mkCApp ``Lean.Position.mk #[quote s.line, quote s.column]
 
 instance : Quote Example where
-  quote ex :=
-    Syntax.mkCApp ``Example.mk #[
-      quote ex.highlighted,
-      quote ex.messages,
-      quote ex.original,
-      quote ex.start,
-      quote ex.stop
-    ]
+  quote
+    | ⟨highlighted, messages, original, start, stop, kind⟩ =>
+      Syntax.mkCApp ``Example.mk #[
+        quote highlighted,
+        quote messages,
+        quote original,
+        quote start,
+        quote stop,
+        quote kind
+      ]
 
 elab_rules : command
   | `(%dumpE $name:ident into $x) => do
@@ -310,6 +348,38 @@ elab_rules : command
     let hl ← liftTermElabM <| highlight x #[] trees
     modifyEnv fun ρ =>
       highlighted.addEntry ρ (mod, name.getId, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
+
+scoped syntax "%show_term " ("(" &"kind" " := " ident ")")? ident (":" term)? " := " term : command
+elab_rules : command
+  | `(%show_term $[(kind := $kind?)]? $x $[: $ty]? := $tm) => do
+    let (tm, termExamples) := extractExamples tm {}
+
+    liftTermElabM do
+      let ty ← ty.mapM elabType
+      let _ ← elabTerm tm ty
+      synthesizeSyntheticMVarsNoPostponing
+
+    let trees ← getInfoTrees
+    let mod ← getMainModule
+    let text ← getFileMap
+    let .original leading startPos trailing stopPos := x.raw.getHeadInfo
+      | throwErrorAt x "Failed to get source position"
+    let str := text.source.extract leading.startPos trailing.stopPos
+    let hl ← liftTermElabM <| highlight tm #[] trees
+    let kind? := kind?.map (·.getId.eraseMacroScopes)
+    modifyEnv fun ρ =>
+      highlighted.addEntry ρ (mod, x.getId, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := [], kind := kind?})
+
+    for (tmName, term) in termExamples do
+      let hl ← liftTermElabM (highlight term #[] trees)
+      let .original leading startPos _ _ := term.getHeadInfo
+        | throwErrorAt term "Failed to get source position"
+      let .original _ _ trailing stopPos := term.getTailInfo
+        | throwErrorAt term "Failed to get source position"
+      let str := text.source.extract leading.startPos trailing.stopPos
+      modifyEnv fun ρ =>
+        highlighted.addEntry ρ (mod, x.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := [], kind := kind?.map (· ++ `inner)})
+
 
 private def biDesc : BinderInfo → String
   | .default => "explicit"
