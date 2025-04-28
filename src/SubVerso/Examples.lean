@@ -191,8 +191,8 @@ def elabExample
     | throwErrorAt allCommands[0]! "Failed to get source position"
   let some e := (Compat.Array.back! allCommands).getTailPos?
     | throwErrorAt (Compat.Array.back! allCommands) "Failed to get source position"
-  let some e' := (Compat.Array.back! allCommands).getTrailingTailPos?
-    | throwErrorAt (Compat.Array.back! allCommands) "Failed to get source position"
+  let some e' := Compat.getTrailingTailPos? (Compat.Array.back! allCommands)
+    | throwErrorAt (Compat.Array.back! allCommands) "Failed to get ending source position"
 
   let text ← getFileMap
   let str := text.source.extract b e'
@@ -296,14 +296,16 @@ instance : Quote Lean.Position where
     mkCApp ``Lean.Position.mk #[quote s.line, quote s.column]
 
 instance : Quote Example where
-  quote ex :=
-    Syntax.mkCApp ``Example.mk #[
-      quote ex.highlighted,
-      quote ex.messages,
-      quote ex.original,
-      quote ex.start,
-      quote ex.stop
-    ]
+  quote
+    | ⟨highlighted, messages, original, start, stop, kind⟩ =>
+      Syntax.mkCApp ``Example.mk #[
+        quote highlighted,
+        quote messages,
+        quote original,
+        quote start,
+        quote stop,
+        quote kind
+      ]
 
 elab_rules : command
   | `(%dumpE $name:ident into $x) => do
