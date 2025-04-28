@@ -341,6 +341,12 @@ def commandWithoutAsync (act : CommandElabM α) : CommandElabM α := do
 def registerEnvExtension (mkInitial : IO σ) :=
   %first_succeeding [Lean.registerEnvExtension mkInitial (asyncMode := .sync), Lean.registerEnvExtension mkInitial]
 
+def registerPersistentEnvExtension {α β σ : Type} [Inhabited σ] (descr : PersistentEnvExtensionDescr α β σ) :=
+  %first_succeeding [
+    Lean.registerPersistentEnvExtension {descr with asyncMode := .sync},
+    Lean.registerPersistentEnvExtension descr
+  ]
+
 -- When a name is removed, hiding it is an error. This makes it tough to be compatible - we want to
 -- hide Lean.HashMap in versions prior to nightly-2025-03-21, but cannot do so later.
 

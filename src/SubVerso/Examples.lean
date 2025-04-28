@@ -166,6 +166,24 @@ macro_rules (kind := exampleClassicConfig)
 
 deriving instance Repr for MessageSeverity
 
+private def saveExample
+    [Monad m] [MonadEnv m] [MonadQuotation m] [MonadLog m] [AddMessageContext m] [MonadOptions m]
+    (name : Ident) (hl : Array Highlighted)
+    (original : String) (start stop : Position)
+    (messages : List (MessageSeverity × String))
+    (kind : Option Name) : m Unit := do
+  let mod ← getMainModule
+  if let some forMod := (highlighted.getState (← getEnv)).find? mod then
+    if let some ex := forMod.find? name.getId then
+      logErrorAt name m!"Example '{name.getId}' already exists: {indentD (format ex)}"
+
+  let ex := {
+    highlighted := hl, original := original, start := start, stop := stop,
+    messages := messages, kind := kind
+  }
+  modifyEnv fun ρ =>
+    highlighted.addEntry ρ (mod, name.getId, ex)
+
 def elabExample
     (tok : Syntax) (config : ExampleConfig) (name : Ident) (allCommands : Array (TSyntax `command)) :
     CommandElabM Unit := Compat.commandWithoutAsync do
@@ -196,9 +214,9 @@ def elabExample
 
   let text ← getFileMap
   let str := text.source.extract b e'
-  let mod ← getMainModule
   if config.error || !config.keep then set initSt
-  modifyEnv fun ρ => highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition b, stop := text.toPosition e, messages := freshMsgs, kind := config.kind})
+  saveExample name hl str (text.toPosition b) (text.toPosition e) freshMsgs config.kind
+
   for (tmName, term) in termExamples do
     let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees)
     let .original leading startPos _ _ := term.getHeadInfo
@@ -206,8 +224,9 @@ def elabExample
     let .original _ _ trailing stopPos := term.getTailInfo
       | throwErrorAt term "Failed to get source position"
     let str := text.source.extract leading.startPos trailing.stopPos
-    modifyEnv fun ρ =>
-      highlighted.addEntry ρ (mod, name.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := freshMsgs, kind := config.kind.map (· ++ `inner)})
+    saveExample (mkIdentFrom term <| name.getId ++ tmName) #[hl] str
+      (text.toPosition startPos) (text.toPosition stopPos)
+      freshMsgs (config.kind.map (· ++ `inner))
 
   -- If there's an unexpected error, always report output. Otherwise, follow the config.
   if (newMessages.hasErrors && !config.error) || config.output then
@@ -340,14 +359,12 @@ elab_rules : command
   | `(%show_name $x as $name) => do
     elabCommand <| ← `(def helper := %show_name $x)
     let trees ← getInfoTrees
-    let mod ← getMainModule
     let text ← getFileMap
     let .original leading startPos trailing stopPos := x.raw.getHeadInfo
       | throwErrorAt x "Failed to get source position"
     let str := text.source.extract leading.startPos trailing.stopPos
     let hl ← liftTermElabM <| highlight x #[] trees
-    modifyEnv fun ρ =>
-      highlighted.addEntry ρ (mod, name.getId, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
+    saveExample name #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] none
 
 scoped syntax "%show_term " ("(" &"kind" " := " ident ")")? ident (":" term)? " := " term : command
 elab_rules : command
@@ -360,15 +377,14 @@ elab_rules : command
       synthesizeSyntheticMVarsNoPostponing
 
     let trees ← getInfoTrees
-    let mod ← getMainModule
     let text ← getFileMap
     let .original leading startPos trailing stopPos := x.raw.getHeadInfo
       | throwErrorAt x "Failed to get source position"
     let str := text.source.extract leading.startPos trailing.stopPos
     let hl ← liftTermElabM <| highlight tm #[] trees
     let kind? := kind?.map (·.getId.eraseMacroScopes)
-    modifyEnv fun ρ =>
-      highlighted.addEntry ρ (mod, x.getId, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := [], kind := kind?})
+
+    saveExample x #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] kind?
 
     for (tmName, term) in termExamples do
       let hl ← liftTermElabM (highlight term #[] trees)
@@ -377,9 +393,7 @@ elab_rules : command
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
       let str := text.source.extract leading.startPos trailing.stopPos
-      modifyEnv fun ρ =>
-        highlighted.addEntry ρ (mod, x.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := [], kind := kind?.map (· ++ `inner)})
-
+      saveExample (mkIdentFrom term (x.getId ++ tmName)) #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner))
 
 private def biDesc : BinderInfo → String
   | .default => "explicit"
@@ -483,18 +497,15 @@ def checkSignature
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
       let str := text.source.extract leading.startPos trailing.stopPos
-      modifyEnv fun ρ =>
-        highlighted.addEntry ρ (mod, declName.getId ++ tmName, {highlighted := #[hl], original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
+      saveExample (mkIdentFrom term (declName.getId ++ tmName)) #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] none
+
   return (hl, str, startPos, stopPos)
 
 elab_rules : command
   | `(%signature $name $sigName $sig) => do
-    let mod ← getMainModule
     let text ← getFileMap
     let (hl, str, startPos, stopPos) ← checkSignature sigName sig
-    modifyEnv fun ρ =>
-      highlighted.addEntry ρ (mod, name.getId, {highlighted := hl, original := str, start := text.toPosition startPos, stop := text.toPosition stopPos, messages := []})
-
+    saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none
 
 open System in
 partial def loadExamples
