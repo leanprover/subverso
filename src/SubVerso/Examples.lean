@@ -191,7 +191,7 @@ Transfers some of the trailing whitespace of stx1 to the leading whitespace of s
 This is used to ensure that all the whitespace in the example is included in the example, as Lean's
 own heuristic isn't quite the right thing here.
 -/
-def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
+partial def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
   -- This needs to work in macros that expand to uses of `%example`, so it's not sufficient to
   -- require that stx1 be original (stx2 must be, or highlighting will fail). Instead, the start of
   -- `stx1`'s trailing whitespace is taken to be its end position, including in canonical synthetic
