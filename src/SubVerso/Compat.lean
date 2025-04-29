@@ -156,6 +156,11 @@ def getInfoTrailing? (info : SourceInfo) : Option Substring :=
   | .original (trailing := trailing) .. => some trailing
   | _ => none
 
+def getInfoLeading? (info : SourceInfo) : Option Substring :=
+  match info with
+  | .original (leading := leading) .. => some leading
+  | _ => none
+
 /--
 Gets the end position information from a `SourceInfo`, if available.
 If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
@@ -169,6 +174,18 @@ def getInfoTailPos? (info : SourceInfo) (canonicalOnly := false) : Option String
   | _, _     => none
 
 /--
+Gets the start position information from a `SourceInfo`, if available.
+If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
+will also return `none`.
+-/
+def getInfoHeadPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
+  match info, canonicalOnly with
+  | .original (pos := pos) ..,  _
+  | .synthetic (pos := pos) (canonical := true) .., _
+  | .synthetic (pos := pos) .., false => some pos
+  | _, _     => none
+
+/--
 Gets the end position information of the trailing whitespace of a `SourceInfo`, if available.
 If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
 will also return `none`.
@@ -178,9 +195,21 @@ def getInfoTrailingTailPos? (info : SourceInfo) (canonicalOnly := false) : Optio
   | some trailing => some trailing.stopPos
   | none => getInfoTailPos? info canonicalOnly
 
+/--
+Gets the start position information of the leading whitespace of a `SourceInfo`, if available.
+If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
+will also return `none`.
+-/
+def getInfoLeadingHeadPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
+  match getInfoLeading? info with
+  | some leading => some leading.startPos
+  | none => getInfoHeadPos? info canonicalOnly
 
 def getTrailingTailPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
   getInfoTrailingTailPos? stx.getTailInfo canonicalOnly
+
+def getLeadingHeadPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
+  getInfoLeadingHeadPos? stx.getHeadInfo canonicalOnly
 
 end
 
