@@ -184,11 +184,56 @@ private def saveExample
   modifyEnv fun ρ =>
     highlighted.addEntry ρ (mod, name.getId, ex)
 
+/--
+Transfers some of the trailing whitespace of stx1 to the leading whitespace of stx2.
+
+This is used to ensure that all the whitespace in the example is included in the example, as Lean's
+own heuristic isn't quite the right thing here.
+-/
+def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
+  let some trailing := Compat.getInfoTrailing? stx1.getTailInfo
+    | return stx2
+  let some leading := Compat.getInfoLeading? stx2.getHeadInfo
+    | return stx2
+  if trailing.stopPos != leading.startPos then return stx2 -- only adjust adjacent syntax
+  let mut iter : String.Iterator := trailing.toIterator
+  while iter.pos < trailing.stopPos && iter.curr != '\n' do
+    iter := iter.next
+  if iter.pos ≥ trailing.stopPos then return stx2 -- no newlines found
+  iter := iter.next -- found a newline, but don't include it in the example
+  adjustLeading ({ · with startPos := iter.pos }) stx2
+where
+  adjustLeading (f : Substring → Substring) (stx : Syntax) : Syntax :=
+    adjustLeading' f stx |>.getD stx
+  adjustLeading' (f : Substring → Substring) : Syntax → Option Syntax
+    | .missing => some .missing
+    | .ident info rawVal x pre => some <| .ident (adjustInfo f info) rawVal x pre
+    | .node info kind nodes => Id.run do
+      let mut nodes' := #[]
+      let mut done := false
+      for n in nodes do
+        if done then
+          nodes' := nodes'.push n
+        else if let some n' := adjustLeading' f n then
+          nodes' := nodes'.push n'
+          done := true
+        else
+          nodes' := nodes'.push n
+      if done then
+        some <| .node info kind nodes'
+      else none
+    | .atom info val => some <| .atom (adjustInfo f info) val
+  adjustInfo (f : Substring → Substring) : SourceInfo → SourceInfo
+    | .original leading pos trailing tailPos => .original (f leading) pos trailing tailPos
+    | other => other
+
 def elabExample
     (tok : Syntax) (config : ExampleConfig) (name : Ident) (allCommands : Array (TSyntax `command)) :
     CommandElabM Unit := Compat.commandWithoutAsync do
+  let allCommands := allCommands.modify 0 (fun ⟨stx⟩ => ⟨transferLines name.raw stx⟩)
   let (allCommands, termExamples) := allCommands.mapM extractExamples .empty
   let initSt ← get
+
   let ((), newMessages) ← savingNewCommandMessages (allCommands.forM elabCommand)
   -- Run linters here, because elabCommandTopLevel would usually do it. This does mean examples
   -- will run linters multiple times, but it seems unavoidable while maintaining portability. Note
@@ -207,13 +252,15 @@ def elabExample
   let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
   let some b := allCommands[0]!.getPos?
     | throwErrorAt allCommands[0]! "Failed to get source position"
+  let some b' := Compat.getLeadingHeadPos? allCommands[0]!
+    | throwErrorAt allCommands[0]! "Failed to get source position"
   let some e := (Compat.Array.back! allCommands).getTailPos?
     | throwErrorAt (Compat.Array.back! allCommands) "Failed to get source position"
   let some e' := Compat.getTrailingTailPos? (Compat.Array.back! allCommands)
     | throwErrorAt (Compat.Array.back! allCommands) "Failed to get ending source position"
 
   let text ← getFileMap
-  let str := text.source.extract b e'
+  let str := text.source.extract b' e'
   if config.error || !config.keep then set initSt
   saveExample name hl str (text.toPosition b) (text.toPosition e) freshMsgs config.kind
 
