@@ -67,6 +67,7 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
 structure Context where
   ids : HashMap Lsp.RefIdent Lsp.RefIdent
   definitionsPossible : Bool
+  suppressNamespaces : List Name
 
 def Context.noDefinitions (ctxt : Context) : Context := {ctxt with definitionsPossible := false}
 
@@ -196,6 +197,37 @@ where
       for y in getRefs info do UnionFind.equate x y
       go more
 
+/--
+Removes the unwanted namespaces in question when they occur as prefixes.
+-/
+partial def stripNamespaces [Monad m] [MonadReaderOf Context m] : FormatWithInfos → m Std.Format
+  | ⟨fmt, infos⟩ => do
+    match fmt with
+    | .text str =>
+      -- only rewrite when it's just the name - this is a heuristic that seems to work in practice
+      for i in (← read).suppressNamespaces do
+        let ns := i.toString ++ "."
+        if ns.isPrefixOf str then
+          return .text (str.drop ns.length)
+      pure <| .text str -- only rewrite when tagged
+    | .tag x fmt' =>
+      if let some i := infos.find? x then
+        match i, fmt' with
+        | .ofTermInfo _, .text str =>
+          let mut str := str
+          for i in (← read).suppressNamespaces do
+            str := str.replace (i.toString ++ ".") ""
+          return .text str
+        | _, _ => stripNamespaces fmt'
+      else stripNamespaces fmt'
+    | .group fmt' f => (.group · f) <$> stripNamespaces fmt'
+    | .append fmt' fmt'' => .append <$> stripNamespaces fmt' <*> stripNamespaces fmt''
+    | .nest n fmt' => .nest n <$> stripNamespaces fmt'
+    | .line => pure .line
+    | .align b => pure (.align b)
+    | .nil => pure .nil
+
+
 def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative m]
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false)
@@ -204,9 +236,10 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
   -- qualifiers
-  let ppSig x (env := ci.env) :=
-    (toString ∘ FormatWithInfos.fmt) <$>
-      runMeta (env := env) (lctx := {}) (PrettyPrinter.ppSignature x)
+  let ppSig x (env := ci.env) : ReaderT Context m String := do
+    let sig ← runMeta (env := env) (lctx := {}) (PrettyPrinter.ppSignature x)
+    return toString (← stripNamespaces sig)
+
   let rec findKind e := do
     match e with
     | Expr.fvar id =>
@@ -981,18 +1014,22 @@ partial def highlight'
       for child in children do
         highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
-def highlight (stx : Syntax) (messages : Array Message) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM Highlighted := do
+def highlight (stx : Syntax) (messages : Array Message)
+    (trees : PersistentArray Lean.Elab.InfoTree)
+    (suppressNamespaces : List Name := []) : TermElabM Highlighted := do
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
   let st ← HighlightState.ofMessages stx messages
   let infoTable : InfoTable := .ofInfoTrees trees
 
-  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true⟩ |>.run infoTable |>.run st
+  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
-def highlightProofState (ci : ContextInfo) (goals : List MVarId) (trees : PersistentArray Lean.Elab.InfoTree) : TermElabM (Array (Highlighted.Goal Highlighted)) := do
+def highlightProofState (ci : ContextInfo) (goals : List MVarId)
+    (trees : PersistentArray Lean.Elab.InfoTree)
+    (suppressNamespaces : List Name := []) : TermElabM (Array (Highlighted.Goal Highlighted)) := do
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
   let ids := build modrefs
   let infoTable : InfoTable := .ofInfoTrees trees
-  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false⟩ |>.run infoTable |>.run .empty
+  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, suppressNamespaces⟩ |>.run infoTable |>.run .empty
   pure hlGoals

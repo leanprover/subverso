@@ -251,11 +251,12 @@ def elabExample
     throwErrorAt tok "Expected an error, but none occurred"
   let trees ← getInfoTrees
   let allNewMessages := newMessages ++ linterMessages
+  let suppressedNS ← getSuppressed
   let hl ←
     if config.embeddedOnly then
       pure #[]
     else
-      allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees)
+      allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees suppressedNS)
   let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
   let some b := allCommands[0]!.getPos?
     | throwErrorAt allCommands[0]! "Failed to get source position"
@@ -272,7 +273,7 @@ def elabExample
   saveExample name hl str (text.toPosition b) (text.toPosition e) freshMsgs config.kind
 
   for (tmName, term) in termExamples do
-    let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees)
+    let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees suppressedNS)
     let .original leading startPos _ _ := term.getHeadInfo
       | throwErrorAt term "Failed to get source position"
     let .original _ _ trailing stopPos := term.getTailInfo
@@ -417,7 +418,8 @@ elab_rules : command
     let .original leading startPos trailing stopPos := x.raw.getHeadInfo
       | throwErrorAt x "Failed to get source position"
     let str := text.source.extract leading.startPos trailing.stopPos
-    let hl ← liftTermElabM <| highlight x #[] trees
+    let suppressedNS ← getSuppressed
+    let hl ← liftTermElabM <| highlight x #[] trees suppressedNS
     saveExample name #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] none
 
 scoped syntax "%show_term " ("(" &"kind" " := " ident ")")? ident (":" term)? " := " term : command
@@ -435,13 +437,14 @@ elab_rules : command
     let .original leading startPos trailing stopPos := x.raw.getHeadInfo
       | throwErrorAt x "Failed to get source position"
     let str := text.source.extract leading.startPos trailing.stopPos
-    let hl ← liftTermElabM <| highlight tm #[] trees
+    let suppressedNS ← getSuppressed
+    let hl ← liftTermElabM <| highlight tm #[] trees suppressedNS
     let kind? := kind?.map (·.getId.eraseMacroScopes)
 
     saveExample x #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] kind?
 
     for (tmName, term) in termExamples do
-      let hl ← liftTermElabM (highlight term #[] trees)
+      let hl ← liftTermElabM (highlight term #[] trees suppressedNS)
       let .original leading startPos _ _ := term.getHeadInfo
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo
@@ -540,12 +543,14 @@ def checkSignature
   let .original _ _ trailing stopPos := sig.raw.getTailInfo
     | throwErrorAt sig.raw "Failed to get source position"
   let text ← getFileMap
+  let suppressedNS ← getSuppressed
   let str := text.source.extract leading.startPos trailing.stopPos
   let trees := targetTrees ++ trees
-  let hl ← liftTermElabM <| withDeclName `x <| do pure <| #[← highlight sigName #[] trees, ← highlight sig #[] trees]
+  let hl ← liftTermElabM <| withDeclName `x do
+    pure <| #[← highlight sigName #[] trees suppressedNS, ← highlight sig #[] trees suppressedNS]
 
   for (tmName, term) in termExamples do
-      let hl ← liftTermElabM (highlight term #[] trees)
+      let hl ← liftTermElabM (highlight term #[] trees suppressedNS)
       let .original leading startPos _ _ := term.getHeadInfo
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo
