@@ -185,22 +185,29 @@ private def saveExample
     highlighted.addEntry ρ (mod, name.getId, ex)
 
 /--
-Transfers some of the trailing whitespace of stx1 to the leading whitespace of stx2.
+Transfers some of the trailing whitespace of stx1 to the leading whitespace of stx2. Only works when
+`stx1` is original or canonical.
 
 This is used to ensure that all the whitespace in the example is included in the example, as Lean's
 own heuristic isn't quite the right thing here.
 -/
 def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
-  let some trailing := Compat.getInfoTrailing? stx1.getTailInfo
+  -- This needs to work in macros that expand to uses of `%example`, so it's not sufficient to
+  -- require that stx1 be original (stx2 must be, or highlighting will fail). Instead, the start of
+  -- `stx1`'s trailing whitespace is taken to be its end position, including in canonical synthetic
+  -- nodes.
+
+  let some stopPos := Compat.getInfoTailPos? stx1.getTailInfo (canonicalOnly := true)
     | return stx2
   let some leading := Compat.getInfoLeading? stx2.getHeadInfo
     | return stx2
-  if trailing.stopPos != leading.startPos then return stx2 -- only adjust adjacent syntax
-  let mut iter : String.Iterator := trailing.toIterator
-  while iter.pos < trailing.stopPos && iter.curr != '\n' do
+
+  let mut iter : String.Iterator := ⟨leading.str, stopPos⟩
+  while iter.pos < leading.startPos && iter.curr != '\n' do
     iter := iter.next
-  if iter.pos ≥ trailing.stopPos then return stx2 -- no newlines found
+  if iter.pos ≥ leading.startPos then return stx2 -- no newlines found
   iter := iter.next -- found a newline, but don't include it in the example
+
   adjustLeading ({ · with startPos := iter.pos }) stx2
 where
   adjustLeading (f : Substring → Substring) (stx : Syntax) : Syntax :=
