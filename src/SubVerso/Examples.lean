@@ -7,6 +7,7 @@ import Lean.Environment
 import SubVerso.Highlighting
 import SubVerso.Compat
 import SubVerso.Examples.Env
+import SubVerso.Examples.Messages
 
 
 namespace SubVerso.Examples
