@@ -8,33 +8,46 @@ import Lean.Util.Paths
 
 open Lean Elab Term
 
+section
+open Lean Elab Command
+
 -- This was introduced in #3159, so we need a shim:
-open Lean Elab Command in
 #eval show CommandElabM Unit from do
   if !(← getEnv).contains `Lean.Elab.PartialContextInfo then
     let cmd ← `(def $(mkIdent `Lean.Elab.ContextInfo.mergeIntoOuter?) (inner: ContextInfo) (_outer : Option ContextInfo) : ContextInfo := inner)
     elabCommand cmd
 
-open Lean Elab Command in
 #eval show CommandElabM Unit from do
   if !(← getEnv).contains `ByteArray.usize then
     let cmd ← `(def $(mkIdent `ByteArray.usize) (arr : ByteArray) : USize := arr.size.toUSize)
     elabCommand cmd
 
-open Lean Elab Command in
 #eval show CommandElabM Unit from do
   if !(← getEnv).contains `Lean.MessageLog.toArray then
     let cmd ← `(def $(mkIdent `Lean.MessageLog.toArray) (msgs : Lean.MessageLog) : Array Lean.Message := msgs.toList.toArray)
     elabCommand cmd
 
 -- This was introduced in Lean 4.3.0. Older versions need the definition.
-open Lean Elab Command in
 #eval show CommandElabM Unit from do
   if !(← getEnv).contains `Lean.KVMap.erase then
     let cmd ←
       `(def $(mkIdent `Lean.KVMap.erase) : KVMap → Name → KVMap
           | ⟨m⟩, k => ⟨m.filter fun a => a.1 ≠ k⟩)
     elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `String.Iterator.curr' then
+    let cmd ←
+      `(def $(mkIdent `String.Iterator.curr') (iter : String.Iterator) (_ : iter.hasNext) : Char := iter.curr)
+    elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `String.Iterator.next' then
+    let cmd ←
+      `(def $(mkIdent `String.Iterator.next') (iter : String.Iterator) (_ : iter.hasNext) : String.Iterator := iter.next)
+    elabCommand cmd
+
+end
 
 namespace SubVerso.Compat
 
