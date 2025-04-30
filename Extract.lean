@@ -32,4 +32,5 @@ unsafe def main : (args : List String) → IO UInt32
     pure 1
 where
   relevant (mod : Name) (examples : NameMap (NameMap Json)) : List (String × Json) :=
-    examples.find? mod |>.getD {} |>.toList |>.map fun p => {p with fst := p.fst.toString (escape := false)}
+    examples.find? mod |>.getD {} |>.toList |>.map fun (name, ex) =>
+      (name.toString, ex)
