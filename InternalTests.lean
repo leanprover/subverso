@@ -119,4 +119,55 @@ elab "#evalStrings " "[" ss:str,* "] " e:term : command => do
     "[[none], [some `succ.succ], [none]]\n"]
  (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
 
+/-! # Message Normalization -/
+
+open SubVerso.Examples.Messages
+
+private def ex1 :=
+"(<, ≤, =: relation proved, ? all proofs failed, _: no proof attempted)
+             n k
+1) 743:19-32 ≤ =
+"
+
+#evalString "\"(<, ≤, =: relation proved, ? all proofs failed, _: no proof attempted)\\n             n k\\n1) L1:19-32 ≤ =\\n\"\n"
+ (normalizeLineNums ex1)
+
+private def ex2 :=
+"(<, ≤, =: relation proved, ? all proofs failed, _: no proof attempted)
+             n k
+1) 843:19-32 ≤ =
+2) 843:19-32 ≤ =
+2) 943:19-32 ≤ =
+2) 843:143-32 ≤ =
+"
+
+#evalString "\"(<, ≤, =: relation proved, ? all proofs failed, _: no proof attempted)\\n             n k\\n1) L1:19-32 ≤ =\\n2) L1:19-32 ≤ =\\n2) L2:19-32 ≤ =\\n2) L1:143-32 ≤ =\\n\"\n"
+  (normalizeLineNums ex2)
+
+#evalString "\"List ?m.1\"\n"
+  (normalizeMetavars "List ?m.9783")
+
+#evalString "\"Type ?u.1\"\n" (normalizeMetavars "Type ?u.9783")
+
+#evalString "\"Type ?x.9783\"\n" (normalizeMetavars "Type ?x.9783")
+
+#evalString "\"List ?m.1 \"\n" (normalizeMetavars "List ?m.9783 ")
+
+#evalString "\"x : ?m.1\\nxs : List ?m.1\\nelem : x ∈ xs\\n⊢ xs.length > 0\\n\"\n"
+(normalizeMetavars
+"x : ?m.1034
+xs : List ?m.1034
+elem : x ∈ xs
+⊢ xs.length > 0
+")
+
+#evalString "\"x : ?m.1\\nα : Type ?u.2\\nxs : List ?m.3\\nelem : x ∈ xs\\n⊢ xs.length > 0\"\n"
+(normalizeMetavars
+"x : ?m.1035
+α : Type ?u.1234
+xs : List ?m.1034
+elem : x ∈ xs
+⊢ xs.length > 0")
+
+
 def main : IO Unit := pure ()
