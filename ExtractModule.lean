@@ -71,7 +71,11 @@ unsafe def go (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
     let msgs := Compat.messageLogArray (← cmdSt.get).commandState.messages
 
     let mut items : Array ModuleItem := #[]
-    for cmd in #[headerStx] ++ cmdStx do
+
+    let .node _ _ cmds := mkNullNode (#[headerStx] ++ cmdStx) |>.updateLeading
+      | panic! "updateLeading created non-node"
+
+    for cmd in cmds do
       let hl ← (Frontend.runCommandElabM <| liftTermElabM <| highlight cmd msgs infos) pctx cmdSt
       let defs := hl.definedNames.toArray
 
