@@ -12,6 +12,11 @@ import SubVerso.Examples.Messages
 
 namespace SubVerso.Examples
 
+open Lean
+
+def getSuppressed [Monad m] [MonadOptions m] : m (List Name) := do
+  return (← getOptions) |> SubVerso.examples.suppressedNamespaces.get |>.splitOn " " |>.map (·.toName)
+
 open SubVerso Highlighting
 
 open Lean Elab Command Term

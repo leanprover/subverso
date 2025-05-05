@@ -7,6 +7,12 @@ import SubVerso.Highlighting
 
 open Lean
 
+register_option SubVerso.examples.suppressedNamespaces : String := {
+  defValue := "",
+  group := "SubVerso",
+  descr := "A space-separated list of namespaces to suppress in highlighted example code"
+}
+
 namespace SubVerso.Examples
 open SubVerso.Highlighting
 
@@ -54,17 +60,6 @@ structure Example where
   -/
   kind : Option Name := none
 deriving ToJson, FromJson, Repr
-
-register_option SubVerso.examples.suppressedNamespaces : String := {
-  defValue := "",
-  group := "SubVerso",
-  descr := "A space-separated list of namespaces to suppress in highlighted example code"
-}
-
-def getSuppressed [Monad m] [MonadOptions m] : m (List Name) := do
-  return (← getOptions) |> SubVerso.examples.suppressedNamespaces.get |>.splitOn " " |>.map (·.toName)
-
-
 
 initialize highlighted : PersistentEnvExtension (NameMap (NameMap Json)) (Name × Name × Example) (NameMap (NameMap Json)) ←
   registerPersistentEnvExtension {
