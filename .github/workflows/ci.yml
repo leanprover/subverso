@@ -9,6 +9,7 @@ name: CI
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         toolchain:
           - "4.0.0"
@@ -36,7 +37,7 @@ jobs:
         platform:
           - os: ubuntu-latest
             installer: |
-              curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+              curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
         # Mac runners are rare and expensive, so spot-check that the
         # subprocess support seems OK but be less thorough
         include:
@@ -44,7 +45,7 @@ jobs:
             platform:
               os: macos-latest
               installer: |
-                curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
           - toolchain: "4.8.0"
             platform:
               os: macos-latest
