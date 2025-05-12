@@ -1,5 +1,5 @@
 name = "demo"
-defaultTargets = ["demo"]
+defaultTargets = ["demo", "Demo", "Anchors"]
 
 [[require]]
 name = "subverso"
@@ -7,6 +7,9 @@ git = ".."
 
 [[lean_lib]]
 name = "Demo"
+
+[[lean_lib]]
+name = "Anchors"
 
 [[lean_exe]]
 name = "demo"

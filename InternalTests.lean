@@ -1,6 +1,7 @@
 
 import SubVerso.Examples
 import SubVerso.Highlighting.Highlighted
+import SubVerso.Highlighting.Anchors
 
 /-! These are SubVerso tests that don't involve a subprocess, to make development easier. -/
 
@@ -169,5 +170,24 @@ xs : List ?m.1034
 elem : x ∈ xs
 ⊢ xs.length > 0")
 
+
+section
+open SubVerso.Highlighting
+
+#evalString "some (\"foo\", true)\n" (anchor? "-- ANCHOR: foo").toOption
+
+#evalString "some (\"foo\", true)\n" (anchor? "-- ANCHOR:foo").toOption
+
+#evalString "some (\"foo\", true)\n" (anchor? "           -- ANCHOR:    foo").toOption
+
+#evalString "some (\"foo\", false)\n" (anchor? "-- ANCHOR_END: foo").toOption
+
+#evalString "some (\"foo\", false)\n" (anchor? "-- ANCHOR_END:foo").toOption
+
+#evalString "some (\"foo\", false)\n" (anchor? "           -- ANCHOR_END:    foo").toOption
+
+#evalString "none\n" (anchor? "           -- ANCHOR_END :    foo").toOption
+
+end
 
 def main : IO Unit := pure ()

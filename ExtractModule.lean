@@ -37,6 +37,28 @@ fields:
    be deserialized using the same version of SubVerso.
 "
 
+/--
+Extends the last token's trailing whitespace to include the rest of the file.
+-/
+partial def wholeFile (contents : String) (stx : Syntax) : Syntax :=
+  wholeFile' stx |>.getD stx
+where
+  wholeFile' : Syntax → Option Syntax
+  | Syntax.atom info val => pure <| Syntax.atom (wholeFileInfo info) val
+  | Syntax.ident info rawVal val pre => pure <| Syntax.ident (wholeFileInfo info) rawVal val pre
+  | Syntax.node info k args => do
+    for i in [0:args.size - 1] do
+      let j := args.size - (i + 1)
+      if let some s := wholeFile' args[j]! then
+        let args := args.set! j s
+        return Syntax.node info k args
+    none
+  | .missing => none
+
+  wholeFileInfo : SourceInfo → SourceInfo
+    | .original l l' t _ => .original l l' t contents.endPos
+    | i => i
+
 
 unsafe def go (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
@@ -65,14 +87,22 @@ unsafe def go (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
 
     processCommands pctx cmdSt
 
-    let cmdStx := (← cmdSt.get).commands
+    -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
+    -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.
+    -- This fixup replaces it with an empty substring that's actually at the end of the input, which
+    -- fixes this.
+    let cmdStx := (← cmdSt.get).commands.map fun cmd =>
+      if cmd.isOfKind ``Lean.Parser.Command.eoi then
+        let s := {contents.toSubstring with startPos := contents.endPos, stopPos := contents.endPos}
+        .node .none ``Lean.Parser.Command.eoi #[.atom (.original s contents.endPos s contents.endPos) ""]
+      else cmd
 
     let infos := (← cmdSt.get).commandState.infoState.trees
     let msgs := Compat.messageLogArray (← cmdSt.get).commandState.messages
 
     let mut items : Array ModuleItem := #[]
 
-    let .node _ _ cmds := mkNullNode (#[headerStx] ++ cmdStx) |>.updateLeading
+    let .node _ _ cmds := mkNullNode (#[headerStx] ++ cmdStx) |>.updateLeading |> wholeFile contents
       | panic! "updateLeading created non-node"
 
     for cmd in cmds do

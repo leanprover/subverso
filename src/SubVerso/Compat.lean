@@ -47,6 +47,39 @@ open Lean Elab Command
       `(def $(mkIdent `String.Iterator.next') (iter : String.Iterator) (_ : iter.hasNext) : String.Iterator := iter.next)
     elabCommand cmd
 
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `List.min? then
+    let cmd ←
+      `(def $(mkIdent `List.min?).{u} {α : Type u} [Min α] (xs : List α) : Option α := xs.foldl (fun x y => some (min (x.getD y) y)) none)
+    elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `String.stripPrefix then
+    let cmd ←
+      `(def $(mkIdent `String.stripPrefix) (s p : String) : String := if s.startsWith p then s.drop p.length else s)
+    elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Substring.dropPrefix? then
+    let cmd ←
+      `(partial def $(mkIdent `Substring.dropPrefix?) (s p : Substring) : Option Substring := loop s.startPos p.startPos
+        where
+          loop p1 p2 :=
+            if p2 < p.stopPos then
+              if p1 < s.stopPos then
+                loop (s.str.next p1) (p.str.next p2)
+              else none
+            else pure {s with startPos := p1}
+        )
+    elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `String.dropPrefix? then
+    let cmd ←
+      `(partial def $(mkIdent `String.dropPrefix?) (s p : String) : Option Substring :=
+          s.toSubstring.dropPrefix? p.toSubstring)
+    elabCommand cmd
+
 end
 
 namespace SubVerso.Compat
@@ -344,6 +377,19 @@ instance [BEq α] [Hashable α] : EmptyCollection (HashMap α β) :=
   ⟨%first_succeeding [Std.HashMap.emptyWithCapacity, Std.HashMap.empty, Lean.HashMap.empty]⟩
 
 instance [BEq α] [Hashable α] : Inhabited (HashMap α β) := ⟨{}⟩
+
+def map {_ : BEq α} {_ : Hashable α} (f : α → β → β) (xs : HashMap α β) : HashMap α β :=
+  %first_succeeding [
+    Std.HashMap.map f xs,
+    Lean.HashMap.fold (fun r k v => r.insert k (f k v)) .empty xs
+  ]
+
+def keys {_ : BEq α} {_ : Hashable α} (xs : HashMap α β) : List α:=
+  %first_succeeding [
+    Std.HashMap.keys xs,
+    Lean.HashMap.fold (fun r k _ => k :: r) [] xs
+  ]
+
 
 end HashMap
 

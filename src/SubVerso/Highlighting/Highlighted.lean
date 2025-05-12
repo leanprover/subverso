@@ -154,14 +154,27 @@ inductive Highlighted where
   | seq (highlights : Array Highlighted)
   -- TODO replace messages as strings with structured info
   | span (info : Array (Highlighted.Span.Kind × String)) (content : Highlighted)
-
   | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
   | point (kind : Highlighted.Span.Kind) (info : String)
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.empty : Highlighted := .seq #[]
 
-def Highlighted.append : Highlighted → Highlighted → Highlighted
+/--
+Checks whether the highlighted code would render as the empty string with no metadata.
+-/
+partial def Highlighted.isEmpty : Highlighted → Bool
+  | .text s => s.isEmpty
+  | .seq xs => xs.all isEmpty
+  | _ => false
+
+/--
+Appends two pieces of highlighted code, applying some simplifications.
+-/
+def Highlighted.append (hl1 hl2 : Highlighted) : Highlighted :=
+  if hl1.isEmpty then hl2
+  else if hl2.isEmpty then hl1
+  else match hl1, hl2 with
   | .text str1, .text str2 => .text (str1 ++ str2)
   | .seq xs, .seq ys => .seq (xs ++ ys)
   | .seq xs,  x => .seq (xs ++ #[x])
@@ -171,6 +184,9 @@ def Highlighted.append : Highlighted → Highlighted → Highlighted
 instance : Append Highlighted where
   append := Highlighted.append
 
+/--
+Extracts all names that are marked as definition sites.
+-/
 partial def Highlighted.definedNames : Highlighted → NameSet
   | .token ⟨tok, _⟩ =>
     match tok with
@@ -192,18 +208,31 @@ def Highlighted.seq8 (x0 x1 x2 x3 x4 x5 x6 x7 : Highlighted) : Highlighted := .s
 def Highlighted.seq9 (x0 x1 x2 x3 x4 x5 x6 x7 x8 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4, x5, x6, x7, x8]
 def Highlighted.seq10 (x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 : Highlighted) : Highlighted := .seq #[x0, x1, x2, x3, x4, x5, x6, x7, x8, x9]
 
-/-- Makes highlighted code quote into smaller terms -/
-partial def Highlighted.compress : Highlighted → Highlighted
-  | .seq xs =>
-    xs.map (·.compress) |>.foldl (init := .seq #[]) (· ++ ·)
-  | .span info content => .span info content.compress
-  | .tactics info s e content => .tactics info s e content.compress
-  | t => t
+/--
+Simplifies the internal structure of highlighted code as follows:
+ 1. Nested `seq`s are flattened
+ 2. Adjacent `text`s and `seq`s are merged
+ 3. Empty nodes are removed
+-/
+partial def Highlighted.simplifyInternals : (hl : Highlighted) → Highlighted
+  | .seq xs => xs.map simplifyInternals |>.foldl (init := .empty) .append
+  | hl@(.point ..) => hl
+  | .tactics x y z m => .tactics x y z (simplifyInternals m)
+  | .span x y => .span x (simplifyInternals y)
+  | .text "" => .empty
+  | .text s => .text s
+  | .token t => .token t
+
+instance : ToJson Highlighted where
+  toJson hl :=
+    -- Get the derived instance, and call it on the simplified data
+    let ⟨toJson'⟩ := inferInstanceAs (ToJson Highlighted)
+    toJson' hl.simplifyInternals
 
 open Lean Syntax in
 open Highlighted in
 partial instance : Quote Highlighted where
- quote hl := quote' (compress hl)
+ quote hl := quote' hl.simplifyInternals
 where
   quote'
     | .token tok => mkCApp ``token #[quote tok]
@@ -223,3 +252,40 @@ where
       let pre := xs.extract 0 n
       let post := xs.extract n xs.size
       mkCApp ``Highlighted.append #[quoteSeq pre, quoteSeq post]
+
+namespace Highlighted
+
+/--
+Converts highlighted code to a string.
+-/
+partial def toString : Highlighted → String
+  | .seq xs => xs.foldl (init := "") (fun s hl => s ++ hl.toString)
+  | .point .. => ""
+  | .tactics _ _ _ x | .span _ x => x.toString
+  | .text s | .token ⟨_, s⟩ => s
+
+/--
+Converts a goal to a string.
+
+No pretty-printing is performed, so this is mostly useful for internal tests and expected output,
+rather than display to readers.
+-/
+partial def Goal.toString : Highlighted.Goal Highlighted → String
+  | {name, goalPrefix, hypotheses, conclusion} =>
+    (name.map ("case " ++ ·.toString ++ " =>\n") |>.getD "") ++
+    ((hypotheses.map hString) |>.toList |> String.join) ++
+    goalPrefix ++
+    conclusion.toString
+where hString | (x, k, t) => s!"  {Highlighted.token ⟨k, x.toString⟩ |>.toString}: {t.toString}\n"
+
+private def minIndentString (str : String) : Nat :=
+  let indents := str.split (· == '\n') |>.filterMap fun line =>
+    if line.all (· == ' ') then none
+    else some (line.takeWhile (· == ' ') |>.length)
+  indents.min?.getD 0
+
+/--
+Returns the minimal indentation of any non-whitespace line of code.
+-/
+def indentation (hl : Highlighted) : Nat := Id.run do
+  minIndentString hl.toString
