@@ -60,7 +60,7 @@ where
     | i => i
 
 
-unsafe def go (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
+unsafe def go (suppressedNamespaces : List Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
     initSearchPath (← findSysroot)
     let modName := mod.toName
@@ -106,7 +106,7 @@ unsafe def go (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
       | panic! "updateLeading created non-node"
 
     for cmd in cmds do
-      let hl ← (Frontend.runCommandElabM <| liftTermElabM <| highlight cmd msgs infos) pctx cmdSt
+      let hl ← (Frontend.runCommandElabM <| liftTermElabM <| highlight cmd msgs infos (suppressNamespaces := suppressedNamespaces)) pctx cmdSt
       let defs := hl.definedNames.toArray
 
       let range := cmd.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e)
@@ -126,15 +126,33 @@ unsafe def go (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
     IO.eprintln s!"error finding highlighted code: {toString e}"
     return 2
 
-unsafe def main : (args : List String) → IO UInt32
-  | [mod] => do
-    go mod (← IO.getStdout)
-  | [mod, outFile] => do
+structure Config where
+  suppressedNamespaces : List Name := []
+  mod : String
+  outFile : Option String := none
+
+def Config.fromArgs (args : List String) : Except String Config := go [] args
+where
+  go (nss : List Name) : List String → Except String Config
+    | "--suppress-namespace" :: more =>
+      if let ns :: more := more then
+        go (ns.toName :: nss) more
+      else
+        throw "No namespace given after --suppress-namespace"
+    | [mod] => pure {suppressedNamespaces := nss, mod}
+    | [mod, outFile] => pure {suppressedNamespaces := nss, mod, outFile := some outFile}
+    | other => throw s!"Didn't understand arguments: {other}"
+
+unsafe def main (args : List String) : IO UInt32 := do
+  match Config.fromArgs args with
+  | .error e =>
+    IO.eprintln e
+    IO.println helpText
+    pure 1
+  | .ok {suppressedNamespaces, mod, outFile := none} =>
+    go suppressedNamespaces mod (← IO.getStdout)
+  | .ok {suppressedNamespaces, mod, outFile := some outFile} =>
     if let some p := (outFile : System.FilePath).parent then
       IO.FS.createDirAll p
     IO.FS.withFile outFile .write fun h =>
-      go mod (.ofHandle h)
-  | other => do
-    IO.eprintln s!"Didn't understand args: {other}"
-    IO.println helpText
-    pure 1
+      go suppressedNamespaces mod (.ofHandle h)
