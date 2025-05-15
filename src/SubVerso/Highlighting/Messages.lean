@@ -10,10 +10,12 @@ namespace SubVerso.Highlighting.Messages
 
 open Lean
 
+private def originalErrorTag := `SubVerso.originallyError
+
 /--
 Marks a message as originally having been an error, even if it was downgraded to a warning.
 -/
-def originallyError (msg : MessageData) : MessageData := .tagged `SubVerso.originallyError msg
+def originallyError (msg : MessageData) : MessageData := .tagged originalErrorTag msg
 
 /--
 Converts the errors in a message log into warnings, recording that they were originally errors for later reconstruction.
@@ -24,6 +26,20 @@ def errorsToWarnings (log : MessageLog) : MessageLog :=
         | MessageSeverity.error => { m with severity := MessageSeverity.warning, data := originallyError m.data }
         | _ => m
 
+open MessageData in
+partial def getTags : MessageData → List Name
+  | withContext _ msg       => getTags msg
+  | withNamingContext _ msg => getTags msg
+  | nest _ msg              => getTags msg
+  | group msg               => getTags msg
+  | compose msg₁ msg₂       => getTags msg₁ ++ getTags msg₂
+  | tagged n msg            => n :: getTags msg
+  | .trace data msg msgs     => data.cls :: getTags msg ++ msgs.toList.flatMap getTags
+  | _                       => []
+
 
 def severity (msg : Message) : MessageSeverity :=
-  if msg.data.hasTag (· == `SubVerso.originallyError) then .error else msg.severity
+  dbg_trace "HEY! {getTags msg.data} {msg.data.hasTag (· == originalErrorTag)}"
+  if msg.data.hasTag (· == originalErrorTag) then
+    .error
+  else msg.severity
