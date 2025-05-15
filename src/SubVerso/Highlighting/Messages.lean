@@ -26,20 +26,8 @@ def errorsToWarnings (log : MessageLog) : MessageLog :=
         | MessageSeverity.error => { m with severity := MessageSeverity.warning, data := originallyError m.data }
         | _ => m
 
-open MessageData in
-partial def getTags : MessageData → List Name
-  | withContext _ msg       => getTags msg
-  | withNamingContext _ msg => getTags msg
-  | nest _ msg              => getTags msg
-  | group msg               => getTags msg
-  | compose msg₁ msg₂       => getTags msg₁ ++ getTags msg₂
-  | tagged n msg            => n :: getTags msg
-  | .trace data msg msgs     => data.cls :: getTags msg ++ msgs.toList.flatMap getTags
-  | _                       => []
-
-
+/--
+Gets the severity of a message, taking recorded original severities into account.
+-/
 def severity (msg : Message) : MessageSeverity :=
-  dbg_trace "HEY! {getTags msg.data} {msg.data.hasTag (· == originalErrorTag)}"
-  if msg.data.hasTag (· == originalErrorTag) then
-    .error
-  else msg.severity
+  if msg.data.hasTag (· == originalErrorTag) then .error else msg.severity
