@@ -1,5 +1,5 @@
 /-
-Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
+Copyright (c) 2023-2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
@@ -9,6 +9,7 @@ import Lean.Widget.TaggedText
 
 import SubVerso.Compat
 import SubVerso.Highlighting.Highlighted
+import SubVerso.Highlighting.Messages
 
 open Lean hiding perhaps (HashMap)
 open Elab
@@ -17,7 +18,6 @@ open Lean.Widget
 open Lean.PrettyPrinter (InfoPerPos)
 open SubVerso.Compat (HashMap)
 
---initialize registerTraceClass `SubVerso.Highlighting.Code
 
 namespace SubVerso.Highlighting
 
@@ -571,13 +571,14 @@ def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
 def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.endPos.map pos.notAfter |>.getD true
 
+
 partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
   if let some msg ← nextMessage? then
     if needsOpening pos msg then
       advanceMessages
       let str ← msg.messages.mapM fun m => do
           let kind : Highlighted.Span.Kind :=
-            match m.severity with
+            match SubVerso.Highlighting.Messages.severity m with
             | .error => .error
             | .warning => .warning
             | .information => .info

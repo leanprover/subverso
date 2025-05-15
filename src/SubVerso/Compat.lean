@@ -292,6 +292,12 @@ def getDeclarationRange? [Monad m] [MonadFileMap m] (stx : Syntax) : m (Option D
 
 def messageLogArray (msgs : Lean.MessageLog) : Array Lean.Message := %first_succeeding [msgs.toArray, msgs.msgs.toArray]
 
+def mapMessages (msgLog : Lean.MessageLog) (f : Lean.Message → Lean.Message) : Lean.MessageLog :=
+  %first_succeeding [
+    { msgLog with msgs := msgLog.msgs.map f },
+    { msgLog with unreported := msgLog.unreported.map f }
+  ]
+
 set_option linter.unusedVariables false in
 def initSrcSearchPath (pkgSearchPath : SearchPath := ∅) : IO SearchPath := do
   %first_succeeding [
