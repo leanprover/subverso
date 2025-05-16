@@ -7,3 +7,4 @@ import SubVerso.Highlighting.Highlighted
 import SubVerso.Highlighting.Code
 import SubVerso.Highlighting.Anchors
 import SubVerso.Highlighting.String
+import SubVerso.Highlighting.Split
