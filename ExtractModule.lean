@@ -11,7 +11,7 @@ import Lean.Util.Paths
 open Lean Elab Frontend
 open Lean.Elab.Command hiding Context
 open SubVerso Examples Module
-open SubVerso.Highlighting (Highlighted highlight)
+open SubVerso.Highlighting (Highlighted highlight highlightMany)
 
 def helpText : String :=
 "Extract a module's highlighted representation as JSON
@@ -100,23 +100,22 @@ unsafe def go (suppressedNamespaces : List Name) (mod : String) (out : IO.FS.Str
     let infos := (← cmdSt.get).commandState.infoState.trees
     let msgs := Compat.messageLogArray (← cmdSt.get).commandState.messages
 
-    let mut items : Array ModuleItem := #[]
 
     let .node _ _ cmds := mkNullNode (#[headerStx] ++ cmdStx) |>.updateLeading |> wholeFile contents
       | panic! "updateLeading created non-node"
 
-    for cmd in cmds do
-      let hl ← (Frontend.runCommandElabM <| liftTermElabM <| highlight cmd msgs infos (suppressNamespaces := suppressedNamespaces)) pctx cmdSt
-      let defs := hl.definedNames.toArray
+    let infos := infos.toArray.map some
+    let infos := #[none] ++ infos
 
-      let range := cmd.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e)
+    let hls ← (Frontend.runCommandElabM <| liftTermElabM <| highlightMany cmds msgs infos (suppressNamespaces := suppressedNamespaces)) pctx cmdSt
+    let items : Array ModuleItem := hls.zip cmds |>.map fun (hl, stx) => {
+      defines := hl.definedNames.toArray,
+      kind := stx.getKind,
+      range := stx.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e),
+      code := hl
+    }
 
-      items := items.push {
-        defines := defs,
-        kind := cmd.getKind,
-        range := range,
-        code := hl
-      }
+
 
     out.putStrLn (toString (Json.arr (items.map toJson)))
 

@@ -57,7 +57,7 @@ where
     | none, .node .. => panic! "Unexpected contextless node"
     | _, .hole _ => table
 
-def InfoTable.ofInfoTrees (ts : PersistentArray InfoTree) (init : InfoTable := {}) : InfoTable :=
+def InfoTable.ofInfoTrees (ts : Array InfoTree) (init : InfoTable := {}) : InfoTable :=
   ts.foldl (init := init) (fun tbl t => .ofInfoTree t (init := tbl))
 
 def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (ContextInfo × TacticInfo)) := do
@@ -347,7 +347,7 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMa
       pure none
 
 def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
-    (trees : PersistentArray InfoTree) (stx : TSyntax `ident)
+    (trees : Array InfoTree) (stx : TSyntax `ident)
     (allowUnknownTyped : Bool := false)
     : ReaderT Context m Token.Kind := do
   let mut kind : Token.Kind := .unknown
@@ -359,7 +359,7 @@ def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMC
   pure kind
 
 def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
-    (trees : PersistentArray InfoTree) (stx : Syntax)
+    (trees : Array InfoTree) (stx : Syntax)
     : ReaderT Context m (Option Token.Kind) := do
   let mut kind : Token.Kind := .unknown
   for t in trees do
@@ -372,7 +372,7 @@ def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [Mona
   | .anonCtor .. => some kind
   | _ => none
 
-def infoExists [Monad m] [MonadLiftT IO m] (trees : PersistentArray InfoTree) (stx : Syntax) : m Bool := do
+def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Syntax) : m Bool := do
   for t in trees do
     for _ in infoForSyntax t stx do
       return true
@@ -822,7 +822,7 @@ partial def findTactics'
   return none
 
 partial def findTactics
-    (trees : PersistentArray Lean.Elab.InfoTree) -- TODO: use the table instead of these
+    (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) :=
   withTraceNode `SubVerso.Highlighting.Code (fun x => pure m!"findTactics {stx} ==> {match x with | .error _ => "err" | .ok v => v.map (fun _ => "yes") |>.getD "no"}") <| do
@@ -882,7 +882,7 @@ partial def findTactics
 
 
 partial def highlight'
-    (trees : PersistentArray Lean.Elab.InfoTree)
+    (trees : Array Lean.Elab.InfoTree)
     (stx : Syntax)
     (tactics : Bool)
     (lookingAt : Option (Name × String.Pos) := none)
@@ -1018,18 +1018,45 @@ partial def highlight'
 def highlight (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := []) : TermElabM Highlighted := do
-  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
+  let trees := trees.toArray
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
+
   let st ← HighlightState.ofMessages stx messages
   let infoTable : InfoTable := .ofInfoTrees trees
 
   let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
+/--
+Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
+module, where each command has its own corresponding tree.
+
+The work of constructing the alias table is performed once, with all the trees together.
+-/
+def highlightMany (stxs : Array Syntax) (messages : Array Message)
+    (trees : Array (Option Lean.Elab.InfoTree))
+    (suppressNamespaces : List Name := []) : TermElabM (Array Highlighted) := do
+  let trees' := trees.filterMap id
+  let infoTable : InfoTable := .ofInfoTrees trees'
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
+  let ids := build modrefs
+  let st ← HighlightState.ofMessages (mkNullNode stxs) messages
+
+  if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
+  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
+  pure hls
+where
+  go t stx := do
+    let _ ← highlight' (Option.map (#[·]) t |>.getD #[]) stx true
+    modifyGet fun (st : HighlightState) => (Highlighted.fromOutput st.output, {st with output := []})
+
+
 def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := []) : TermElabM (Array (Highlighted.Goal Highlighted)) := do
-  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees.toArray
+  let trees := trees.toArray
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
   let infoTable : InfoTable := .ofInfoTrees trees
   let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, suppressNamespaces⟩ |>.run infoTable |>.run .empty
