@@ -35,6 +35,7 @@ jobs:
           - "4.20.0-rc4"
           - "nightly-2025-04-23"
           - "nightly-2025-05-08"
+          - "nightly-2025-05-19"
         platform:
           - os: ubuntu-latest
             installer: |
