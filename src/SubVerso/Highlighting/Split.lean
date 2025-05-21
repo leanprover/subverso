@@ -71,3 +71,48 @@ def Highlighted.split (p : String → Bool) (hl : Highlighted) : Array Highlight
       current := .empty
 
   return out
+
+def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
+  let mut todo := [some hl]
+  let mut out := #[]
+  let mut ctx : SplitCtx := {}
+  let mut current : Highlighted := .empty
+  repeat
+    match todo with
+    | [] =>
+      out := out.push current
+      break
+    | none :: hs =>
+      todo := hs
+      let (c, ctx') := ctx.split current
+      current := c
+      ctx := ctx'
+    | some (.seq xs) :: hs =>
+      todo := xs.toList.map some ++ hs
+    | some this@(.token ..) :: hs =>
+      todo := hs
+      current := current ++ this
+    | some this@(.text str) :: hs =>
+      if str.contains '\n' then
+        let pre := str.takeWhile (· ≠ '\n') ++ "\n"
+        let post := str.drop pre.length
+        todo := some (.text post) :: hs
+        current := current ++ .text pre
+        out := out.push current
+        current := .empty
+      else
+        todo := hs
+        current := current ++ this
+    | some this@(.point ..) :: hs =>
+      todo := hs
+      current := current ++ this
+    | some (.span msgs x) :: hs =>
+      todo := some x :: none :: hs
+      ctx := ctx.push current (.span msgs)
+      current := .empty
+    | some (.tactics gs b e x) :: hs =>
+      todo := some x :: none :: hs
+      ctx := ctx.push current (.tactics gs b e)
+      current := .empty
+
+  return out
