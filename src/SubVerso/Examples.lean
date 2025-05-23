@@ -592,10 +592,11 @@ partial def loadExamples
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
   -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared
-  -- libraries.
+  -- libraries. Removing LEAN_GITHASH prevents it from getting into trace files in the subprocess.
   let lakeVars :=
     #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP",
       "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH",
+      "LEAN_GITHASH",
       "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
 
   let cmd := "elan"
