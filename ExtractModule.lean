@@ -16,10 +16,17 @@ open SubVerso.Highlighting (Highlighted highlight highlightMany)
 def helpText : String :=
 "Extract a module's highlighted representation as JSON
 
-Usage: subverso-extract-mod MOD [OUT]
+Usage: subverso-extract-mod [OPTS] MOD [OUT]
 
 MOD is the name of a Lean module, and OUT is the destination of the JSON.
 If OUT is not specified, the JSON is emitted to standard output.
+
+OPTS may be:
+  --suppress-namespace NS
+    Suppress the showing of namespace NS in metadata
+
+  --suppress-namespaces FILE
+    Suppress the showing of the whitespace-delimited list of namespaces in FILE
 
 Each command in the module is represented as a JSON object with the following
 fields:
