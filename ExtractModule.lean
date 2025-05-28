@@ -16,10 +16,17 @@ open SubVerso.Highlighting (Highlighted highlight highlightMany)
 def helpText : String :=
 "Extract a module's highlighted representation as JSON
 
-Usage: subverso-extract-mod MOD [OUT]
+Usage: subverso-extract-mod [OPTS] MOD [OUT]
 
 MOD is the name of a Lean module, and OUT is the destination of the JSON.
 If OUT is not specified, the JSON is emitted to standard output.
+
+OPTS may be:
+  --suppress-namespace NS
+    Suppress the showing of namespace NS in metadata
+
+  --suppress-namespaces FILE
+    Suppress the showing of the whitespace-delimited list of namespaces in FILE
 
 Each command in the module is represented as a JSON object with the following
 fields:
@@ -60,7 +67,7 @@ where
     | i => i
 
 
-unsafe def go (suppressedNamespaces : List Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
+unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
     initSearchPath (← findSysroot)
     let modName := mod.toName
@@ -107,15 +114,13 @@ unsafe def go (suppressedNamespaces : List Name) (mod : String) (out : IO.FS.Str
     let infos := infos.toArray.map some
     let infos := #[none] ++ infos
 
-    let hls ← (Frontend.runCommandElabM <| liftTermElabM <| highlightMany cmds msgs infos (suppressNamespaces := suppressedNamespaces)) pctx cmdSt
+    let hls ← (Frontend.runCommandElabM <| liftTermElabM <| highlightMany cmds msgs infos (suppressNamespaces := suppressedNamespaces.toList)) pctx cmdSt
     let items : Array ModuleItem := hls.zip cmds |>.map fun (hl, stx) => {
       defines := hl.definedNames.toArray,
       kind := stx.getKind,
       range := stx.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e),
       code := hl
     }
-
-
 
     out.putStrLn (toString (Json.arr (items.map toJson)))
 
@@ -126,32 +131,41 @@ unsafe def go (suppressedNamespaces : List Name) (mod : String) (out : IO.FS.Str
     return 2
 
 structure Config where
-  suppressedNamespaces : List Name := []
+  suppressedNamespaces : Array Name := #[]
   mod : String
   outFile : Option String := none
 
-def Config.fromArgs (args : List String) : Except String Config := go [] args
+def Config.fromArgs (args : List String) : IO Config := go #[] args
 where
-  go (nss : List Name) : List String → Except String Config
+  go (nss : Array Name) : List String → IO Config
     | "--suppress-namespace" :: more =>
       if let ns :: more := more then
-        go (ns.toName :: nss) more
+        go (nss.push ns.toName) more
       else
-        throw "No namespace given after --suppress-namespace"
+        throw <| .userError "No namespace given after --suppress-namespace"
+    | "--suppress-namespaces" :: more => do
+      if let file :: more := more then
+        let contents ← IO.FS.readFile file
+        let nss' := contents.split (·.isWhitespace) |>.filter (!·.isEmpty) |>.map (·.toName)
+        go (nss ++ nss') more
+      else
+        throw <| .userError "No namespace file given after --suppress-namespaces"
     | [mod] => pure {suppressedNamespaces := nss, mod}
     | [mod, outFile] => pure {suppressedNamespaces := nss, mod, outFile := some outFile}
-    | other => throw s!"Didn't understand arguments: {other}"
+    | other => throw <| .userError s!"Didn't understand remaining arguments: {other}"
 
 unsafe def main (args : List String) : IO UInt32 := do
-  match Config.fromArgs args with
-  | .error e =>
+  try
+    let {suppressedNamespaces, mod, outFile} ← Config.fromArgs args
+    match outFile with
+    | none =>
+      go suppressedNamespaces mod (← IO.getStdout)
+    | some outFile =>
+      if let some p := (outFile : System.FilePath).parent then
+        IO.FS.createDirAll p
+      IO.FS.withFile outFile .write fun h =>
+        go suppressedNamespaces mod (.ofHandle h)
+  catch e =>
     IO.eprintln e
     IO.println helpText
     pure 1
-  | .ok {suppressedNamespaces, mod, outFile := none} =>
-    go suppressedNamespaces mod (← IO.getStdout)
-  | .ok {suppressedNamespaces, mod, outFile := some outFile} =>
-    if let some p := (outFile : System.FilePath).parent then
-      IO.FS.createDirAll p
-    IO.FS.withFile outFile .write fun h =>
-      go suppressedNamespaces mod (.ofHandle h)
