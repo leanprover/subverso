@@ -381,8 +381,9 @@ def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Synta
 
 inductive Output where
   | seq (emitted : Array Highlighted)
-  | span (info : Array (Highlighted.Span.Kind × String))
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : Nat) (endPos : Nat)
+  | span (info : Array (Highlighted.Span.Kind × String)) (startPos : String.Pos) (endPos : Option String.Pos)
+  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : String.Pos) (endPos : String.Pos)
+deriving Repr
 
 def Output.add (output : List Output) (hl : Highlighted) : List Output :=
   match output with
@@ -397,8 +398,19 @@ def Output.addToken (output : List Output) (token : Token) : List Output :=
 def Output.addText (output : List Output) (str : String) : List Output :=
   Output.add output (.text str)
 
-def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.Kind × String)) : List Output :=
-  .span messages :: output
+def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.Kind × String)) (startPos : String.Pos) (endPos : Option String.Pos) : List Output :=
+  match output with
+  | t@(.tactics _ start stop) :: output' =>
+    if start == startPos && (endPos.map (fun e => (stop ≤ e : Bool)) |>.getD false) then
+      t :: Output.openSpan output' messages startPos endPos
+    else
+      .span messages startPos endPos :: output
+  | h@(.seq hl) :: output' =>
+    if hl.all (·.isEmpty) then
+      h :: Output.openSpan output' messages startPos endPos
+    else
+      .span messages startPos endPos :: output
+  | _ => .span messages startPos endPos :: output
 
 def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal Highlighted)) : Bool :=
   output.any fun
@@ -408,8 +420,8 @@ def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal 
 def Output.closeSpan (output : List Output) : List Output :=
   let rec go (acc : Highlighted) : List Output → List Output
     | [] => [.seq #[acc]]
-    | .span info :: more => Output.add more (.span info acc)
-    | .tactics info startPos endPos :: more => Output.add more (.tactics info startPos endPos acc)
+    | .span info _ _ :: more => Output.add more (.span info acc)
+    | .tactics info startPos endPos :: more => Output.add more (.tactics info startPos.byteIdx endPos.byteIdx acc)
     | .seq left :: more => go (.seq (left.push acc)) more
   go .empty output
 
@@ -417,12 +429,13 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
   let rec go (acc : Highlighted) : List Output → Highlighted
     | [] => acc
     | .seq left :: more => go (.seq (left.push acc)) more
-    | .span info :: more => go (.span info acc) more
-    | .tactics info startPos endPos :: more => go (.tactics info startPos endPos acc) more
+    | .span info _ _ :: more => go (.span info acc) more
+    | .tactics info startPos endPos :: more => go (.tactics info startPos.byteIdx endPos.byteIdx acc) more
   go .empty output
 
 structure OpenTactic where
-  closesAt : Lean.Position
+  openedAt : String.Pos
+  closesAt : String.Pos
 
 structure MessageBundle where
   messages : Array Message
@@ -482,19 +495,22 @@ structure HighlightState where
   /-- Output so far -/
   output : List Output
   /-- Messages being displayed -/
-  inMessages : List (MessageBundle ⊕ OpenTactic)
+  inMessages : List MessageBundle
+  /-- Currently-open tactic info -/
+  inTactic : Option OpenTactic -- No nested tactic states!
   /-- Memoized results of searching for tactic info (by canonical range) -/
   hasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
   /-- Memoized results of searching for tactic info in children (by canonical range) -/
   childHasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, default, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
   nextMessage := none
   output := []
   inMessages := []
+  inTactic := none
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     (stx : Syntax) (messages : Array Message) : m HighlightState := do
@@ -504,6 +520,7 @@ def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
     output := [],
     inMessages := [],
+    inTactic := none
   }
 where
   isRelevant (stx : Syntax) (msg : Message) : m Bool := do
@@ -524,12 +541,12 @@ private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
       some (x' :: xs)
     else (x :: ·) <$> modify? f xs
 
-def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat) (pos : Position) : HighlightState :=
+def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : String.Pos) (_pos : Position) : HighlightState :=
   if let some out' := modify? update? st.output then
     {st with output := out'}
-  else {st with
+  else { st with
     output := .tactics info startPos endPos :: st.output,
-    inMessages := .inr ⟨pos⟩ :: st.inMessages
+    inTactic := some ⟨startPos, endPos⟩
   }
 where
   update?
@@ -539,7 +556,7 @@ where
       else none
     | _ => none
 
-def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat) (pos : Position) : HighlightM Unit :=
+def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : String.Pos) (pos : Position) : HighlightM Unit :=
   modify fun st => st.openTactic info startPos endPos pos
 
 instance : Inhabited (HighlightM α) where
@@ -569,10 +586,11 @@ def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.pos.notAfter pos
 
 def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
-  message.endPos.map pos.notAfter |>.getD true
+  message.endPos.map (·.notAfter pos) |>.getD true
 
 
 partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
+  let text ← getFileMap
   if let some msg ← nextMessage? then
     if needsOpening pos msg then
       advanceMessages
@@ -585,9 +603,10 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
           let str ← contents m
           pure (kind, str)
 
-      modify fun st => {st with
-        output := Output.openSpan st.output str
-        inMessages := .inl msg :: st.inMessages
+      modify fun st =>
+    {st with
+        output := Output.openSpan st.output str (text.lspPosToUtf8Pos (text.leanPosToLspPos msg.pos)) (msg.endPos.map (text.lspPosToUtf8Pos <| text.leanPosToLspPos ·))
+        inMessages := msg :: st.inMessages
       }
       openUntil pos
 where
@@ -596,25 +615,40 @@ where
     pure <| head ++ (← message.data.toString)
 
 
-partial def closeUntil (pos : Lean.Position) : HighlightM Unit := do
+partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
+  let text ← getFileMap
   let more ← modifyGet fun st =>
-    match st.inMessages with
-    | [] => (false, st)
-    | .inl m :: ms =>
-      if needsClosing pos m then
+    match st.inMessages, st.inTactic with
+    | [], none => (false, st)
+    | [], some t =>
+      if t.closesAt ≤ pos || t.closesAt == pos then
+        (true, {st with output := Output.closeSpan st.output, inTactic := none})
+      else (false, st)
+    | m :: ms, none =>
+      if needsClosing (text.toPosition pos) m then
         (true, {st with output := Output.closeSpan st.output, inMessages := ms})
       else (false, st)
-    | .inr t :: ms =>
-      if t.closesAt.before pos || t.closesAt == pos then
-        (true, {st with output := Output.closeSpan st.output, inMessages := ms})
-      else (false, st)
+    | m :: ms, some t =>
+      if let some e := m.endPos then
+        if text.toPosition t.closesAt |>.notAfter e then
+          -- Close the tactics first
+          if t.closesAt ≤ pos || t.closesAt == pos then
+            (true, {st with output := Output.closeSpan st.output, inTactic := none})
+          else (false, st)
+        else
+          -- Close the message first
+          if needsClosing (text.toPosition pos) m then
+            (true, {st with output := Output.closeSpan st.output, inMessages := ms})
+          else (false, st)
+      else (true, {st with output := Output.closeSpan st.output, inMessages := ms})
+
   if more then closeUntil pos
 
 def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := do
   let text ← getFileMap
   openUntil <| text.toPosition pos
   modify fun st => {st with output := Output.addText st.output string}
-  closeUntil <| text.toPosition endPos
+  closeUntil endPos
 
 def emitString' (string : String) : HighlightM Unit :=
   modify fun st => {st with output := Output.addText st.output string}
@@ -632,7 +666,7 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
   emitString' leading.toString
   openUntil <| text.toPosition pos
   modify fun st => {st with output := Output.addToken st.output token}
-  closeUntil <| text.toPosition endPos
+  closeUntil endPos
   emitString' trailing.toString
 
 def emitToken' (token : Token) : HighlightM Unit := do
@@ -799,17 +833,22 @@ def highlightGoals
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
 
+/--
+Finds the tactic info for `stx`, which should be in the indicated span.
+
+If found, returns the goals, the byte indices of the span, and the provided end position.
+-/
 partial def findTactics'
     (stx : Syntax)
     (startPos endPos : String.Pos)
     (endPosition : Position)
     (before : Bool := false)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) := do
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position)) := do
 
   if let some res := (← readThe InfoTable).tacticInfo? stx then
     for (ci, tacticInfo) in res.reverse do
       if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
-        return some (#[], startPos.byteIdx, endPos.byteIdx, endPosition)
+        return some (#[], startPos, endPos, endPosition)
 
       let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
       let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
@@ -817,14 +856,14 @@ partial def findTactics'
       let goalView ← highlightGoals ci goals
 
       if !Output.inTacticState (← get).output goalView then
-        return some (goalView, startPos.byteIdx, endPos.byteIdx, endPosition)
+        return some (goalView, startPos, endPos, endPosition)
 
   return none
 
 partial def findTactics
     (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Nat × Nat × Position)) :=
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position)) :=
   withTraceNode `SubVerso.Highlighting.Code (fun x => pure m!"findTactics {stx} ==> {match x with | .error _ => "err" | .ok v => v.map (fun _ => "yes") |>.getD "no"}") <| do
   let text ← getFileMap
   let some startPos := stx.getPos?
@@ -847,7 +886,8 @@ partial def findTactics
           | `(Lean.Parser.Term.byTactic| by%$tk $tactics)
           | `(Lean.Parser.Term.byTactic'| by%$tk $tactics) =>
             if tk == stx then
-              return (← findTactics' tactics startPos endPos endPosition (before := true))
+              let ts ← findTactics' tactics startPos endPos endPosition (before := true)
+              return ts
           | _ => continue
 
   -- Special handling for =>: show the _before state_
@@ -876,7 +916,7 @@ partial def findTactics
   -- output. Get the right one to show for the whole thing, then adjust its positioning.
   if let some brak := Compat.rwTacticRightBracket? stx then
     if let some (goals, _startPos, _endPos, _endPosition) ← findTactics trees brak then
-      return some (goals, startPos.byteIdx, endPos.byteIdx, endPosition)
+      return some (goals, startPos, endPos, endPosition)
 
   findTactics' stx startPos endPos endPosition
 
