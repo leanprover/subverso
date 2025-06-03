@@ -385,18 +385,40 @@ inductive Output where
   | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : String.Pos) (endPos : String.Pos)
 deriving Repr
 
+-- Tactic info regions are detected based on the entire syntax of a term or tactic, but the leading
+-- whitespace of the first token has not yet been emitted when they are found. The tactic region
+-- should start at the first token of its syntax, so we need to detect the leading whitespace
+-- situation.
+def Output.addText (output : List Output) (text : String) : List Output :=
+  if text.isEmpty then output
+  else
+    match output with
+    | [] => [.seq #[.text text]]
+    | .seq left :: more =>
+      if left.all (·.isEmpty) then
+        Output.addText more text
+      else
+        .seq (left.push (.text text)) :: more
+    -- Spans are opened at the start of a token proper, so no need for special handling
+    | .span .. :: _ =>
+      .seq #[.text text] :: output
+    -- Tactics are opened based on syntax, rather than tokens, so here we need to avoid including
+    -- their leading whitespace
+    | t@(.tactics ..) :: more =>
+      t :: Output.addText more text
+
 def Output.add (output : List Output) (hl : Highlighted) : List Output :=
-  match output with
-  | [] => [.seq #[hl]]
-  | .seq left :: more => .seq (left.push hl) :: more
-  | .span .. :: _ => .seq #[hl] :: output
-  | .tactics .. :: _ => .seq #[hl] :: output
+  if let .text txt := hl then
+    Output.addText output txt
+  else
+    match output with
+    | [] => [.seq #[hl]]
+    | .seq left :: more => .seq (left.push hl) :: more
+    | .span .. :: _ => .seq #[hl] :: output
+    | .tactics .. :: _ => .seq #[hl] :: output
 
 def Output.addToken (output : List Output) (token : Token) : List Output :=
   Output.add output (.token token)
-
-def Output.addText (output : List Output) (str : String) : List Output :=
-  Output.add output (.text str)
 
 def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.Kind × String)) (startPos : String.Pos) (endPos : Option String.Pos) : List Output :=
   match output with
@@ -420,9 +442,12 @@ def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal 
 def Output.closeSpan (output : List Output) : List Output :=
   let rec go (acc : Highlighted) : List Output → List Output
     | [] => [.seq #[acc]]
-    | .span info _ _ :: more => Output.add more (.span info acc)
-    | .tactics info startPos endPos :: more => Output.add more (.tactics info startPos.byteIdx endPos.byteIdx acc)
-    | .seq left :: more => go (.seq (left.push acc)) more
+    | .span info _ _ :: more =>
+      Output.add more (.span info acc)
+    | .tactics info startPos endPos :: more =>
+      Output.add more (.tactics info startPos.byteIdx endPos.byteIdx acc)
+    | .seq left :: more =>
+      go (.seq (left.push acc)) more
   go .empty output
 
 def Highlighted.fromOutput (output : List Output) : Highlighted :=
@@ -576,12 +601,6 @@ def advanceMessages : HighlightM Unit := do
         else {st with nextMessage := none}
     else st
 
--- TODO take a closing position as well to avoid opening too early. Right now,
--- we close too conservatively, leading to error spans that are too small. But
--- not doing that leads to huge error spans! This si because an error on just
--- the opening token of a syntax object is opened when visiting that syntax
--- object. It should wait to open it until the syntax we're looking at is fully
--- contained in the error span.
 def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.pos.notAfter pos
 

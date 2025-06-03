@@ -169,17 +169,39 @@ partial def Highlighted.isEmpty : Highlighted → Bool
   | _ => false
 
 /--
-Appends two pieces of highlighted code, applying some simplifications.
+Appends two pieces of highlighted code, applying some simplifications and merging adjacent info
+regions.
 -/
-def Highlighted.append (hl1 hl2 : Highlighted) : Highlighted :=
+partial def Highlighted.append (hl1 hl2 : Highlighted) : Highlighted :=
   if hl1.isEmpty then hl2
   else if hl2.isEmpty then hl1
   else match hl1, hl2 with
   | .text str1, .text str2 => .text (str1 ++ str2)
-  | .seq xs, .seq ys => .seq (xs ++ ys)
-  | .seq xs,  x => .seq (xs ++ #[x])
-  | x, .seq xs => .seq (#[x] ++ xs)
+  | .seq _, .seq ys =>
+    ys.foldl (init := hl1) Highlighted.append
+  | .seq xs, x => .seq (pushHl xs x)
+  | x, .seq xs =>
+    xs.foldl (init := x) Highlighted.append
   | x, y => .seq #[x, y]
+where
+  -- Merge subsequent info regions. This is necessary when highlighted code has been split (e.g.
+  -- into lines), processed, and is then recombined.
+  pushHl (xs : Array Highlighted) (x : Highlighted) : Array Highlighted :=
+    if xs.size > 0 then
+      let last := Compat.Array.back! xs
+      let last' :=
+        match last, x with
+        | .tactics i1 s1 e1 inner1, .tactics i2 s2 e2 inner2 =>
+          if i1 == i2 && s1 == s2 && e1 == e2 then #[.tactics i1 s1 e1 (inner1.append inner2)]
+          else #[last, x]
+        | .span i1 inner1, .span i2 inner2 =>
+          if i1 == i2 then #[.span i1 (inner1.append inner2)]
+          else #[last, x]
+        | .text s1, .text s2 => #[.text (s1 ++ s2)]
+        | _, _ => #[last, x]
+      xs.extract 0 (xs.size - 1) ++ last'
+    else
+      #[x]
 
 instance : Append Highlighted where
   append := Highlighted.append

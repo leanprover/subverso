@@ -85,9 +85,9 @@ def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
       break
     | none :: hs =>
       todo := hs
-      let (c, ctx') := ctx.split current
+      let (c, ctx') := ctx.close current
       current := c
-      ctx := ctx'.pop
+      ctx := ctx'
     | some (.seq xs) :: hs =>
       todo := xs.toList.map some ++ hs
     | some this@(.token ..) :: hs =>
@@ -99,8 +99,10 @@ def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
         let post := str.drop pre.length
         todo := some (.text post) :: hs
         current := current ++ .text pre
-        out := out.push current
+        let (c, ctx') := ctx.split current
+        out := out.push c
         current := .empty
+        ctx := ctx'
       else
         todo := hs
         current := current ++ this
