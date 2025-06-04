@@ -10,6 +10,7 @@ namespace SubVerso.Highlighting
 private inductive SplitCtxF where
   | tactics : Array (Highlighted.Goal Highlighted) → Nat → Nat → SplitCtxF
   | span : Array (Highlighted.Span.Kind × String) → SplitCtxF
+deriving Repr
 
 private def SplitCtxF.wrap (hl : Highlighted) : SplitCtxF → Highlighted
   | .tactics g s e => .tactics g s e hl
@@ -17,7 +18,7 @@ private def SplitCtxF.wrap (hl : Highlighted) : SplitCtxF → Highlighted
 
 private structure SplitCtx where
   contents : Array (Highlighted × SplitCtxF) := #[]
-deriving Inhabited
+deriving Inhabited, Repr
 
 private def SplitCtx.push (ctx : SplitCtx) (current : Highlighted) (info : SplitCtxF) : SplitCtx where
   contents := ctx.contents.push (current, info)
@@ -48,7 +49,7 @@ def Highlighted.split (p : String → Bool) (hl : Highlighted) : Array Highlight
       todo := hs
       let (c, ctx') := ctx.split current
       current := c
-      ctx := ctx'
+      ctx := ctx'.pop
     | some (.seq xs) :: hs =>
       todo := xs.toList.map some ++ hs
     | some this@(.token ⟨_, t⟩) :: hs =>
@@ -84,7 +85,7 @@ def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
       break
     | none :: hs =>
       todo := hs
-      let (c, ctx') := ctx.split current
+      let (c, ctx') := ctx.close current
       current := c
       ctx := ctx'
     | some (.seq xs) :: hs =>
@@ -98,8 +99,10 @@ def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
         let post := str.drop pre.length
         todo := some (.text post) :: hs
         current := current ++ .text pre
-        out := out.push current
+        let (c, ctx') := ctx.split current
+        out := out.push c
         current := .empty
+        ctx := ctx'
       else
         todo := hs
         current := current ++ this
