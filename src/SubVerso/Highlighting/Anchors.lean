@@ -108,6 +108,7 @@ private partial def normHl : Highlighted → Highlighted
 private inductive HlCtx where
   | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat)
   | span (info : Array (Highlighted.Span.Kind × String))
+deriving Repr
 
 private def HlCtx.wrap (ctx : HlCtx) (hl : Highlighted) : Highlighted :=
   match ctx with
@@ -224,9 +225,13 @@ private def Hl.tacticsAt? (hl : Hl) (column : Nat) : Option Highlighted := do
       left := .empty
 
   -- At this point, `right` contains the line. Now find the most specific tactics at the provided column.
-  let mut column := column
+  let mut column := column -- Counts down to 0 - how many columns need to be traversed to find the state?
   let mut answer? := none
+
+  -- The line can contain two things: .inl represents a next element of text to consider, while .inr
+  -- represents a prior answer to restore.
   let mut line : List (Highlighted ⊕ Option Highlighted) := [.inl right]
+
   repeat
     match line with
     | [] => break
@@ -240,14 +245,16 @@ private def Hl.tacticsAt? (hl : Hl) (column : Nat) : Option Highlighted := do
         | .seq xs =>
           line := xs.toList.map .inl ++ more
         | .text s | .token ⟨_, s⟩ =>
-          if s.length ≥ column then
+          if s.length > column then
             break
           else
             column := column - s.length
             line := more
         | .point .. =>
           line := more
-        | .tactics _info _start _stop x | .span _info x =>
+        | .span _info x =>
+          line := .inl x :: more
+        | .tactics _info _start _stop x =>
           line := .inl x :: .inr answer? :: more
           answer? := hl
 
@@ -257,6 +264,10 @@ private def Hl.tacticsAt? (hl : Hl) (column : Nat) : Option Highlighted := do
 The examples that were extracted via special comment syntax.
 -/
 structure AnchoredExamples where
+  /--
+  The code, with processed anchor instructions removed
+  -/
+  code : Highlighted
   /--
   The contents of named anchors. Maps
   ```
@@ -301,8 +312,10 @@ or
 -- PROOF_STATE: X  ^
 ```
 where the '^' points at the location of the proof state.
+
+Passing `false` for `textAnchors` or `proofStates` disables processing of the corresponding anchor types.
 -/
-def anchored (hl : Highlighted) : Except String AnchoredExamples := do
+def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Except String AnchoredExamples := do
   let mut anchorOut : HashMap String Highlighted := {}
   let mut tacOut : HashMap String Highlighted := {}
   let mut openAnchors : HashMap String Hl := {}
@@ -325,9 +338,9 @@ def anchored (hl : Highlighted) : Except String AnchoredExamples := do
       todo := hs
       let lines := getLines s
       for line in lines do
-        match anchor? line |>.toOption with
+        match guard textAnchors *> (anchor? line |>.toOption) with
         | none =>
-          match proofState? line |>.toOption with
+          match guard proofStates *> (proofState? line |>.toOption) with
           | none =>
             openAnchors := openAnchors.map fun _ hl => hl ++ line
             doc := doc ++ line
@@ -365,7 +378,7 @@ def anchored (hl : Highlighted) : Except String AnchoredExamples := do
       todo := some x :: none :: hs
       openAnchors := openAnchors.map fun _ hl => hl.open (.span info)
       doc := doc.open (.span info)
-  if openAnchors.isEmpty then return ⟨anchorOut, tacOut⟩
+  if openAnchors.isEmpty then return ⟨doc.toHighlighted , anchorOut, tacOut⟩
   else throw s!"Unclosed anchors: {", ".intercalate openAnchors.keys}"
 
 private def dropPrefix? (iter : String.Iterator) (s : String) : Option String.Iterator := Id.run do

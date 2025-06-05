@@ -363,6 +363,9 @@ instance instGetElemHashMap [BEq α] [Hashable α] [Inhabited β] : GetElem (Has
     ⟨fun m a _ok => m.find! a, fun m a => Lean.HashMap.find? m a, fun m a => Lean.HashMap.find! m a⟩
   ]
 
+def insert {_ : BEq α} {_ : Hashable α} : HashMap α β → α → β → HashMap α β :=
+  %first_defined [Std.HashMap.insert, Lean.HashMap.insert]
+
 def get? {_ : BEq α} {_ : Hashable α} : HashMap α β → α → Option β :=
   %first_defined [Std.HashMap.get?, Lean.HashMap.find?]
 
