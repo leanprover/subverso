@@ -852,6 +852,18 @@ def highlightGoals
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
 
+def tacticInfoGoals
+    (ci : ContextInfo) (tacticInfo : TacticInfo)
+    (startPos endPos : String.Pos)
+    (endPosition : Position)
+    (before : Bool := false) :
+    HighlightM (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position) := do
+  let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
+  let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
+  let goalView ← highlightGoals ci goals
+
+  return (goalView, startPos, endPos, endPosition)
+
 /--
 Finds the tactic info for `stx`, which should be in the indicated span.
 
@@ -914,7 +926,12 @@ partial def findTactics
     for t in trees do
       for i in infoIncludingSyntax t stx |>.reverse do
         if not i.2.isOriginal then continue
-        if let (_, .ofTacticInfo tacticInfo) := i then
+        if let (ci, .ofTacticInfo tacticInfo) := i then
+          if tacticInfo.stx.getKind == nullKind then
+            if let some tacStx := tacticInfo.stx.getArgs.back? then
+              if tacStx == stx then
+                return some (← tacticInfoGoals ci tacticInfo startPos endPos endPosition (before := true))
+
           match tacticInfo.stx with
           | `(Lean.Parser.Tactic.inductionAlt| $_lhs =>%$tk $rhs )
           | `(tactic| next $_* =>%$tk $rhs )
