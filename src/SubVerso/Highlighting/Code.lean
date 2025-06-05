@@ -789,7 +789,7 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
         toks := toks.push <| .text current
     pure <| if let #[t] := toks then t else .seq toks
   | .tag t doc' =>
-    let ⟨{ctx, info, children := _}⟩ := t.info
+    let {ctx, info, children := _} := t.info.val
     if let .text tok := doc' then
       if let some k ← infoKind ctx info then
         pure <| .token ⟨k, tok⟩
