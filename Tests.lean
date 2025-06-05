@@ -268,7 +268,7 @@ def main : IO UInt32 := do
   let anchorMod := (← loadModuleContent "demo-toml" "Anchors").map (·.code) |>.foldl (· ++ ·) (.empty)
   match anchorMod.anchored with
   | .error e => IO.eprintln e; return 1
-  | .ok {anchors, proofStates} =>
+  | .ok {code:=_, anchors, proofStates} =>
     for k in desiredAnchors.map (·.1) do
       unless anchors.contains k do IO.eprintln s!"Missing anchor '{k}'"; return 1
     for k in desiredProofs.map (·.1) do
