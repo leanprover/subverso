@@ -72,6 +72,53 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
         | IO.Error.userError e =>
           pure <| Response.error 0 e none
         | other => throw other
+    | .name code =>
+      try
+        let parser := Parser.ident
+        let fn := Parser.andthenFn Parser.whitespace parser.fn
+        let ictx := Parser.mkInputContext code "<input>"
+        let env ← runCommandElabM getEnv
+        let s := fn.run ictx { env, options := {} } (Parser.getTokenTable env) (Parser.mkParserState code)
+        let stx? :=
+          if s.hasError then
+            Except.error (s.toErrorMsg ictx)
+          else if code.atEnd s.pos then
+            Except.ok (s.stxStack.back)
+          else
+            Except.error ((s.mkError "end of input").toErrorMsg ictx)
+
+        setMessages {} -- don't persist messages from prior elaboration tasks
+        runCommandElabM <| withoutModifyingEnv <| Compat.commandWithoutAsync do
+          let infoState ← getInfoState
+          try
+            let name ←
+              match stx? with
+              | .error e => throwError m!"Parse error on identifier: {e}"
+              | .ok v => pure v
+            setInfoState {}
+            withEnableInfoTree true do
+
+              try
+                Command.runTermElabM fun _ => Compat.realizeNameNoOverloads name
+
+              catch
+                | e =>
+                  return Response.error 4 (← e.toMessageData.toString) none
+              let trees := (← get).infoState.trees
+              let msgs := (← get).messages
+              if msgs.hasErrors then
+                return Response.error 5 "Elaboration failed" <| some <| .arr <|
+                  (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
+              let hl ← liftTermElabM <| do
+                -- No messages - those are confusing here
+                highlight name #[] trees
+              pure <| Response.result <| .highlighted hl
+          finally
+            setInfoState infoState
+      catch
+        | IO.Error.userError e =>
+          pure <| Response.error 0 e none
+        | other => throw other
     | .command code =>
       try
         let stx ←

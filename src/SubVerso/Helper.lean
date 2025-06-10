@@ -26,6 +26,8 @@ Requests that clients can make to the helper
 inductive Request where
   /-- A request to elaborate a term in the present environment. -/
   | term (code : String) (type? : Option String)
+  /-- A request to look up a name in the present environment. -/
+  | name (code : String)
   /-- A request to run a command in the present environment. -/
   | command (code : String)
   /-- A request to check and highlight a signature -/
@@ -60,6 +62,9 @@ instance : ToJson Request where
       let params : Json :=
         .mkObj <| [("code", .str code)] ++ (type?.map (fun t => [("type", .str t)])).getD []
       .mkObj [("method", .str "term"), ("params", params)]
+    | .name code =>
+      let params : Json := .mkObj [("code", .str code)]
+      .mkObj [("method", .str "name"), ("params", params)]
     | .command code =>
       let params : Json := .mkObj [("code", .str code)]
       .mkObj [("method", .str "command"), ("params", params)]
@@ -78,6 +83,10 @@ instance : FromJson Request where
       let type := params.getObjVal? "type" |>.toOption
       let type ← type.mapM (·.getStr?)
       return .term code type
+    | "name" =>
+      let params ← v.getObjVal? "params"
+      let code ← params.getObjValAs? String "code"
+      return .name code
     | "command" =>
       let params ← v.getObjVal? "params"
       let code ← params.getObjValAs? String "code"
