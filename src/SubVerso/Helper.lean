@@ -28,6 +28,8 @@ inductive Request where
   | term (code : String) (type? : Option String)
   /-- A request to run a command in the present environment. -/
   | command (code : String)
+  /-- A request to check and highlight a signature -/
+  | signature (code : String)
   /-- A request that the process terminate -/
   | exit
 deriving Repr
@@ -61,6 +63,9 @@ instance : ToJson Request where
     | .command code =>
       let params : Json := .mkObj [("code", .str code)]
       .mkObj [("method", .str "command"), ("params", params)]
+    | .signature code =>
+      let params : Json := .mkObj [("code", .str code)]
+      .mkObj [("method", .str "signature"), ("params", params)]
     | .exit => .mkObj [("method", .str "exit"), ("params", .mkObj [])]
 
 instance : FromJson Request where
@@ -77,6 +82,10 @@ instance : FromJson Request where
       let params ← v.getObjVal? "params"
       let code ← params.getObjValAs? String "code"
       return .command code
+    | "signature" =>
+      let params ← v.getObjVal? "params"
+      let code ← params.getObjValAs? String "code"
+      return .signature code
     | "exit" => return .exit
     | _ => throw s!"Didn't understand method '{m}'"
 

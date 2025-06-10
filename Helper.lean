@@ -6,6 +6,7 @@ Author: David Thrane Christiansen
 import SubVerso.Compat
 import SubVerso.Examples.Env
 import SubVerso.Helper
+import SubVerso.Signature
 import Lean.Util.Paths
 
 /-!
@@ -96,6 +97,51 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
               let hl ← liftTermElabM do
                 highlight stx msgs.toArray trees
+              pure <| Response.result <| .highlighted hl
+          finally
+            setInfoState infoState
+      catch
+        | IO.Error.userError e =>
+          pure <| Response.error 0 e none
+        | other => throw other
+    | .signature code =>
+      let parser := Parser.andthen Parser.Command.declId Parser.Command.declSig
+      let fn := Parser.andthenFn Parser.whitespace parser.fn
+      let ictx := Parser.mkInputContext code "<input>"
+      let env ← runCommandElabM getEnv
+      let s := fn.run ictx { env, options := {} } (Parser.getTokenTable env) (Parser.mkParserState code)
+      let stxs? :=
+        if s.hasError then
+          Except.error (s.toErrorMsg ictx)
+        else if code.atEnd s.pos then
+          Except.ok (s.stxStack.pop.back, s.stxStack.back)
+        else
+          Except.error ((s.mkError "end of input").toErrorMsg ictx)
+
+      try
+        let (name, sig) ←
+          match stxs? with
+          | .error e => throw <| IO.userError s!"Parse error on command: {e}"
+          | .ok v => pure v
+
+        setMessages {} -- don't persist messages from prior elaboration tasks
+        runCommandElabM <| Compat.commandWithoutAsync do
+          let infoState ← getInfoState
+          try
+            setInfoState {}
+            withEnableInfoTree true do
+              try
+                checkSignature ⟨name⟩ ⟨sig⟩
+              catch
+                | e =>
+                  return Response.error 8 (← e.toMessageData.toString) none
+              let trees := (← get).infoState.trees
+              let msgs := (← get).messages
+              if msgs.hasErrors then
+                return Response.error 9 "Command failed" <| some <| .arr <|
+                  (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
+              let hl ← liftTermElabM do
+                highlight (mkNullNode #[name, sig]) msgs.toArray trees
               pure <| Response.result <| .highlighted hl
           finally
             setInfoState infoState
