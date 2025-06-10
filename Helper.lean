@@ -71,6 +71,38 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
         | IO.Error.userError e =>
           pure <| Response.error 0 e none
         | other => throw other
+    | .command code =>
+      try
+        let stx ←
+          match Parser.runParserCategory (← runCommandElabM getEnv) `command code with
+          | .error e => throw <| IO.userError s!"Parse error on command: {e}"
+          | .ok v => pure v
+
+        setMessages {} -- don't persist messages from prior elaboration tasks
+        runCommandElabM <| Compat.commandWithoutAsync do
+          let infoState ← getInfoState
+          try
+            setInfoState {}
+            withEnableInfoTree true do
+              try
+                elabCommand stx
+              catch
+                | e =>
+                  return Response.error 6 (← e.toMessageData.toString) none
+              let trees := (← get).infoState.trees
+              let msgs := (← get).messages
+              if msgs.hasErrors then
+                return Response.error 7 "Command failed" <| some <| .arr <|
+                  (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
+              let hl ← liftTermElabM do
+                highlight stx msgs.toArray trees
+              pure <| Response.result <| .highlighted hl
+          finally
+            setInfoState infoState
+      catch
+        | IO.Error.userError e =>
+          pure <| Response.error 0 e none
+        | other => throw other
     | .exit =>
       return false
   send output resp
