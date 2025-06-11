@@ -766,15 +766,14 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
         toks := toks ++ .text ws
         todo := todo.drop ws.length
 
+      let mut foundKw := false
       for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
         if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
+          foundKw := true
           toks := toks ++ .token ⟨.keyword none none none, kw⟩
           todo := todo.drop kw.length
-          let ws := todo.takeWhile (·.isWhitespace)
-          unless ws.isEmpty do
-            toks := toks ++ .text ws
-            todo := todo.drop ws.length
           break
+      if foundKw then continue -- for whitespace or subsequent keywords
 
       -- It's not enough to just push a text node when the token kind isn't set, because that breaks
       -- the code that matches Highlighted against strings for extraction. Instead, we need to split
