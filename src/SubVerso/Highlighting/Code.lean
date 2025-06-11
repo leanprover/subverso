@@ -762,37 +762,25 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
     let mut toks : Array Highlighted := #[]
     let mut current := ""
     while !todo.isEmpty do
-      for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
-        if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
-          if !current.isEmpty then
-            if let some k := outer then
-              toks := toks.push <| .token ⟨k, current⟩
-            else
-              toks := toks.push <| .text current
-            current := ""
-          toks := toks.push <| .token ⟨.keyword none none none, kw⟩
-          todo := todo.drop kw.length
-          break
-      let c := todo.get 0
-      current := current.push c
-      todo := todo.drop 1
-      -- Don't highlight keywords that occur inside other tokens
-      if c.isAlphanum then
-        let tok := todo.takeWhile Char.isAlphanum
-        current := current ++ tok
-        todo := todo.drop tok.length
-
-    -- It's not enough to just push a text node when the token kind isn't set, because that breaks
-    -- the code that matches Highlighted against strings for extraction. Instead, we need to split
-    -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
-    -- pretty printer output.
-    while !current.isEmpty do
-      dbg_trace current
-      dbg_trace repr outer
-      let ws := current.takeWhile (·.isWhitespace)
+      let ws := todo.takeWhile (·.isWhitespace)
       unless ws.isEmpty do
         toks := toks.push <| .text ws
-        current := current.drop ws.length
+        todo := todo.drop ws.length
+
+      for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
+        if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
+          toks := toks.push <| .token ⟨.keyword none none none, kw⟩
+          todo := todo.drop kw.length
+          let ws := todo.takeWhile (·.isWhitespace)
+          unless ws.isEmpty do
+            toks := toks.push <| .text ws
+            todo := todo.drop ws.length
+          break
+
+      -- It's not enough to just push a text node when the token kind isn't set, because that breaks
+      -- the code that matches Highlighted against strings for extraction. Instead, we need to split
+      -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
+      -- pretty printer output.
       let tok := current.takeWhile (!·.isWhitespace)
       unless tok.isEmpty do
         toks := toks.push <| .token ⟨outer.getD .unknown, tok⟩
