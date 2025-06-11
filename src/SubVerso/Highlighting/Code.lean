@@ -782,18 +782,30 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
         current := current ++ tok
         todo := todo.drop tok.length
 
-    if !current.isEmpty then
-      if let some k := outer then
-        toks := toks.push <| .token ⟨k, current⟩
-      else
-        toks := toks.push <| .text current
+    -- It's not enough to just push a text node when the token kind isn't set, because that breaks
+    -- the code that matches Highlighted against strings for extraction. Instead, we need to split
+    -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
+    -- pretty printer output.
+    while !current.isEmpty do
+      dbg_trace current
+      dbg_trace repr outer
+      let ws := current.takeWhile (·.isWhitespace)
+      unless ws.isEmpty do
+        toks := toks.push <| .text ws
+        current := current.drop ws.length
+      let tok := current.takeWhile (!·.isWhitespace)
+      unless tok.isEmpty do
+        toks := toks.push <| .token ⟨outer.getD .unknown, tok⟩
+        current := current.drop tok.length
+
     pure <| if let #[t] := toks then t else .seq toks
   | .tag t doc' =>
     let {ctx, info, children := _} := t.info.val
     if let .text tok := doc' then
-      if let some k ← infoKind ctx info then
-        pure <| .token ⟨k, tok⟩
-      else pure <| .text tok
+      let wsPre := tok.takeWhile (·.isWhitespace)
+      let wsPost := tok.takeRightWhile (·.isWhitespace)
+      let k := (← infoKind ctx info).getD .unknown
+      pure <| .seq #[.text wsPre, .token ⟨k, tok.trim⟩, .text wsPost]
     else
       let k? ← infoKind ctx info
       renderTagged k? doc'
