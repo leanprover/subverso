@@ -759,21 +759,20 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
   | .text txt => do
     -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
     let mut todo := txt
-    let mut toks : Array Highlighted := #[]
-    let mut current := ""
+    let mut toks : Highlighted := .empty
     while !todo.isEmpty do
       let ws := todo.takeWhile (·.isWhitespace)
       unless ws.isEmpty do
-        toks := toks.push <| .text ws
+        toks := toks ++ .text ws
         todo := todo.drop ws.length
 
       for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
         if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
-          toks := toks.push <| .token ⟨.keyword none none none, kw⟩
+          toks := toks ++ .token ⟨.keyword none none none, kw⟩
           todo := todo.drop kw.length
           let ws := todo.takeWhile (·.isWhitespace)
           unless ws.isEmpty do
-            toks := toks.push <| .text ws
+            toks := toks ++ .text ws
             todo := todo.drop ws.length
           break
 
@@ -781,12 +780,12 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
       -- the code that matches Highlighted against strings for extraction. Instead, we need to split
       -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
       -- pretty printer output.
-      let tok := current.takeWhile (!·.isWhitespace)
+      let tok := todo.takeWhile (!·.isWhitespace)
       unless tok.isEmpty do
-        toks := toks.push <| .token ⟨outer.getD .unknown, tok⟩
-        current := current.drop tok.length
+        toks := toks ++ .token ⟨outer.getD .unknown, tok⟩
+        todo := todo.drop tok.length
 
-    pure <| if let #[t] := toks then t else .seq toks
+    pure toks
   | .tag t doc' =>
     let {ctx, info, children := _} := t.info.val
     if let .text tok := doc' then
@@ -797,7 +796,7 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
     else
       let k? ← infoKind ctx info
       renderTagged k? doc'
-  | .append xs => .seq <$> xs.mapM (renderTagged outer)
+  | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
 where
   tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
