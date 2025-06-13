@@ -981,10 +981,10 @@ partial def highlightLevel (u : TSyntax `level) : HighlightM Unit := do
     emitToken u n.raw.getHeadInfo ⟨.levelConst n.getNat, toString n.getNat⟩
   | _ => panic! s!"Unknown level syntax {u}"
 
-def highlightUniverse (blame : Syntax) (tk : Syntax) (u : TSyntax `level) : HighlightM Unit := do
+def highlightUniverse (blame : Syntax) (tk : Syntax) (u : Option (TSyntax `level)) : HighlightM Unit := do
   let docs? ← findDocString? (← getEnv) blame.getKind
   emitToken blame tk.getHeadInfo ⟨.sort docs?, tk.getAtomVal⟩ -- TODO sort docs
-  highlightLevel u
+  if let some u := u then highlightLevel u
 
 partial def highlight'
     (trees : Array Lean.Elab.InfoTree)
@@ -1009,8 +1009,10 @@ partial def highlight'
       else
         emitString' "."
       highlight' trees field tactics
-  | `(term|Type%$s $u) | `(term|Sort%$s $u) => do -- Prop and Type are handled by the atom rules below
-    highlightUniverse stx s u
+  | `(term|Type%$s $u) | `(term|Sort%$s $u) =>
+    highlightUniverse stx s (some u)
+  | `(term|Type%$s) | `(term|Prop%$s) =>
+    highlightUniverse stx s none
   | _ =>
     match stx with
     | .missing => pure () -- TODO emit unhighlighted string
