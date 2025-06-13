@@ -76,7 +76,7 @@ def proofState? (line : String) : Except String (String × Nat) := do
       if line.isEmpty then throw "Expected proof state name after `PROOF_STATE:`"
       if line.get 0 |>.isAlpha then
         if name.isSome then throw "Proof state name already registered"
-        let n := line.takeWhile (·.isAlphanum) |>.toString
+        let n := line.takeWhile (fun c => c.isAlphanum || c == '\'') |>.toString
         name := some n
         column := column + n.length
         line := line.drop n.length
