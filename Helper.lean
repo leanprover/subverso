@@ -27,6 +27,16 @@ open SubVerso.Highlighting (Highlighted highlight)
 
 abbrev HelperM := ReaderT Environment IO
 
+/--
+Removes the source info from syntax, to prevent unwanted InfoTree collisions.
+-/
+def removeSourceInfo (stx : Syntax) : Syntax :=
+  Id.run <| stx.replaceM fun
+    | .node _ k args => some (.node .none k args)
+    | .ident _ s x pre => some (.ident .none s x pre)
+    | .atom _ i => some (.atom .none i)
+    | .missing => some .missing
+
 def handle (input output : IO.FS.Stream) : FrontendM Bool := do
   let some (req : Request) ← receive input
     | return false -- EOF between messages - terminate!
@@ -50,7 +60,7 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
             setInfoState {}
             withEnableInfoTree true do
               let cmd ←
-                if let some tyStx := tyStx? then `(#check ($(⟨stx⟩) : $(⟨tyStx⟩)))
+                if let some tyStx := tyStx? then `(#check ($(⟨stx⟩) : $(⟨removeSourceInfo tyStx⟩)))
                 else `(#check $(⟨stx⟩))
               try
                 elabCommand cmd
