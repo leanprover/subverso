@@ -759,45 +759,43 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
   | .text txt => do
     -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
     let mut todo := txt
-    let mut toks : Array Highlighted := #[]
-    let mut current := ""
+    let mut toks : Highlighted := .empty
     while !todo.isEmpty do
+      let ws := todo.takeWhile (·.isWhitespace)
+      unless ws.isEmpty do
+        toks := toks ++ .text ws
+        todo := todo.drop ws.length
+
+      let mut foundKw := false
       for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
         if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
-          if !current.isEmpty then
-            if let some k := outer then
-              toks := toks.push <| .token ⟨k, current⟩
-            else
-              toks := toks.push <| .text current
-            current := ""
-          toks := toks.push <| .token ⟨.keyword none none none, kw⟩
+          foundKw := true
+          toks := toks ++ .token ⟨.keyword none none none, kw⟩
           todo := todo.drop kw.length
           break
-      let c := todo.get 0
-      current := current.push c
-      todo := todo.drop 1
-      -- Don't highlight keywords that occur inside other tokens
-      if c.isAlphanum then
-        let tok := todo.takeWhile Char.isAlphanum
-        current := current ++ tok
+      if foundKw then continue -- for whitespace or subsequent keywords
+
+      -- It's not enough to just push a text node when the token kind isn't set, because that breaks
+      -- the code that matches Highlighted against strings for extraction. Instead, we need to split
+      -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
+      -- pretty printer output.
+      let tok := todo.takeWhile (!·.isWhitespace)
+      unless tok.isEmpty do
+        toks := toks ++ .token ⟨outer.getD .unknown, tok⟩
         todo := todo.drop tok.length
 
-    if !current.isEmpty then
-      if let some k := outer then
-        toks := toks.push <| .token ⟨k, current⟩
-      else
-        toks := toks.push <| .text current
-    pure <| if let #[t] := toks then t else .seq toks
+    pure toks
   | .tag t doc' =>
     let {ctx, info, children := _} := t.info.val
     if let .text tok := doc' then
-      if let some k ← infoKind ctx info then
-        pure <| .token ⟨k, tok⟩
-      else pure <| .text tok
+      let wsPre := tok.takeWhile (·.isWhitespace)
+      let wsPost := tok.takeRightWhile (·.isWhitespace)
+      let k := (← infoKind ctx info).getD .unknown
+      pure <| .seq #[.text wsPre, .token ⟨k, tok.trim⟩, .text wsPost]
     else
       let k? ← infoKind ctx info
       renderTagged k? doc'
-  | .append xs => .seq <$> xs.mapM (renderTagged outer)
+  | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
 where
   tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
