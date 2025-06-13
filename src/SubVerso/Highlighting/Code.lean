@@ -961,6 +961,8 @@ partial def highlightLevel (u : TSyntax `level) : HighlightM Unit := do
     emitToken u u.raw.getHeadInfo ⟨.levelConst n.getNat, toString n.getNat⟩
   | `(level|$x:ident) =>
     emitToken u u.raw.getHeadInfo ⟨.levelVar x.getId, toString x.getId⟩
+  | `(level|_) =>
+    emitToken u u.raw.getHeadInfo ⟨.levelVar .anonymous, toString "_"⟩
   | `(level|(%$s $l:level )%$e) =>
     emitToken u s.getHeadInfo ⟨.unknown, "("⟩
     highlightLevel l
