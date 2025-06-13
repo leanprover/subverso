@@ -70,7 +70,11 @@ inductive Token.Kind where
   | str (string : String)
   | option (name : Name) (declName : Name) (docs : Option String)
   | docComment
-  | sort (level : Level) (doc? : Option String)
+  | sort (doc? : Option String)
+  | levelVar (name : Name)
+  /-- A level operator, such as "+" or "imax" -/
+  | levelOp (which : String)
+  | levelConst (i : Nat)
   | /-- The token represents some otherwise-undescribed Expr whose type is known -/
     withType (type : String)
   | unknown
@@ -102,7 +106,10 @@ instance : Quote Token.Kind where
     | .var (.mk n) type => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type]
     | .str s => mkCApp ``str #[quote s]
     | .docComment => mkCApp ``docComment #[]
-    | .sort l doc? => mkCApp ``sort #[quote l, quote doc?]
+    | .sort doc? => mkCApp ``sort #[quote doc?]
+    | .levelVar n => mkCApp ``levelVar #[quote n]
+    | .levelConst v => mkCApp ``levelConst #[quote v]
+    | .levelOp n => mkCApp ``levelOp #[quote n]
     | .withType t => mkCApp ``withType #[quote t]
     | .unknown => mkCApp ``unknown #[]
 

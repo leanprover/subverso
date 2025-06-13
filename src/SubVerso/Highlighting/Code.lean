@@ -79,6 +79,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .option .. => 4
   | .sort .. => 4
   | .keyword _ _ _ => 3
+  | .levelConst .. | .levelVar .. | .levelOp .. => 4
   | .docComment | .withType .. => 1
   | .unknown => 0
 
@@ -270,12 +271,12 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative
       let docs ← findDocString? (← getEnv) name
       let sig ← ppSig name
       return some <| .const name sig docs false
-    | Expr.sort u =>
+    | Expr.sort _ =>
       if let some stx := stx? then
         let k := stx.getKind
         let docs? ← findDocString? (← getEnv) k
-        return some (.sort u docs?)
-      else return some (.sort u none)
+        return some (.sort docs?)
+      else return some (.sort none)
     | Expr.lit (.strVal s) => return some <| .str s
     | Expr.mdata _ e =>
       findKind e
@@ -954,6 +955,36 @@ partial def findTactics
 
   findTactics' stx startPos endPos endPosition
 
+partial def highlightLevel (u : TSyntax `level) : HighlightM Unit := do
+  match u with
+  | `(level|$n:num) =>
+    emitToken u u.raw.getHeadInfo ⟨.levelConst n.getNat, toString n.getNat⟩
+  | `(level|$x:ident) =>
+    emitToken u u.raw.getHeadInfo ⟨.levelVar x.getId, toString x.getId⟩
+  | `(level|_) =>
+    emitToken u u.raw.getHeadInfo ⟨.levelVar .anonymous, toString "_"⟩
+  | `(level|(%$s $l:level )%$e) =>
+    emitToken u s.getHeadInfo ⟨.unknown, "("⟩
+    highlightLevel l
+    emitToken e s.getHeadInfo ⟨.unknown, ")"⟩
+  | `(level|max%$tk $ls*) =>
+    emitToken u tk.getHeadInfo ⟨.levelOp "max", "max"⟩
+    for l in ls do
+      highlightLevel l
+  | `(level|imax%$tk $ls*) =>
+    emitToken u tk.getHeadInfo ⟨.levelOp "imax", "imax"⟩
+    for l in ls do
+      highlightLevel l
+  | `(level|$l1 +%$tk $n) =>
+    highlightLevel l1
+    emitToken u tk.getHeadInfo ⟨.levelOp "+", "+"⟩
+    emitToken u n.raw.getHeadInfo ⟨.levelConst n.getNat, toString n.getNat⟩
+  | _ => panic! s!"Unknown level syntax {u}"
+
+def highlightUniverse (blame : Syntax) (tk : Syntax) (u : Option (TSyntax `level)) : HighlightM Unit := do
+  let docs? ← findDocString? (← getEnv) blame.getKind
+  emitToken blame tk.getHeadInfo ⟨.sort docs?, tk.getAtomVal⟩ -- TODO sort docs
+  if let some u := u then highlightLevel u
 
 partial def highlight'
     (trees : Array Lean.Elab.InfoTree)
@@ -978,6 +1009,10 @@ partial def highlight'
       else
         emitString' "."
       highlight' trees field tactics
+  | `(term|Type%$s $u) | `(term|Sort%$s $u) =>
+    highlightUniverse stx s (some u)
+  | `(term|Type%$s) | `(term|Prop%$s) =>
+    highlightUniverse stx s none
   | _ =>
     match stx with
     | .missing => pure () -- TODO emit unhighlighted string
@@ -1017,9 +1052,9 @@ partial def highlight'
         | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
-      if let .sort u docs? ← identKind trees ⟨stx⟩ then
+      if let .sort docs? ← identKind trees ⟨stx⟩ then
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
-          emitToken stx i ⟨.sort u docs?, x⟩
+          emitToken stx i ⟨.sort docs?, x⟩
         return
       else
         emitToken stx i <| (⟨ ·,  x⟩) <|
