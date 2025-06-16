@@ -1059,9 +1059,6 @@ def highlightSpecial
       let lhs := lhs[0]'(by simp [*])
       -- Use the before state of the RHS for the entire LHS
       let text ← getFileMap
-      if let some rstartPos := rhs.raw.getPos? then
-      if let some rendPos := rhs.raw.getTailPos? then
-      let rendPosition := text.toPosition rendPos
       if let some goals := rhsGoals then
         if let some startPos := lhs.raw.getPos? then
           if let some endPos := arr.getTailPos? then
