@@ -19,7 +19,7 @@ an example.
 -/
 
 open Lean Elab Frontend
-open Lean.Elab.Command (liftTermElabM elabCommand)
+open Lean.Elab.Command (liftTermElabM elabCommand CommandElabM)
 open Lean.Elab.Term (TermElabM TermElabM.run elabType elabTerm)
 open SubVerso Examples Helper
 open SubVerso.Highlighting (Highlighted highlight)
@@ -186,20 +186,19 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
           let infoState ← getInfoState
           try
             setInfoState {}
-            withEnableInfoTree true do
-              try
-                checkSignature ⟨name⟩ ⟨sig⟩
-              catch
-                | e =>
-                  return Response.error 8 (← e.toMessageData.toString) none
-              let trees := (← get).infoState.trees
-              let msgs := (← get).messages
-              if msgs.hasErrors then
-                return Response.error 9 "Command failed" <| some <| .arr <|
-                  (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-              let hl ← liftTermElabM do
-                highlight (mkNullNode #[name, sig]) msgs.toArray trees
-              pure <| Response.result <| .highlighted hl
+            withEnableInfoTree (m := CommandElabM) true do
+              let hl ←
+                try
+                  let (hl, _, _, _) ← checkSignature ⟨name⟩ ⟨sig⟩
+                  let msgs := (← get).messages
+                  if msgs.hasErrors then
+                    return Response.error 9 "Command failed" <| some <| .arr <|
+                      (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
+                  pure hl
+                catch
+                  | e =>
+                    return Response.error 8 (← e.toMessageData.toString) none
+              return Response.result <| .highlighted hl
           finally
             setInfoState infoState
       catch
