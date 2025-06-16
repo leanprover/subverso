@@ -87,7 +87,10 @@ def checkSignature
     try
       elabCommand stx
       outTrees ← getInfoTrees
-      if ← MonadLog.hasErrors then throwErrorAt sigName "Failed to elaborate signature"
+      if ← MonadLog.hasErrors then
+        let errs := (← get).messages.toList.filter (·.severity matches .error)
+        let errs ← errs.mapM fun m => m.toString
+        throwErrorAt sigName "Failed to elaborate signature. Errors:{m!"and".joinSep errs}"
 
       -- The "source" is what the user wrote, the "target" is the existing declaration
       let source ← liftTermElabM <| Compat.realizeNameNoOverloads (addScope declName)
