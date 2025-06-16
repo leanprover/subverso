@@ -417,7 +417,12 @@ def main : IO UInt32 := do
   IO.println "Checking proof states for induction/cases alts"
   let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
   cleanupDemo "small-tests"
-  discard <| IO.Process.run {cmd := "lake", args := #["update"], cwd := "./small-tests"}
+  discard do
+    try
+      IO.Process.run {cmd := "lake", args := #["update", "--keep-toolchain"], cwd := "./small-tests"}
+    catch _ =>
+      IO.Process.run {cmd := "lake", args := #["update"], cwd := "./small-tests"}
+
   let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := myToolchain)
   let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
   match content.anchored with
