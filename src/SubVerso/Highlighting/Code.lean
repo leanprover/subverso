@@ -1055,6 +1055,7 @@ def highlightSpecial
     -- tactic state for the whole LHS including the =>; if there's more than one, show each separately
     -- and let the arrow be handled by the arrow code.
     if h : lhs.size = 1 then
+      have : 0 < 1 := by apply Nat.le_refl
       let lhs := lhs[0]'(by simp [*])
       -- Use the before state of the RHS for the entire LHS
       let text ← getFileMap
