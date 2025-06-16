@@ -530,12 +530,14 @@ structure HighlightState where
   inMessages : List MessageBundle
   /-- Currently-open tactic info -/
   inTactic : Option OpenTactic -- No nested tactic states!
+  /-- Last source position added to the output -/
+  lastPos? : Option String.Pos := none
   /-- Memoized results of searching for tactic info (by canonical range) -/
   hasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
   /-- Memoized results of searching for tactic info in children (by canonical range) -/
   childHasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, default, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -545,7 +547,7 @@ def HighlightState.empty : HighlightState where
   inTactic := none
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
-    (stx : Syntax) (messages : Array Message) : m HighlightState := do
+    (stx : Syntax) (messages : Array Message) (initPos? := stx.getPos?) : m HighlightState := do
   let msgs ← bundleMessages <$> messages.filterM (isRelevant stx)
   pure {
     messages := msgs
@@ -553,6 +555,7 @@ def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     output := [],
     inMessages := [],
     inTactic := none
+    lastPos? := initPos?
   }
 where
   isRelevant (stx : Syntax) (msg : Message) : m Bool := do
@@ -670,16 +673,32 @@ partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
 
   if more then closeUntil pos
 
+def setLastPos (lastPos? : Option String.Pos) : HighlightM Unit := do
+  modify fun st => { st with lastPos? }
+
+def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
+  if let some lastPos := (← get).lastPos? then
+    if lastPos < pos then
+      let text ← getFileMap
+      openUntil <| text.toPosition lastPos
+      let string := Substring.mk text.source lastPos pos |>.toString
+      modify fun st => {st with output := Output.addText st.output string}
+      closeUntil pos
+
 def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := do
+  fillMissingSourceUpTo pos
   let text ← getFileMap
   openUntil <| text.toPosition pos
   modify fun st => {st with output := Output.addText st.output string}
   closeUntil endPos
+  setLastPos endPos
 
 def emitString' (string : String) : HighlightM Unit :=
   modify fun st => {st with output := Output.addText st.output string}
 
 def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM Unit := do
+  if let some pos := blame.getPos? then
+    fillMissingSourceUpTo pos
   let text ← getFileMap
 
   let .original leading pos trailing endPos := info
@@ -694,6 +713,7 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
   modify fun st => {st with output := Output.addToken st.output token}
   closeUntil endPos
   emitString' trailing.toString
+  setLastPos (Compat.getTrailingTailPos? blame)
 
 def emitToken' (token : Token) : HighlightM Unit := do
   modify fun st => {st with output := Output.addToken st.output token}
@@ -1287,17 +1307,28 @@ partial def highlight'
       for child in children do
         highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
+def highlightWithEndPos (trees : Array Lean.Elab.InfoTree) (stx : Syntax)
+    (tactics : Bool) (endPos : String.Pos) : HighlightM Unit := do
+  highlight' trees stx tactics
+  fillMissingSourceUpTo endPos
+
 def highlight (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
-    (suppressNamespaces : List Name := []) : TermElabM Highlighted := do
+    (suppressNamespaces : List Name := [])
+    (startPos? endPos? : Option String.Pos := none) : TermElabM Highlighted := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
 
-  let st ← HighlightState.ofMessages stx messages
+  let st ← HighlightState.ofMessages stx messages (initPos? := startPos?)
   let infoTable : InfoTable := .ofInfoTrees trees
 
-  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let doHighlight : HighlightM Unit := if let some endPos := endPos? then
+    highlightWithEndPos trees stx true endPos
+  else
+    highlight' trees stx true
+
+  let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
