@@ -197,9 +197,13 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               if msgs.hasErrors then
                 return Response.error 9 "Command failed" <| some <| .arr <|
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
+              let mut dbg := s!"tree count: {trees.size}"
+              for t in trees do
+                dbg := dbg ++ toString (← t.format)
               let hl ← liftTermElabM do
                 highlight (mkNullNode #[name, sig]) msgs.toArray trees
-              pure <| Response.result <| .highlighted hl
+
+              pure <| Response.result <| .highlighted (hl ++ .text dbg)
           finally
             setInfoState infoState
       catch
