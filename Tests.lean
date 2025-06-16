@@ -102,6 +102,8 @@ end SubVerso
 def cleanupDemo (demo : System.FilePath := "demo") : IO Unit := do
   if ← System.FilePath.pathExists (demo / "lake-manifest.json") then
     IO.FS.removeFile (demo / "lake-manifest.json")
+  if ← System.FilePath.isDir (demo / "lake-packages") then
+    IO.FS.removeDirAll (demo / "lake-packages")
   if ← System.FilePath.isDir (demo / ".lake") then
     IO.FS.removeDirAll (demo / ".lake")
 
@@ -169,7 +171,10 @@ def testNetstrings := do
 -- in all targeted versions, so it's just part of these tests. See Verso for a version to use in
 -- documents.
 open System in
-def loadModuleContent (projectDir : String) (mod : String) : IO (Array ModuleItem) := do
+def loadModuleContent
+    (projectDir : String) (mod : String)
+    (overrideToolchain : Option String := none) :
+    IO (Array ModuleItem) := do
 
   let projectDir : FilePath := projectDir
 
@@ -178,11 +183,16 @@ def loadModuleContent (projectDir : String) (mod : String) : IO (Array ModuleIte
   let lakefile' := projectDir / "lakefile.toml"
   if !(← lakefile.pathExists) && !(← lakefile'.pathExists) then
     throw <| .userError s!"Neither {lakefile} nor {lakefile'} exist, couldn't load project"
-  let toolchainfile := projectDir / "lean-toolchain"
-  let toolchain ← do
-      if !(← toolchainfile.pathExists) then
-        throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
-      pure (← IO.FS.readFile toolchainfile).trim
+
+  let toolchain ←
+    match overrideToolchain with
+    | none =>
+      let toolchainfile := projectDir / "lean-toolchain"
+      let toolchain ← do
+          if !(← toolchainfile.pathExists) then
+            throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
+          pure (← IO.FS.readFile toolchainfile).trim
+    | some override => pure override
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
   -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared
@@ -243,6 +253,80 @@ def desiredProofs : List (String × String) := [
   ("step", "case cons =>\n  ys: NatList\n  a✝¹: Nat\n  a✝: NatList\n  a_ih✝: ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
   ("ih", "case cons =>\n  ys: NatList\n  a✝¹: Nat\n  a✝: NatList\n  ih: ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
   ("done", "")
+]
+
+def desiredAltProofs : List (String × String × String) := [
+  ("A",
+   "| inl hp =>",
+   "case inl =>
+  p: Prop
+  q: Prop
+  hp: p
+⊢ q ∨ p"),
+  ("A'",
+   "| inl hp =>",
+   "case inl =>
+  p: Prop
+  q: Prop
+  hp: p
+⊢ q ∨ p"),
+  ("A''",
+   "| inl hp =>",
+   "case inl =>
+  p: Prop
+  q: Prop
+  hp: p
+⊢ q ∨ p"),
+  ("A'''",
+   "apply Or.inr",
+   "case inl.h =>
+  p: Prop
+  q: Prop
+  hp: p
+⊢ p"),
+  ("B",
+   "| inr hq =>",
+   "case inr =>
+  p: Prop
+  q: Prop
+  hq: q
+⊢ q ∨ p"),
+  ("B'",
+   "| inr hq =>",
+   "case inr =>
+  p: Prop
+  q: Prop
+  hq: q
+⊢ q ∨ p"),
+  ("B''",
+   "| inr hq =>",
+   "case inr =>
+  p: Prop
+  q: Prop
+  hq: q
+⊢ q ∨ p"),
+  ("B'''",
+   "apply Or.inl",
+   "case inr.h =>
+  p: Prop
+  q: Prop
+  hq: q
+⊢ q"),
+  ("Arr",
+   "=>",
+   "case inr =>
+  p: Prop
+  q: Prop
+  hq: q
+⊢ q ∨ p
+case inl =>
+  p: Prop
+  q: Prop
+  hp: p
+⊢ q ∨ p"),
+  ("Two",
+   "simp [*]",
+   "")
 ]
 
 def main : IO UInt32 := do
@@ -329,4 +413,34 @@ def main : IO UInt32 := do
   if proofCount1 != proofCount2 || proofCount2 != proofCount3 then
     IO.eprintln "Example proof count mismatch"
     return 1
+
+  IO.println "Checking proof states for induction/cases alts"
+  let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
+  cleanupDemo "small-tests"
+  discard do
+    try
+      IO.Process.run {cmd := "lake", args := #["update", "--keep-toolchain"], cwd := "./small-tests"}
+    catch _ =>
+      IO.Process.run {cmd := "lake", args := #["update"], cwd := "./small-tests"}
+
+  let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := myToolchain)
+  let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+  match content.anchored with
+    | .error e => IO.eprintln e; return 1
+    | .ok {code:=_, anchors:=_, proofStates} =>
+      let mut errors := false
+      for (name, code, state) in desiredAltProofs do
+        if let some hl := proofStates.get? name then
+          let .tactics goals _ _ hl := hl
+            | IO.eprintln s!"Proof state '{name}' not a proof state: {repr hl}"; errors := true
+          if hl.toString != code then
+            IO.eprintln s!"Proof state '{name}': expected {repr code} but got {repr hl.toString}"; errors := true
+          let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
+          if state != goalString then
+            IO.eprintln s!"Proof state '{name}': expected {repr state} but got {repr goalString}"; errors := true
+        else
+          IO.eprintln "Not found: proof state '{name}'"; errors := true
+      if errors then return 1
+  IO.println "Proof states for induction/cases alts OK"
+
   pure 0

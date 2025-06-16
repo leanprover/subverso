@@ -890,9 +890,40 @@ partial def findTactics'
 
   return none
 
+/--
+Finds all the tactic info for `stx`, which should be in the indicated span.
+
+If found, returns the goals, the byte indices of the span, and the provided end position.
+-/
+partial def findAllTactics'
+    (stx : Syntax)
+    (startPos endPos : String.Pos)
+    (endPosition : Position)
+    (before : Bool := false)
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position)) := do
+
+  let mut found := #[]
+
+  if let some res := (← readThe InfoTable).tacticInfo? stx then
+    for (ci, tacticInfo) in res.reverse do
+      if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
+        continue
+
+      let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
+      let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
+      if goals.isEmpty then continue
+      let goalView ← highlightGoals ci goals
+
+      if !Output.inTacticState (← get).output goalView then
+        found := found ++ goalView
+
+  if found.isEmpty then return none
+  else return some (found, startPos, endPos, endPosition)
+
 partial def findTactics
     (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
+    (before : Bool := false)
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position)) :=
   withTraceNode `SubVerso.Highlighting.Code (fun x => pure m!"findTactics {stx} ==> {match x with | .error _ => "err" | .ok v => v.map (fun _ => "yes") |>.getD "no"}") <| do
   let text ← getFileMap
@@ -953,7 +984,7 @@ partial def findTactics
     if let some (goals, _startPos, _endPos, _endPosition) ← findTactics trees brak then
       return some (goals, startPos, endPos, endPosition)
 
-  findTactics' stx startPos endPos endPosition
+  findTactics' stx startPos endPos endPosition (before := before)
 
 partial def highlightLevel (u : TSyntax `level) : HighlightM Unit := do
   match u with
@@ -986,12 +1017,100 @@ def highlightUniverse (blame : Syntax) (tk : Syntax) (u : Option (TSyntax `level
   emitToken blame tk.getHeadInfo ⟨.sort docs?, tk.getAtomVal⟩ -- TODO sort docs
   if let some u := u then highlightLevel u
 
+-- Special cases for highlighting. These are a separate function because the nested syntax/normal
+-- pattern match was causing Lean to work very, very hard to compile the pattern match
+def highlightSpecial
+    (trees : Array Lean.Elab.InfoTree)
+    (stx : Syntax)
+    (tactics : Bool)
+    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × String.Pos) → Syntax → HighlightM Unit)
+    (lookingAt : Option (Name × String.Pos) := none) :
+    HighlightM Unit := do
+  match stx with
+  | `($e.%$tk$field:ident) =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
+      hl trees tactics none e
+      if let some ⟨pos, endPos⟩ := tk.getRange? then
+        emitToken stx tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
+      else
+        emitString' "."
+      hl trees tactics none field
+  | `(term|Type%$s $u) | `(term|Sort%$s $u) =>
+    highlightUniverse stx s (some u)
+  | `(term|Type%$s) | `(term|Prop%$s) =>
+    highlightUniverse stx s none
+  | `(Lean.Parser.Tactic.inductionAlt|$lhs* =>%$arr $rhs) =>
+    let mut lhsTactics := tactics
+    -- Get the before state of the RHS
+    let text ← getFileMap
+    if let some rstartPos := rhs.raw.getPos? then
+    if let some rendPos := rhs.raw.getTailPos? then
+    let rendPosition := text.toPosition rendPos
+    let rhsGoals ← do
+      if let some (goals, _, _, _) ← findAllTactics' rhs rstartPos rendPos rendPosition (before := true) then
+        pure <| if !goals.isEmpty then some goals else none
+      else pure none
+
+    -- Special handling for cases/induction alternatives. When there's one alt prior to =>, show the
+    -- tactic state for the whole LHS including the =>; if there's more than one, show each separately
+    -- and let the arrow be handled by the arrow code.
+    if h : lhs.size = 1 then
+      have : 0 < 1 := by apply Nat.le_refl
+      let lhs := lhs[0]'(by simp [*])
+      -- Use the before state of the RHS for the entire LHS
+      let text ← getFileMap
+      if let some rstartPos := rhs.raw.getPos? then
+      if let some rendPos := rhs.raw.getTailPos? then
+      let rendPosition := text.toPosition rendPos
+      if let some goals := rhsGoals then
+        if let some startPos := lhs.raw.getPos? then
+          if let some endPos := arr.getTailPos? then
+            let endPosition := text.toPosition endPos
+            HighlightM.openTactic goals startPos endPos endPosition
+            lhsTactics := false
+
+      hl trees lhsTactics none lhs
+      hl trees lhsTactics none arr
+    else
+      for l in lhs do
+        let text ← getFileMap
+        if let some startPos := l.raw.getPos? then
+          if let some endPos := l.raw.getTailPos? then
+            let endPosition := text.toPosition endPos
+            -- Starting in Lean 4.14, each case/tactic alt gets its own TacticInfo. This will
+            -- highlight them appropriately. Older Lean versions will have less information here.
+            for t in trees do
+              let i := infoIncludingSyntax t l
+              for (ci, i) in i do
+                if let .ofTacticInfo ti := i then
+                  if ti.stx.getKind == nullKind then
+                    let preArr := i.stx[0]
+                    if preArr.getKind == nullKind && preArr[0] == l then
+                      let (goals, _, _, _) ← tacticInfoGoals ci ti startPos endPos endPosition (before := true)
+                      if !goals.isEmpty then
+                        HighlightM.openTactic goals startPos endPos endPosition
+                        lhsTactics := false
+        hl trees lhsTactics none l
+
+      -- Use the RHS start goals for the arrow
+      if let some goals := rhsGoals then
+        if let some startPos := arr.getPos? then
+          if let some endPos := arr.getTailPos? then
+          let endPosition := text.toPosition endPos
+          HighlightM.openTactic goals startPos endPos endPosition
+          hl trees false none arr
+      else hl trees tactics none arr
+
+
+    hl trees tactics none rhs
+  | _ => hl trees tactics lookingAt stx
+
 partial def highlight'
     (trees : Array Lean.Elab.InfoTree)
     (stx : Syntax)
     (tactics : Bool)
-    (lookingAt : Option (Name × String.Pos) := none)
-    : HighlightM Unit :=
+    (lookingAt : Option (Name × String.Pos) := none) :
+    HighlightM Unit :=
   withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting {stx}") do
   let mut tactics := tactics
   if tactics then
@@ -1000,21 +1119,7 @@ partial def highlight'
       -- No nested tactics - the tactic search process should only have returned results
       -- on "leaf" nodes anyway
       tactics := false
-  match stx with
-  | `($e.%$tk$field:ident) =>
-      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
-      highlight' trees e tactics
-      if let some ⟨pos, endPos⟩ := tk.getRange? then
-        emitToken stx tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
-      else
-        emitString' "."
-      highlight' trees field tactics
-  | `(term|Type%$s $u) | `(term|Sort%$s $u) =>
-    highlightUniverse stx s (some u)
-  | `(term|Type%$s) | `(term|Prop%$s) =>
-    highlightUniverse stx s none
-  | _ =>
-    match stx with
+  highlightSpecial trees stx tactics (lookingAt := lookingAt) fun trees tactics lookingAt => fun
     | .missing => pure () -- TODO emit unhighlighted string
     | .ident _ _ .anonymous _ =>
       -- If the anonymous identifier occurs, it's because it was a fallback for an optional
@@ -1095,7 +1200,7 @@ partial def highlight'
       | _, _ =>
         highlight' trees dot tactics
         highlight' trees name tactics
-    | .node _ k@``Lean.Parser.Term.anonymousCtor #[opener@(.atom oi l), children@(.node _ _ contents), closer@(.atom ci r)] =>
+    | .node _ k@``Lean.Parser.Term.anonymousCtor #[opener@(.atom oi l), children@(.node _ _ contents), closer@(.atom ci r)] => do
       if let some tk ← anonCtorKind trees stx then
         emitToken stx oi ⟨tk, l⟩
         for child in contents do
