@@ -231,8 +231,8 @@ partial def stripNamespaces [Monad m] [MonadReaderOf Context m] : FormatWithInfo
 
 def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative m]
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
-    (allowUnknownTyped : Bool := false)
-    : ReaderT Context m (Option Token.Kind) := do
+    (allowUnknownTyped : Bool := false) :
+    ReaderT Context m (Option Token.Kind) := do
   let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := {ci with env := env}.runMetaM lctx act
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
@@ -248,8 +248,11 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative
         if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
           Compat.refIdentCase y
             (onFVar := fun x => do
-              let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
-              let tyStr := toString (← runMeta <| Meta.ppExpr ty)
+              let tyStr ← runMeta do
+                try -- Needed for robustness in the face of tactics that create strange contexts
+                  let ty ← instantiateMVars (← Meta.inferType expr)
+                  toString <$> Meta.ppExpr ty
+                catch | _ => pure ""
               if let some localDecl := lctx.find? x then
                 if localDecl.isAuxDecl then
                   let e ← runMeta <| Meta.ppExpr expr
@@ -264,8 +267,11 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative
               let docs ← findDocString? (← getEnv) x
               return some <| .const x sig docs false)
         else
-          let ty ← instantiateMVars (← runMeta <| Meta.inferType expr)
-          let tyStr := toString (← runMeta <| Meta.ppExpr ty)
+          let tyStr ← runMeta do
+            try -- Needed for robustness in the face of tactics that create strange contexts
+              let ty ← instantiateMVars (← Meta.inferType expr)
+              toString <$> Meta.ppExpr ty
+            catch | _ => pure ""
           return some <| .var id tyStr
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
@@ -312,8 +318,8 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
   return false
 
 def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
-    (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false)
-    : ReaderT Context m (Option Token.Kind) := do
+    (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
+    ReaderT Context m (Option Token.Kind) := do
   let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
     if let some (.const name sig docs _isDef) := k then
@@ -322,8 +328,8 @@ def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFi
   else return k
 
 def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
-    (ci : ContextInfo) (fieldInfo : FieldInfo)
-    : m Token.Kind := do
+    (ci : ContextInfo) (fieldInfo : FieldInfo) :
+    m Token.Kind := do
   let runMeta {α} (act : MetaM α) : m α := ci.runMetaM fieldInfo.lctx act
   let ty ← instantiateMVars (← runMeta <| Meta.inferType fieldInfo.val)
   let tyStr := toString (← runMeta <| Meta.ppExpr ty)
@@ -331,8 +337,8 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
   return .const fieldInfo.projName tyStr docs false
 
 def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
-    (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false)
-    : ReaderT Context m (Option Token.Kind) := do
+    (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
+    ReaderT Context m (Option Token.Kind) := do
   match info with
     | .ofTermInfo termInfo => termInfoKind ci termInfo (allowUnknownTyped := allowUnknownTyped)
     | .ofFieldInfo fieldInfo => some <$> fieldInfoKind ci fieldInfo
@@ -349,8 +355,8 @@ def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMa
 
 def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
     (trees : Array InfoTree) (stx : TSyntax `ident)
-    (allowUnknownTyped : Bool := false)
-    : ReaderT Context m Token.Kind := do
+    (allowUnknownTyped : Bool := false) :
+    ReaderT Context m Token.Kind := do
   let mut kind : Token.Kind := .unknown
   for t in trees do
     for (ci, info) in infoForSyntax t stx do
