@@ -1023,19 +1023,21 @@ private def matchAltTactic := Lean.Parser.Term.matchAlt Lean.Parser.Tactic.tacti
 Recognizes tactic syntax with an arrow, where the whole area left of the arrow should be annotated
 with the before-state of the RHS.
 -/
-def arrowLike? : Syntax → Option (Syntax × Syntax × Syntax)
-  | `(Lean.Parser.Tactic.Conv.conv|conv%$kw1 $[at%$kw2 $h]? $[in%$kw3 $occs? $tm]? =>%$arr $rhs) =>
-    let atNode : Option (Array Syntax) := do
-      return #[← kw2, ← h]
-    let inNode : Option (Array Syntax) := do
-      return #[← kw3, ← occs?, ← tm]
-    some (mkNullNode #[kw1, mkNullNode (atNode.getD #[]), mkNullNode (inNode.getD #[])], arr, rhs)
-  | `(matchAltTactic| |%$bar $tm,* =>%$arr $rhs) =>
-    some (mkNullNode #[bar, mkNullNode tm.elemsAndSeps], arr, rhs)
-  | `(Lean.Parser.Tactic.Conv.convTactic|conv'%$kw =>%$arr $rhs)
-  | `(Lean.Parser.Tactic.Conv.convConvSeq|conv%$kw =>%$arr $rhs) =>
-    some (kw, arr, rhs)
-  | _ => none
+def arrowLike? (stx : Syntax) : Option (Syntax × Syntax × Syntax) := do
+  guard (stx.getKind ∈ arrKinds)
+  let args := stx.getArgs
+  let arrIdx := args.findIdx? (· matches .atom _ "=>")
+  arrIdx.map fun i =>
+    (mk (args.extract 0 i), args[i]!, mk (args.extract (i + 1) args.size))
+where
+  mk (args : Array Syntax) : Syntax :=
+    if h : args.size = 1 then args[0] else mkNullNode args
+  arrKinds := [
+    ``Lean.Parser.Tactic.Conv.conv,
+    ``Lean.Parser.Tactic.Conv.convTactic,
+    ``Lean.Parser.Tactic.Conv.convConvSeq,
+    ``Lean.Parser.Term.matchAlt
+  ]
 
 /--
 Get the goals before a piece of syntax.
@@ -1062,11 +1064,11 @@ def highlightArrowLike
   let rhsGoals ← beforeGoals rhs
 
   if let some goals := rhsGoals then
-      if let some startPos := lhs.getPos? then
-        if let some endPos := arr.getTailPos? then
-          let endPosition := text.toPosition endPos
-          HighlightM.openTactic goals startPos endPos endPosition
-          lhsTactics := false
+    if let some startPos := lhs.getPos? then
+      if let some endPos := arr.getTailPos? then
+        let endPosition := text.toPosition endPos
+        HighlightM.openTactic goals startPos endPos endPosition
+        lhsTactics := false
 
   hl trees lhsTactics lookingAt lhs
   hl trees lhsTactics lookingAt arr
