@@ -1308,11 +1308,14 @@ partial def highlight'
       for child in children do
         highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
-def highlightWithEndPos (trees : Array Lean.Elab.InfoTree) (stx : Syntax)
-    (tactics : Bool) (endPos : String.Pos) : HighlightM Unit := do
-  highlight' trees stx tactics
-  fillMissingSourceUpTo endPos
+/--
+Produces a `Highlighted` value corresponding to `stx`.
 
+Any segments of `stx` that failed to parse are drawn from the source given by
+the active file map. By default, assumes that `stx` corresponds to the range
+`stx.getPos?` to `stx.getTrailingTailPos?`; use `startPos?` and `endPos?` to
+override these.
+-/
 def highlight (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := [])
@@ -1321,13 +1324,16 @@ def highlight (stx : Syntax) (messages : Array Message)
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
 
-  let st ← HighlightState.ofMessages stx messages (initPos? := startPos?)
+  let startPos := startPos? <|> stx.getPos?
+  let endPos? := endPos? <|> Compat.getTrailingTailPos? stx
+
+  let st ← HighlightState.ofMessages stx messages (initPos? := startPos)
   let infoTable : InfoTable := .ofInfoTrees trees
 
-  let doHighlight : HighlightM Unit := if let some endPos := endPos? then
-    highlightWithEndPos trees stx true endPos
-  else
+  let doHighlight : HighlightM Unit := do
     highlight' trees stx true
+    if let some endPos := endPos? then
+      fillMissingSourceUpTo endPos
 
   let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
