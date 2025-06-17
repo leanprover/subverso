@@ -1031,7 +1031,7 @@ def arrowLike? (stx : Syntax) : Option (Syntax × Syntax × Syntax) := do
     (mk (args.extract 0 i), args[i]!, mk (args.extract (i + 1) args.size))
 where
   mk (args : Array Syntax) : Syntax :=
-    if h : args.size = 1 then args[0] else mkNullNode args
+    if args.size = 1 then args[0]! else mkNullNode args
   arrKinds := [
     ``Lean.Parser.Tactic.Conv.conv,
     ``Lean.Parser.Tactic.Conv.convTactic,
