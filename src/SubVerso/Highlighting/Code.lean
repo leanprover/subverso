@@ -1017,6 +1017,64 @@ def highlightUniverse (blame : Syntax) (tk : Syntax) (u : Option (TSyntax `level
   emitToken blame tk.getHeadInfo ⟨.sort docs?, tk.getAtomVal⟩ -- TODO sort docs
   if let some u := u then highlightLevel u
 
+private def matchAltTactic := Lean.Parser.Term.matchAlt Lean.Parser.Tactic.tacticSeq
+
+/--
+Recognizes tactic syntax with an arrow, where the whole area left of the arrow should be annotated
+with the before-state of the RHS.
+-/
+def arrowLike? (stx : Syntax) : Option (Syntax × Syntax × Syntax) := do
+  guard (stx.getKind ∈ arrKinds)
+  let args := stx.getArgs
+  let arrIdx := args.findIdx? (· matches .atom _ "=>")
+  arrIdx.map fun i =>
+    (mk (args.extract 0 i), args[i]!, mk (args.extract (i + 1) args.size))
+where
+  mk (args : Array Syntax) : Syntax :=
+    if args.size = 1 then args[0]! else mkNullNode args
+  arrKinds := [
+    ``Lean.Parser.Tactic.Conv.conv,
+    ``Lean.Parser.Tactic.Conv.convTactic,
+    ``Lean.Parser.Tactic.Conv.convConvSeq,
+    ``Lean.Parser.Tactic.Conv.nestedTactic,
+    ``Lean.Parser.Term.matchAlt
+  ]
+
+/--
+Get the goals before a piece of syntax.
+-/
+def beforeGoals (stx : Syntax) : HighlightM (Option (Array (Highlighted.Goal Highlighted))) := do
+  let text ← getFileMap
+  if let some rstartPos := stx.getPos? then
+    if let some rendPos := stx.getTailPos? then
+      let rendPosition := text.toPosition rendPos
+
+      if let some (goals, _, _, _) ← findAllTactics' stx rstartPos rendPos rendPosition (before := true) then
+        return if !goals.isEmpty then some goals else none
+  return none
+
+def highlightArrowLike
+    (trees : Array Lean.Elab.InfoTree)
+    (lhs arr rhs : Syntax)
+    (tactics : Bool)
+    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × String.Pos) → Syntax → HighlightM Unit)
+    (lookingAt : Option (Name × String.Pos) := none) :
+    HighlightM Unit := do
+  let mut lhsTactics := tactics
+  let text ← getFileMap
+  let rhsGoals ← beforeGoals rhs
+
+  if let some goals := rhsGoals then
+    if let some startPos := lhs.getPos? then
+      if let some endPos := arr.getTailPos? then
+        let endPosition := text.toPosition endPos
+        HighlightM.openTactic goals startPos endPos endPosition
+        lhsTactics := false
+
+  hl trees lhsTactics lookingAt lhs
+  hl trees lhsTactics lookingAt arr
+  hl trees tactics lookingAt rhs
+
 -- Special cases for highlighting. These are a separate function because the nested syntax/normal
 -- pattern match was causing Lean to work very, very hard to compile the pattern match
 def highlightSpecial
@@ -1026,6 +1084,10 @@ def highlightSpecial
     (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × String.Pos) → Syntax → HighlightM Unit)
     (lookingAt : Option (Name × String.Pos) := none) :
     HighlightM Unit := do
+  -- Highlight things like conv => specially
+  if let some (lhs, arr, rhs) := arrowLike? stx then
+    highlightArrowLike trees lhs arr rhs tactics hl (lookingAt := lookingAt)
+    return
   match stx with
   | `($e.%$tk$field:ident) =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
@@ -1039,17 +1101,12 @@ def highlightSpecial
     highlightUniverse stx s (some u)
   | `(term|Type%$s) | `(term|Prop%$s) =>
     highlightUniverse stx s none
+
   | `(Lean.Parser.Tactic.inductionAlt|$lhs* =>%$arr $rhs) =>
     let mut lhsTactics := tactics
     -- Get the before state of the RHS
     let text ← getFileMap
-    if let some rstartPos := rhs.raw.getPos? then
-    if let some rendPos := rhs.raw.getTailPos? then
-    let rendPosition := text.toPosition rendPos
-    let rhsGoals ← do
-      if let some (goals, _, _, _) ← findAllTactics' rhs rstartPos rendPos rendPosition (before := true) then
-        pure <| if !goals.isEmpty then some goals else none
-      else pure none
+    let rhsGoals ← beforeGoals rhs
 
     -- Special handling for cases/induction alternatives. When there's one alt prior to =>, show the
     -- tactic state for the whole LHS including the =>; if there's more than one, show each separately
@@ -1058,7 +1115,6 @@ def highlightSpecial
       have : 0 < 1 := by apply Nat.le_refl
       let lhs := lhs[0]'(by simp [*])
       -- Use the before state of the RHS for the entire LHS
-      let text ← getFileMap
       if let some goals := rhsGoals then
         if let some startPos := lhs.raw.getPos? then
           if let some endPos := arr.getTailPos? then
@@ -1070,7 +1126,6 @@ def highlightSpecial
       hl trees lhsTactics none arr
     else
       for l in lhs do
-        let text ← getFileMap
         if let some startPos := l.raw.getPos? then
           if let some endPos := l.raw.getTailPos? then
             let endPosition := text.toPosition endPos
