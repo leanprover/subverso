@@ -80,7 +80,7 @@ def checkSignature
     | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
 
   -- Elaborate as an opaque constant (unsafe is to avoid an Inhabited constraint on the return type)
-  let stx ← `(command| unsafe opaque $noClash $sig)
+  let stx ← `(command| noncomputable unsafe opaque $noClash $sig)
   let trees ← withoutModifyingEnv do
     let origTrees ← getResetInfoTrees
     let mut outTrees := PersistentArray.empty
