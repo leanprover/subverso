@@ -684,6 +684,7 @@ def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
       let string := Substring.mk text.source lastPos pos |>.toString
       modify fun st => {st with output := Output.addText st.output string}
       closeUntil pos
+      setLastPos pos
 
 def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := do
   fillMissingSourceUpTo pos
