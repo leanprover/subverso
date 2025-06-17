@@ -1036,6 +1036,7 @@ where
     ``Lean.Parser.Tactic.Conv.conv,
     ``Lean.Parser.Tactic.Conv.convTactic,
     ``Lean.Parser.Tactic.Conv.convConvSeq,
+    ``Lean.Parser.Tactic.Conv.nestedTactic,
     ``Lean.Parser.Term.matchAlt
   ]
 
