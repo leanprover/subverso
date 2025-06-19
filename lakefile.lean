@@ -113,6 +113,7 @@ meta if Compat.useOldBind then
     exeJob.bindAsync fun exeFile exeTrace =>
       modJob.bindSync fun _oleanPath modTrace => do
         let nsTrace ← buildFileUnlessUpToDate nsFile (Compat.traceOfHash (.ofString suppNS)) do
+          IO.FS.createDirAll (buildDir / "highlighted")
           IO.FS.writeFile nsFile suppNS
         let depTrace := mixTrace exeTrace (mixTrace modTrace nsTrace)
         let trace ← buildFileUnlessUpToDate hlFile depTrace do
@@ -142,6 +143,7 @@ else
       modJob.mapM fun _oleanPath => do
         addPureTrace suppNS
         buildFileUnlessUpToDate' (text := true) nsFile do
+          IO.FS.createDirAll (buildDir / "highlighted")
           IO.FS.writeFile nsFile suppNS
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
