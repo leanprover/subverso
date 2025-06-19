@@ -1213,8 +1213,18 @@ partial def highlight'
             withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Perhaps a field? {y} {field}") do
             if (← infoExists trees field) then
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Yes, a field!") do
+              -- This is a hack to account for the apparent bug that causes the first identifier
+              -- in field notation to always have trailing stop pos `0`
+              -- TODO: find a more elegant solution
+              let y := if let .original leading pos trailing endPos := y.getTailInfo then
+                y.setTailInfo <| .original leading pos { trailing with
+                  startPos := endPos,
+                  stopPos := endPos } endPos
+              else y
               highlight' trees y tactics
               emitToken' <| fakeToken .unknown "."
+              -- Manually bump the last-seen position so we don't double-print the dot
+              setLastPos <| (← getFileMap).source.next <$> Compat.getTrailingTailPos? y
               highlight' trees field tactics
             else
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Not a field.") do
