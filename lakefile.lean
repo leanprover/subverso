@@ -20,6 +20,16 @@ open Lean Elab Command in
   elabCommand <| ← `(def $useOldMixArray := $(quote useOld))
 
 
+open Lean Elab Command in
+-- Compatibility shims related to hashing and tracing
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  if env.contains `Lake.BuildTrace.ofHash then
+    elabCommand <| ← `(def $(mkIdent `traceOfHash) (hash : Lake.Hash) : Lake.BuildTrace := .ofHash hash)
+  else
+    elabCommand <| ← `(def $(mkIdent `traceOfHash) (hash : Lake.Hash) : Lake.BuildTrace := .fromHash hash)
+
+
 -- Compatibility shims for older Lake (where logging was manual) and
 -- newer Lake (where it isn't). Necessary from Lean 4.8.0 and up.
 open Lean Elab Command in
@@ -34,6 +44,7 @@ open Lean Elab Command in
     elabCommand <| ← `(def $(mkIdent `logInfo) [Pure $m] (message : String) : $m Unit := pure ())
   else
     elabCommand <| ← `(def $(mkIdent `logInfo) := @Lake.logInfo)
+
 
 open Lean Elab Command Term in
 #eval show CommandElabM Unit from do
@@ -101,7 +112,7 @@ meta if Compat.useOldBind then
 
     exeJob.bindAsync fun exeFile exeTrace =>
       modJob.bindSync fun _oleanPath modTrace => do
-        let nsTrace ← buildFileUnlessUpToDate nsFile (.fromHash (.ofString suppNS)) do
+        let nsTrace ← buildFileUnlessUpToDate nsFile (Compat.traceOfHash (.ofString suppNS)) do
           IO.FS.writeFile nsFile suppNS
         let depTrace := mixTrace exeTrace (mixTrace modTrace nsTrace)
         let trace ← buildFileUnlessUpToDate hlFile depTrace do
