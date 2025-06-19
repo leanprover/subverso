@@ -997,7 +997,7 @@ partial def highlightLevel (u : TSyntax `level) : HighlightM Unit := do
   | `(level|(%$s $l:level )%$e) =>
     emitToken u s.getHeadInfo ⟨.unknown, "("⟩
     highlightLevel l
-    emitToken e s.getHeadInfo ⟨.unknown, ")"⟩
+    emitToken e e.getHeadInfo ⟨.unknown, ")"⟩
   | `(level|max%$tk $ls*) =>
     emitToken u tk.getHeadInfo ⟨.levelOp "max", "max"⟩
     for l in ls do
