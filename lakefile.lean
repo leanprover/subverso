@@ -20,6 +20,16 @@ open Lean Elab Command in
   elabCommand <| ← `(def $useOldMixArray := $(quote useOld))
 
 
+open Lean Elab Command in
+-- Compatibility shims related to hashing and tracing
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  if env.contains `Lake.BuildTrace.ofHash then
+    elabCommand <| ← `(def $(mkIdent `traceOfHash) (hash : Lake.Hash) : Lake.BuildTrace := .ofHash hash)
+  else
+    elabCommand <| ← `(def $(mkIdent `traceOfHash) (hash : Lake.Hash) : Lake.BuildTrace := .fromHash hash)
+
+
 -- Compatibility shims for older Lake (where logging was manual) and
 -- newer Lake (where it isn't). Necessary from Lean 4.8.0 and up.
 open Lean Elab Command in
@@ -34,6 +44,7 @@ open Lean Elab Command in
     elabCommand <| ← `(def $(mkIdent `logInfo) [Pure $m] (message : String) : $m Unit := pure ())
   else
     elabCommand <| ← `(def $(mkIdent `logInfo) := @Lake.logInfo)
+
 
 open Lean Elab Command Term in
 #eval show CommandElabM Unit from do
@@ -93,18 +104,23 @@ meta if Compat.useOldBind then
 
     let exeJob ← extract.exe.fetch
     let modJob ← mod.olean.fetch
+    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
     let buildDir := ws.root.buildDir
     let hlFile := mod.filePath (buildDir / "highlighted") "json"
+    let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
 
     exeJob.bindAsync fun exeFile exeTrace =>
       modJob.bindSync fun _oleanPath modTrace => do
-        let depTrace := mixTrace exeTrace modTrace
+        let nsTrace ← buildFileUnlessUpToDate nsFile (Compat.traceOfHash (.ofString suppNS)) do
+          IO.FS.createDirAll (buildDir / "highlighted")
+          IO.FS.writeFile nsFile suppNS
+        let depTrace := mixTrace exeTrace (mixTrace modTrace nsTrace)
         let trace ← buildFileUnlessUpToDate hlFile depTrace do
           Compat.logStep s!"Exporting highlighted source file JSON for '{mod.name}'"
           proc {
             cmd := exeFile.toString
-            args := #[mod.name.toString, hlFile.toString]
+            args := #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
         pure (hlFile, trace)
@@ -117,16 +133,22 @@ else
 
     let exeJob ← extract.exe.fetch
     let modJob ← mod.olean.fetch
+    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
     let buildDir := ws.root.buildDir
     let hlFile := mod.filePath (buildDir / "highlighted") "json"
+    let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
 
     exeJob.bindM fun exeFile =>
       modJob.mapM fun _oleanPath => do
+        addPureTrace suppNS
+        buildFileUnlessUpToDate' (text := true) nsFile do
+          IO.FS.createDirAll (buildDir / "highlighted")
+          IO.FS.writeFile nsFile suppNS
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
-            args :=  #[mod.name.toString, hlFile.toString]
+            args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
         pure hlFile
