@@ -716,7 +716,12 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
   modify fun st => {st with output := Output.addToken st.output token}
   closeUntil endPos
   emitString' trailing.toString
-  setLastPos (Compat.getTrailingTailPos? blame)
+  /- The following accounts for the fact that some syntax (e.g., the `y` given
+     by `stx.identComponents` in the field-syntax case in `highlight'`) carries
+     an erroneous `0` trailing tail position -/
+  let trailingPos := Compat.getTrailingTailPos? blame
+    |>.map fun trailingPos => if trailingPos < endPos then endPos else trailingPos
+  setLastPos trailingPos
 
 def emitToken' (token : Token) : HighlightM Unit := do
   modify fun st => {st with output := Output.addToken st.output token}
@@ -1215,18 +1220,12 @@ partial def highlight'
             withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Perhaps a field? {y} {field}") do
             if (← infoExists trees field) then
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Yes, a field!") do
-              -- This is a hack to account for the apparent bug that causes the first identifier
-              -- in field notation to always have trailing stop pos `0`
-              -- TODO: find a more elegant solution
-              let y := if let .original leading pos trailing endPos := y.getTailInfo then
-                y.setTailInfo <| .original leading pos { trailing with
-                  startPos := endPos,
-                  stopPos := endPos } endPos
-              else y
               highlight' trees y tactics
               emitToken' <| fakeToken .unknown "."
-              -- Manually bump the last-seen position so we don't double-print the dot
-              setLastPos <| (← getFileMap).source.next <$> Compat.getTrailingTailPos? y
+              -- Manually bump the last-seen position so we don't double-print the dot.
+              -- The source info for `y` has an erroneous trailing tail pos of `0`,
+              -- so we use `tailPos?` since it can't have trailing whitespace anyway
+              setLastPos <| (← getFileMap).source.next <$> y.getTailPos?
               highlight' trees field tactics
             else
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Not a field.") do
