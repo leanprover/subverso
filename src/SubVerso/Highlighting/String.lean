@@ -52,6 +52,7 @@ def matchingExprPrefix? (hl : Highlighted) (term : String) : Option Highlighted 
   let mut out : Highlighted := .empty
   let mut term := term
   let mut hl := hl
+
   while !term.isEmpty do
     let ws := term.takeWhile (·.isWhitespace)
     out := out ++ .text ws
@@ -72,6 +73,8 @@ def matchingExpr? (hl : Highlighted) (term : String) : Option Highlighted := do
   let mut hl := hl
   repeat
     let (first, rest) ← firstToken hl
-    if let some out := matchingExprPrefix? (first ++ rest) term then return out
-    else hl := rest
+    hl := rest
+    if let some out := matchingExprPrefix? (first ++ rest) term then
+      return out
+
   failure
