@@ -67,6 +67,7 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
 structure Context where
   ids : HashMap Lsp.RefIdent Lsp.RefIdent
   definitionsPossible : Bool
+  includeUnparsed : Bool
   suppressNamespaces : List Name
 
 def Context.noDefinitions (ctxt : Context) : Context := {ctxt with definitionsPossible := false}
@@ -687,7 +688,7 @@ def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
       setLastPos pos
 
 def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := do
-  fillMissingSourceUpTo pos
+  if (← read).includeUnparsed then fillMissingSourceUpTo pos
   let text ← getFileMap
   openUntil <| text.toPosition pos
   modify fun st => {st with output := Output.addText st.output string}
@@ -698,8 +699,9 @@ def emitString' (string : String) : HighlightM Unit :=
   modify fun st => {st with output := Output.addText st.output string}
 
 def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM Unit := do
-  if let some pos := blame.getPos? then
-    fillMissingSourceUpTo pos
+  if (← read).includeUnparsed then
+    if let some pos := blame.getPos? then
+      fillMissingSourceUpTo pos
   let text ← getFileMap
 
   let .original leading pos trailing endPos := info
@@ -1318,15 +1320,29 @@ partial def highlight'
       for child in children do
         highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
+def highlight (stx : Syntax) (messages : Array Message)
+    (trees : PersistentArray Lean.Elab.InfoTree)
+    (suppressNamespaces : List Name := []) : TermElabM Highlighted := do
+  let trees := trees.toArray
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
+  let ids := build modrefs
+
+  let st ← HighlightState.ofMessages stx messages
+  let infoTable : InfoTable := .ofInfoTrees trees
+
+  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, false, suppressNamespaces⟩ |>.run infoTable |>.run st
+  pure <| .fromOutput output
+
 /--
-Produces a `Highlighted` value corresponding to `stx`.
+Produces a `Highlighted` value corresponding to `stx`, including any unparsed
+regions of the source lying within its span.
 
 Any segments of `stx` that failed to parse are drawn from the source given by
 the active file map. By default, assumes that `stx` corresponds to the range
 `stx.getPos?` to `stx.getTrailingTailPos?`; use `startPos?` and `endPos?` to
 override these.
 -/
-def highlight (stx : Syntax) (messages : Array Message)
+def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := [])
     (startPos? endPos? : Option String.Pos := none) : TermElabM Highlighted := do
@@ -1345,7 +1361,7 @@ def highlight (stx : Syntax) (messages : Array Message)
     if let some endPos := endPos? then
       fillMissingSourceUpTo endPos
 
-  let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, true, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
@@ -1364,7 +1380,7 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages (mkNullNode stxs) messages
 
   if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
-  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, false, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure hls
 where
   go t stx := do
@@ -1379,5 +1395,5 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
   let infoTable : InfoTable := .ofInfoTrees trees
-  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, suppressNamespaces⟩ |>.run infoTable |>.run .empty
+  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, false, suppressNamespaces⟩ |>.run infoTable |>.run .empty
   pure hlGoals
