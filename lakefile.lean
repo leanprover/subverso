@@ -140,7 +140,7 @@ else
 
     exeJob.bindM fun exeFile =>
       modJob.mapM fun _oleanPath => do
-        addPureTrace suppNS "suppressed namespaces"
+        addPureTrace suppNS
         buildFileUnlessUpToDate' (text := true) nsFile do
           IO.FS.writeFile nsFile suppNS
         buildFileUnlessUpToDate' (text := true) hlFile <|
