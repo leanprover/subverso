@@ -294,6 +294,50 @@ partial def toString : Highlighted → String
   | .text s | .token ⟨_, s⟩ => s
 
 /--
+Converts highlighted code to a string, stopping when the provided length is reached
+-/
+partial def toStringPrefix (n : Nat) (hl : Highlighted) : String := Id.run do
+  let mut n := n
+  let mut todo := [hl]
+  let mut str := ""
+  while n > 0 do
+    match todo with
+    | [] => break
+    | .point .. :: more => todo := more
+    | .tactics _ _ _ x :: more | .span _ x :: more => todo := x :: more
+    | .seq xs :: more => todo := xs.toList ++ more
+    | .text s :: more | .token ⟨_, s⟩ :: more =>
+      todo := more
+      str := s
+      n := n - s.length
+  return str
+
+/--
+Keep at least `n` characters of the original source.
+-/
+partial def take (n : Nat) (hl : Highlighted) : Highlighted := Id.run do
+  let mut n := n
+  let mut todo := [hl]
+  let mut out : Highlighted := .empty
+  while n > 0 do
+    match todo with
+    | [] => break
+    | hl@(.point ..) :: more =>
+      out := out ++ hl
+      todo := more
+    | hl@(.tactics _ _ _ _) :: more | hl@(.span _ _) :: more =>
+      out := out ++ hl
+      n := n - hl.toString.length
+      todo := more
+    | .seq xs :: more =>
+      todo := xs.toList ++ more
+    | hl@(.text s) :: more | hl@(.token ⟨_, s⟩) :: more =>
+      todo := more
+      out := out ++ hl
+      n := n - s.length
+  return out
+
+/--
 Converts a goal to a string.
 
 No pretty-printing is performed, so this is mostly useful for internal tests and expected output,
