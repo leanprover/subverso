@@ -120,7 +120,7 @@ meta if Compat.useOldBind then
           Compat.logStep s!"Exporting highlighted source file JSON for '{mod.name}'"
           proc {
             cmd := exeFile.toString
-            args := #[mod.name.toString, hlFile.toString, "--suppress-namespaces", nsFile.toString]
+            args := #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
         pure (hlFile, trace)
@@ -148,7 +148,7 @@ else
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
-            args :=  #[mod.name.toString, hlFile.toString]
+            args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
         pure hlFile
