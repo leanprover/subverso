@@ -674,9 +674,11 @@ partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
 
   if more then closeUntil pos
 
+/-- Records the corresponding source position of the syntax most recently added to the output. -/
 def setLastPos (lastPos? : Option String.Pos) : HighlightM Unit := do
   modify fun st => { st with lastPos? }
 
+/-- Adds to the output any source (if any exists) lying between the last added position and `pos`. -/
 def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
   if let some lastPos := (← get).lastPos? then
     if lastPos < pos then
