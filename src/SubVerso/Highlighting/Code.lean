@@ -67,6 +67,7 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
 structure Context where
   ids : HashMap Lsp.RefIdent Lsp.RefIdent
   definitionsPossible : Bool
+  includeUnparsed : Bool
   suppressNamespaces : List Name
 
 def Context.noDefinitions (ctxt : Context) : Context := {ctxt with definitionsPossible := false}
@@ -530,12 +531,14 @@ structure HighlightState where
   inMessages : List MessageBundle
   /-- Currently-open tactic info -/
   inTactic : Option OpenTactic -- No nested tactic states!
+  /-- Last source position added to the output -/
+  lastPos? : Option String.Pos := none
   /-- Memoized results of searching for tactic info (by canonical range) -/
   hasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
   /-- Memoized results of searching for tactic info in children (by canonical range) -/
   childHasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, default, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -545,7 +548,7 @@ def HighlightState.empty : HighlightState where
   inTactic := none
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
-    (stx : Syntax) (messages : Array Message) : m HighlightState := do
+    (stx : Syntax) (messages : Array Message) (initPos? := stx.getPos?) : m HighlightState := do
   let msgs ← bundleMessages <$> messages.filterM (isRelevant stx)
   pure {
     messages := msgs
@@ -553,6 +556,7 @@ def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     output := [],
     inMessages := [],
     inTactic := none
+    lastPos? := initPos?
   }
 where
   isRelevant (stx : Syntax) (msg : Message) : m Bool := do
@@ -670,16 +674,36 @@ partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
 
   if more then closeUntil pos
 
+/-- Records the corresponding source position of the syntax most recently added to the output. -/
+def setLastPos (lastPos? : Option String.Pos) : HighlightM Unit := do
+  modify fun st => { st with lastPos? }
+
+/-- Adds to the output any source (if any exists) lying between the last added position and `pos`. -/
+def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
+  if let some lastPos := (← get).lastPos? then
+    if lastPos < pos then
+      let text ← getFileMap
+      openUntil <| text.toPosition lastPos
+      let string := Substring.mk text.source lastPos pos |>.toString
+      modify fun st => {st with output := Output.addText st.output string}
+      closeUntil pos
+      setLastPos pos
+
 def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := do
+  if (← read).includeUnparsed then fillMissingSourceUpTo pos
   let text ← getFileMap
   openUntil <| text.toPosition pos
   modify fun st => {st with output := Output.addText st.output string}
   closeUntil endPos
+  setLastPos endPos
 
 def emitString' (string : String) : HighlightM Unit :=
   modify fun st => {st with output := Output.addText st.output string}
 
 def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM Unit := do
+  if (← read).includeUnparsed then
+    if let some pos := blame.getPos? then
+      fillMissingSourceUpTo pos
   let text ← getFileMap
 
   let .original leading pos trailing endPos := info
@@ -694,6 +718,12 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
   modify fun st => {st with output := Output.addToken st.output token}
   closeUntil endPos
   emitString' trailing.toString
+  /- The following accounts for the fact that some syntax (e.g., the `y` given
+     by `stx.identComponents` in the field-syntax case in `highlight'`) carries
+     an erroneous `0` trailing tail position -/
+  let trailingPos := Compat.getTrailingTailPos? blame
+    |>.map fun trailingPos => if trailingPos < endPos then endPos else trailingPos
+  setLastPos trailingPos
 
 def emitToken' (token : Token) : HighlightM Unit := do
   modify fun st => {st with output := Output.addToken st.output token}
@@ -1194,6 +1224,10 @@ partial def highlight'
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Yes, a field!") do
               highlight' trees y tactics
               emitToken' <| fakeToken .unknown "."
+              -- Manually bump the last-seen position so we don't double-print the dot.
+              -- The source info for `y` has an erroneous trailing tail pos of `0`,
+              -- so we use `tailPos?` since it can't have trailing whitespace anyway
+              setLastPos <| (← getFileMap).source.next <$> y.getTailPos?
               highlight' trees field tactics
             else
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Not a field.") do
@@ -1297,7 +1331,38 @@ def highlight (stx : Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages stx messages
   let infoTable : InfoTable := .ofInfoTrees trees
 
-  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, false, suppressNamespaces⟩ |>.run infoTable |>.run st
+  pure <| .fromOutput output
+
+/--
+Produces a `Highlighted` value corresponding to `stx`, including any unparsed
+regions of the source lying within its span.
+
+Any segments of `stx` that failed to parse are drawn from the source given by
+the active file map. By default, assumes that `stx` corresponds to the range
+`stx.getPos?` to `stx.getTrailingTailPos?`; use `startPos?` and `endPos?` to
+override these.
+-/
+def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
+    (trees : PersistentArray Lean.Elab.InfoTree)
+    (suppressNamespaces : List Name := [])
+    (startPos? endPos? : Option String.Pos := none) : TermElabM Highlighted := do
+  let trees := trees.toArray
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
+  let ids := build modrefs
+
+  let startPos := startPos? <|> stx.getPos?
+  let endPos? := endPos? <|> Compat.getTrailingTailPos? stx
+
+  let st ← HighlightState.ofMessages stx messages (initPos? := startPos)
+  let infoTable : InfoTable := .ofInfoTrees trees
+
+  let doHighlight : HighlightM Unit := do
+    highlight' trees stx true
+    if let some endPos := endPos? then
+      fillMissingSourceUpTo endPos
+
+  let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, true, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
@@ -1316,7 +1381,7 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages (mkNullNode stxs) messages
 
   if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
-  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, false, suppressNamespaces⟩ |>.run infoTable |>.run st
   pure hls
 where
   go t stx := do
@@ -1331,5 +1396,5 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
   let infoTable : InfoTable := .ofInfoTrees trees
-  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, suppressNamespaces⟩ |>.run infoTable |>.run .empty
+  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, false, suppressNamespaces⟩ |>.run infoTable |>.run .empty
   pure hlGoals
