@@ -402,6 +402,13 @@ def keys {_ : BEq α} {_ : Hashable α} (xs : HashMap α β) : List α:=
 
 end HashMap
 
+namespace HashSet
+
+instance [BEq α] [Hashable α] : EmptyCollection (HashSet α) :=
+  ⟨%first_succeeding [Std.HashSet.emptyWithCapacity, Std.HashSet.empty, Lean.HashSet.empty]⟩
+
+end HashSet
+
 -- In nightly-2025-02-13, simp_arith became an error. Falling back to the old version is complicated
 -- because there's no fully-backwards-compatible syntax to use here that works all the way back to Lean 4.0.0.
 open Lean Elab Command in

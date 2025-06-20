@@ -147,6 +147,14 @@ inductive Highlighted.Span.Kind where
   | info
 deriving Repr, DecidableEq, Inhabited, BEq, Hashable, ToJson, FromJson
 
+def Highlighted.Span.Kind.toString : Highlighted.Span.Kind → String
+  | .error => "error"
+  | .warning => "warning"
+  | .info => "info"
+
+instance : ToString Highlighted.Span.Kind where
+  toString := Highlighted.Span.Kind.toString
+
 open Highlighted Span Kind in
 open Syntax in
 instance : Quote Kind where

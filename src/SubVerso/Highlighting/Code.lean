@@ -16,7 +16,7 @@ open Elab
 open Lean.Widget (TaggedText)
 open Lean.Widget
 open Lean.PrettyPrinter (InfoPerPos)
-open SubVerso.Compat (HashMap)
+open SubVerso.Compat (HashMap HashSet)
 
 
 namespace SubVerso.Highlighting
@@ -521,6 +521,25 @@ where
       | some e1, some e2 => e2.before e1
     else false
 
+/--
+Returns the input's trailing tail position, unless that position is "obviously"
+incorrect (i.e., it falls before the end position), in which case the end
+position is returned instead.
+-/
+private def getInfoTrailingOrTailPos? (info : SourceInfo) : Option String.Pos :=
+  /- The following accounts for the fact that some syntax (e.g., the `y` given
+     by `stx.identComponents` in the field-syntax case in `highlight'`) carries
+     an erroneous `0` trailing tail position -/
+  if let .original _ _ _ endPos := info then
+    Compat.getInfoTrailingTailPos? info
+      |>.map fun trailingPos => if trailingPos < endPos then endPos else trailingPos
+  else
+    Compat.getInfoTrailingTailPos? info
+
+@[inherit_doc getInfoTrailingOrTailPos?]
+private def getTrailingOrTailPos? (stx : Syntax) : Option String.Pos :=
+  getInfoTrailingOrTailPos? stx.getTailInfo
+
 structure HighlightState where
   /-- Messages not yet displayed -/
   messages : Array MessageBundle
@@ -548,20 +567,21 @@ def HighlightState.empty : HighlightState where
   inTactic := none
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
-    (stx : Syntax) (messages : Array Message) (initPos? := stx.getPos?) : m HighlightState := do
-  let msgs ← bundleMessages <$> messages.filterM (isRelevant stx)
+    (stx : Syntax) (messages : Array Message) (startPos? := stx.getPos?) (endPos? := getTrailingOrTailPos? stx)
+    : m HighlightState := do
+  let msgs ← bundleMessages <$> messages.filterM isRelevant
   pure {
     messages := msgs
     nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
     output := [],
     inMessages := [],
     inTactic := none
-    lastPos? := initPos?
+    lastPos? := startPos?
   }
 where
-  isRelevant (stx : Syntax) (msg : Message) : m Bool := do
+  isRelevant (msg : Message) : m Bool := do
     let text ← getFileMap
-    let (some s, some e) := (stx.getPos?.map text.toPosition , stx.getTailPos?.map text.toPosition)
+    let (some s, some e) := (startPos?.map text.toPosition, endPos?.map text.toPosition)
       | return false
     if let some e' := msg.endPos then
       pure <| !(e'.before s) && !(e.before msg.pos)
@@ -618,6 +638,8 @@ def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
 def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.endPos.map (·.notAfter pos) |>.getD true
 
+private def leanPosToUtf8Pos (text : FileMap) : Position → String.Pos :=
+  text.lspPosToUtf8Pos ∘ text.leanPosToLspPos
 
 partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
   let text ← getFileMap
@@ -635,7 +657,7 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
 
       modify fun st =>
     {st with
-        output := Output.openSpan st.output str (text.lspPosToUtf8Pos (text.leanPosToLspPos msg.pos)) (msg.endPos.map (text.lspPosToUtf8Pos <| text.leanPosToLspPos ·))
+        output := Output.openSpan st.output str (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
         inMessages := msg :: st.inMessages
       }
       openUntil pos
@@ -643,7 +665,6 @@ where
   contents (message : Message) : IO String := do
     let head := if message.caption != "" then message.caption ++ ":\n" else ""
     pure <| head ++ (← message.data.toString)
-
 
 partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
   let text ← getFileMap
@@ -678,16 +699,64 @@ partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
 def setLastPos (lastPos? : Option String.Pos) : HighlightM Unit := do
   modify fun st => { st with lastPos? }
 
+/--
+Returns a set of message start and end positions between `startPos` and `endPos` (inclusive).
+
+This is used for splitting unparsed regions so that messages appear within the proper spans.
+-/
+def collectMessageBoundariesBetween (startPos endPos : String.Pos)
+    : HighlightM (Compat.HashSet String.Pos) := do
+  let text ← getFileMap
+  let { messages, nextMessage, inMessages, .. } ← get
+  let mut boundaries : Compat.HashSet String.Pos := {}
+  -- Add in-range end positions of active messages:
+  for msg in inMessages do
+    if let some msgEndPos := msg.endPos then
+      let msgEndPosUtf8 := leanPosToUtf8Pos text msgEndPos
+      if msgEndPosUtf8 < endPos then
+        boundaries := boundaries.insert msgEndPosUtf8
+  -- Add in-range start and end positions of upcoming messages:
+  if let some nextMessage := nextMessage then
+    for msg in messages[nextMessage:] do
+      let msgPosUtf8 := leanPosToUtf8Pos text msg.pos
+      -- TODO: decide how we want to handle messages with no end location or an end
+      -- location equal to the starting position (for now, we go to the next whitespace)
+      let nextWhitespace :=
+        let nextPos := text.source.next msgPosUtf8  -- ensure we don't have a 0-length span
+        let remaining := Substring.mk text.source nextPos text.source.endPos
+        remaining.takeWhile (!·.isWhitespace) |>.stopPos
+      if startPos ≤ msgPosUtf8 && msgPosUtf8 ≤ endPos then
+        boundaries := boundaries.insert msgPosUtf8
+        -- If the message has no end position, run to the next whitespace
+        if msg.endPos.isNone && nextWhitespace ≤ endPos then
+          boundaries := boundaries.insert nextWhitespace
+      if let some msgEndPos := msg.endPos then
+        let msgEndPosUtf8 := leanPosToUtf8Pos text msgEndPos
+        if msgEndPosUtf8 ≤ endPos then
+          -- If the message ends where it starts, run to the next whitespace
+          if msgEndPosUtf8 == msgPosUtf8 then
+            boundaries := boundaries.insert nextWhitespace
+          else
+            boundaries := boundaries.insert msgEndPosUtf8
+  return boundaries
+
 /-- Adds to the output any source (if any exists) lying between the last added position and `pos`. -/
 def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
   if let some lastPos := (← get).lastPos? then
     if lastPos < pos then
       let text ← getFileMap
-      openUntil <| text.toPosition lastPos
-      let string := Substring.mk text.source lastPos pos |>.toString
-      modify fun st => {st with output := Output.addText st.output string}
-      closeUntil pos
-      setLastPos pos
+      let boundaries ← collectMessageBoundariesBetween lastPos pos
+      let boundaries := boundaries.insertMany #[lastPos, pos]
+      let boundaries := boundaries.toArray.qsort (· < ·)
+      for h : i in [1 : boundaries.size] do
+        have : i - 1 < boundaries.size := Nat.lt_of_le_of_lt (Nat.sub_le i 1) h.2
+        let startPos := boundaries[i - 1]
+        let endPos := boundaries[i]'h.2
+        openUntil <| text.toPosition startPos
+        let string := Substring.mk text.source startPos endPos |>.toString
+        modify fun st => {st with output := Output.addText st.output string}
+        closeUntil endPos
+        setLastPos endPos
 
 def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := do
   if (← read).includeUnparsed then fillMissingSourceUpTo pos
@@ -718,11 +787,7 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
   modify fun st => {st with output := Output.addToken st.output token}
   closeUntil endPos
   emitString' trailing.toString
-  /- The following accounts for the fact that some syntax (e.g., the `y` given
-     by `stx.identComponents` in the field-syntax case in `highlight'`) carries
-     an erroneous `0` trailing tail position -/
-  let trailingPos := Compat.getTrailingTailPos? blame
-    |>.map fun trailingPos => if trailingPos < endPos then endPos else trailingPos
+  let trailingPos := getTrailingOrTailPos? blame
   setLastPos trailingPos
 
 def emitToken' (token : Token) : HighlightM Unit := do
@@ -1351,10 +1416,10 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
 
-  let startPos := startPos? <|> stx.getPos?
-  let endPos? := endPos? <|> Compat.getTrailingTailPos? stx
+  let startPos? := startPos? <|> stx.getPos?
+  let endPos? := endPos? <|> getTrailingOrTailPos? stx
 
-  let st ← HighlightState.ofMessages stx messages (initPos? := startPos)
+  let st ← HighlightState.ofMessages stx messages startPos? endPos?
   let infoTable : InfoTable := .ofInfoTrees trees
 
   let doHighlight : HighlightM Unit := do
