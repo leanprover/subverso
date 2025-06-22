@@ -171,6 +171,7 @@ inductive Highlighted where
   | span (info : Array (Highlighted.Span.Kind × String)) (content : Highlighted)
   | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
   | point (kind : Highlighted.Span.Kind) (info : String)
+  | unparsed (str : String)
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.empty : Highlighted := .seq #[]
@@ -231,7 +232,7 @@ partial def Highlighted.definedNames : Highlighted → NameSet
     | _ => {}
   | .span _ hl | .tactics _ _ _ hl => hl.definedNames
   | .seq hls => hls.map (·.definedNames) |>.foldr Compat.NameSet.union {}
-  | .text .. | .point .. => {}
+  | .text .. | .point .. | .unparsed .. => {}
 
 def Highlighted.seq0 : Highlighted := .seq #[]
 def Highlighted.seq1 (x0 : Highlighted) : Highlighted := .seq #[x0]
@@ -259,6 +260,7 @@ partial def Highlighted.simplifyInternals : (hl : Highlighted) → Highlighted
   | .text "" => .empty
   | .text s => .text s
   | .token t => .token t
+  | .unparsed s => .unparsed s
 
 instance : ToJson Highlighted where
   toJson hl :=
@@ -280,6 +282,7 @@ where
       have : Quote Highlighted := ⟨quote'⟩
       mkCApp ``tactics #[quote info, quote startPos, quote endPos, quote' content]
     | .point k info => mkCApp ``point #[quote k, quote info]
+    | .unparsed str => mkCApp ``unparsed #[quote str]
 
   quoteSeq (xs : Array Highlighted) : Term :=
     if xs.size ≤ 10 then
@@ -299,7 +302,7 @@ partial def toString : Highlighted → String
   | .seq xs => xs.foldl (init := "") (fun s hl => s ++ hl.toString)
   | .point .. => ""
   | .tactics _ _ _ x | .span _ x => x.toString
-  | .text s | .token ⟨_, s⟩ => s
+  | .text s | .token ⟨_, s⟩ | .unparsed s => s
 
 /--
 Converts highlighted code to a string, stopping when the provided length is reached
@@ -314,7 +317,7 @@ partial def toStringPrefix (n : Nat) (hl : Highlighted) : String := Id.run do
     | .point .. :: more => todo := more
     | .tactics _ _ _ x :: more | .span _ x :: more => todo := x :: more
     | .seq xs :: more => todo := xs.toList ++ more
-    | .text s :: more | .token ⟨_, s⟩ :: more =>
+    | .text s :: more | .token ⟨_, s⟩ :: more | .unparsed s :: more =>
       todo := more
       str := s
       n := n - s.length
@@ -339,7 +342,7 @@ partial def take (n : Nat) (hl : Highlighted) : Highlighted := Id.run do
       todo := more
     | .seq xs :: more =>
       todo := xs.toList ++ more
-    | hl@(.text s) :: more | hl@(.token ⟨_, s⟩) :: more =>
+    | hl@(.text s) :: more | hl@(.token ⟨_, s⟩) :: more | hl@(.unparsed s) :: more =>
       todo := more
       out := out ++ hl
       n := n - s.length

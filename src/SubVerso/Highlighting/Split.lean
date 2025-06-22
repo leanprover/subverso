@@ -59,7 +59,7 @@ def Highlighted.split (p : String → Bool) (hl : Highlighted) : Array Highlight
         current := .empty
       else
         current := current ++ this
-    | some this@(.text ..) :: hs | some this@(.point ..) :: hs =>
+    | some this@(.text ..) :: hs | some this@(.point ..) :: hs | some this@(.unparsed ..) :: hs =>
       todo := hs
       current := current ++ this
     | some (.span msgs x) :: hs =>
@@ -93,7 +93,7 @@ def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
     | some this@(.token ..) :: hs =>
       todo := hs
       current := current ++ this
-    | some this@(.text str) :: hs =>
+    | some this@(.text str) :: hs | some this@(.unparsed str) :: hs =>
       if str.contains '\n' then
         let pre := str.takeWhile (· ≠ '\n') ++ "\n"
         let post := str.drop pre.length

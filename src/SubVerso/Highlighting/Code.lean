@@ -428,6 +428,9 @@ def Output.add (output : List Output) (hl : Highlighted) : List Output :=
 def Output.addToken (output : List Output) (token : Token) : List Output :=
   Output.add output (.token token)
 
+def Output.addUnparsed (output : List Output) (text : String) : List Output :=
+  Output.add output (.unparsed text)
+
 def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.Kind × String)) (startPos : String.Pos) (endPos : Option String.Pos) : List Output :=
   match output with
   | t@(.tactics _ start stop) :: output' =>
@@ -754,7 +757,7 @@ def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
         let endPos := boundaries[i]'h.2
         openUntil <| text.toPosition startPos
         let string := Substring.mk text.source startPos endPos |>.toString
-        modify fun st => {st with output := Output.addText st.output string}
+        modify fun st => {st with output := Output.addUnparsed st.output string}
         closeUntil endPos
         setLastPos endPos
 

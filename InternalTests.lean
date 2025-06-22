@@ -20,6 +20,7 @@ partial def SubVerso.Highlighting.Highlighted.asString (hl : Highlighted) : Stri
     out := out ++ hl'.asString
   | .point .. => pure ()
   | .text s => out := out ++ s
+  | .unparsed s => out := out ++ s
   | .token t => out := out ++ t.content
   out
 
