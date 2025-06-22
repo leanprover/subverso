@@ -751,10 +751,9 @@ def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
       let boundaries ← collectMessageBoundariesBetween lastPos pos
       let boundaries := boundaries.insertMany #[lastPos, pos]
       let boundaries := boundaries.toArray.qsort (· < ·)
-      for h : i in [1 : boundaries.size] do
-        have : i - 1 < boundaries.size := Nat.lt_of_le_of_lt (Nat.sub_le i 1) h.2
-        let startPos := boundaries[i - 1]
-        let endPos := boundaries[i]'h.2
+      for i in [1 : boundaries.size] do
+        let startPos := boundaries[i - 1]!
+        let endPos := boundaries[i]!
         openUntil <| text.toPosition startPos
         let string := Substring.mk text.source startPos endPos |>.toString
         modify fun st => {st with output := Output.addUnparsed st.output string}
