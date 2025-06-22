@@ -207,7 +207,8 @@ partial def hlMsgString : Highlighting.Highlighted → String
   | .text s | .token ⟨_, s⟩ | .unparsed s => s
 
 open Lean Elab Command in
-def mkHighlightStr (input : String) : CommandElabM Highlighting.Highlighted := do
+def mkHighlightStr (input : String) (msgPrefix := "subverso_test")
+    : CommandElabM Highlighting.Highlighted := do
   let inputCtx := Parser.mkInputContext input "<input>"
   let commandState : Command.State := {
     env := (← getEnv)
@@ -220,15 +221,19 @@ def mkHighlightStr (input : String) : CommandElabM Highlighting.Highlighted := d
   for stx in commands do
     let hl ← runTermElabM fun _ =>
       withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
+        let msgs ← commandState.messages.toArray.filterM fun msg =>
+          return (← msg.toString).startsWith msgPrefix
         Highlighting.highlightIncludingUnparsed stx (startPos? := lastPos)
-          commandState.messages.toArray commandState.infoState.trees
+          msgs commandState.infoState.trees
     lastPos := Compat.getTrailingTailPos? stx |>.getD lastPos
     hls := hls ++ hl
   return hls
 
 /--
 `#evalHighlight inp exp` highlights `inp` using the including-unparsed
-highlighter and checks that the result matches `exp`.
+highlighter and checks that the result matches `exp`, where only messages
+beginning with the prefix "subverso_test" are included (to avoid version
+discrepancies).
 -/
 elab "#evalHighlight" inp:str exp:str : command => do
   let input := inp.getString
@@ -238,16 +243,6 @@ elab "#evalHighlight" inp:str exp:str : command => do
   if hlStr != expected then
     throwError m!"Mismatched output\n---Found:---\n{hlStr}\n\n---Expected:---\n{expected}"
 
--- Simple test to check error span
-#evalHighlight "class where the"
-  "class [error: expected 'abbrev' or identifier](where) the"
-
--- Test multiple consecutive parsing errors mixed with elab outputs
-#evalHighlight "deriving #eval+#eval 2"
-  "deriving [error: expected 'instance'](#eval)[error: expected term](+)[info: 2
-](#eval) 2"
-
--- Test arbitrary info placements
 #evalHighlight "deriving a bunch of other filler text def b := true
 
 def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do
@@ -255,25 +250,25 @@ def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Uni
   Lean.logInfoAt stx str
 
 elab \"inject_info\" : command => do
-  inject 0 16 (String.mk ['a', 'b'])
-  inject 20 25 (String.mk ['c', 'd'])
-  inject 26 26 (String.mk ['e', 'f'])
-  inject 20 43 (String.mk ['z', 'z'])
-  inject 33 43 (String.mk ['x', 'y'])
+  inject 0 16 \"subverso_test: 1\"
+  inject 20 25 \"subverso_test: 2\"
+  inject 26 26 \"subverso_test: 3\"
+  inject 20 43 \"subverso_test: 4\"
+  inject 33 43 \"subverso_test: 5\"
 
 inject_info"
-  "[info: ab](deriving )[info: ab]([error: expected 'instance'](a) bunch) of [info: zz]([info: cd](other) [info: ef](filler) [info: xy](text def b)) := true
+  "[info: subverso_test: 1](deriving )[info: subverso_test: 1](a bunch) of [info: subverso_test: 4]([info: subverso_test: 2](other) [info: subverso_test: 3](filler) [info: subverso_test: 5](text def b)) := true
 
 def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do
   let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])
   Lean.logInfoAt stx str
 
 elab \"inject_info\" : command => do
-  inject 0 16 (String.mk ['a', 'b'])
-  inject 20 25 (String.mk ['c', 'd'])
-  inject 26 26 (String.mk ['e', 'f'])
-  inject 20 43 (String.mk ['z', 'z'])
-  inject 33 43 (String.mk ['x', 'y'])
+  inject 0 16 \"subverso_test: 1\"
+  inject 20 25 \"subverso_test: 2\"
+  inject 26 26 \"subverso_test: 3\"
+  inject 20 43 \"subverso_test: 4\"
+  inject 33 43 \"subverso_test: 5\"
 
 inject_info"
 
