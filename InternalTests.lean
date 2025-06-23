@@ -194,20 +194,18 @@ end
 /-! # Highlighting Unparsed Spans -/
 section HighlightUnparsed
 
-local syntax "foo" : command
-
-partial def hlMsgString : Highlighting.Highlighted → String
-  | .seq xs => xs.foldl (init := "") (fun s hl => s ++ hlMsgString hl)
+partial def hlStringWithMessages : Highlighting.Highlighted → String
+  | .seq xs => xs.foldl (init := "") (fun s hl => s ++ hlStringWithMessages hl)
   | .point .. => ""
-  | .tactics _ _ _ x => hlMsgString x
+  | .tactics _ _ _ x => hlStringWithMessages x
   | .span info x =>
     let labels := info.map fun (k, s) => s!"{k}: {s}"
     let labelStr := ", ".intercalate labels.toList
-    s!"[{labelStr}]({hlMsgString x})"
+    s!"[{labelStr}]({hlStringWithMessages x})"
   | .text s | .token ⟨_, s⟩ | .unparsed s => s
 
 open Lean Elab Command in
-def mkHighlightStr (input : String) (msgPrefix := "subverso_test")
+def highlightWithPrefixedMessages (input : String) (msgPrefix := "subverso_test")
     : CommandElabM Highlighting.Highlighted := do
   let inputCtx := Parser.mkInputContext input "<input>"
   let commandState : Command.State := {
@@ -237,9 +235,9 @@ discrepancies).
 -/
 elab "#evalHighlight" inp:str exp:str : command => do
   let input := inp.getString
-  let hl ← mkHighlightStr input
+  let hl ← highlightWithPrefixedMessages input
   let expected := exp.getString
-  let hlStr := hlMsgString hl
+  let hlStr := hlStringWithMessages hl
   if hlStr != expected then
     throwError m!"Mismatched output\n---Found:---\n{hlStr}\n\n---Expected:---\n{expected}"
 
