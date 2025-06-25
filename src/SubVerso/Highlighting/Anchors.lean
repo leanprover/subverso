@@ -104,6 +104,7 @@ private partial def normHl : Highlighted → Highlighted
   | .text "" => .empty
   | .text s => .text s
   | .token t => .token t
+  | .unparsed s => .unparsed s
 
 private inductive HlCtx where
   | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat)
@@ -205,7 +206,7 @@ private def Hl.tacticsAt? (hl : Hl) (column : Nat) : Option Highlighted := do
       left := .empty
       right := .empty
       focus := x
-    | .text s =>
+    | .text s | .unparsed s =>
       let lines := getLines s
       if lines.size > 1 then -- found a line break
         right := .text (Compat.Array.back! lines) ++ right
@@ -244,7 +245,7 @@ private def Hl.tacticsAt? (hl : Hl) (column : Nat) : Option Highlighted := do
         match hl with
         | .seq xs =>
           line := xs.toList.map .inl ++ more
-        | .text s | .token ⟨_, s⟩ =>
+        | .text s | .token ⟨_, s⟩ | .unparsed s =>
           if s.length > column then
             break
           else
@@ -362,7 +363,7 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
             anchorOut := anchorOut.insert a hl.toHighlighted
             openAnchors := openAnchors.erase a
           else throw s!"Anchor not open: {a}"
-    | some h@(.token ..) :: hs | some h@(.point ..) :: hs =>
+    | some h@(.token ..) :: hs | some h@(.point ..) :: hs | some h@(.unparsed ..) :: hs =>
       todo := hs
       openAnchors := openAnchors.map fun _ hl => hl ++ h
       doc := doc ++ h

@@ -17,7 +17,7 @@ Name tokens are those with kind `const` or `var`.
 partial def matchingName? (hl : Highlighted) (name : String) : Option Token := do
   match hl with
   | .seq xs => xs.findSome? (matchingName? · name)
-  | .point .. | .text .. => none
+  | .point .. | .text .. | .unparsed .. => none
   | .tactics _ _ _ x | .span _ x => matchingName? x name
   | .token t@⟨k, s⟩ =>
     match k with
@@ -40,7 +40,7 @@ partial def firstToken (hl : Highlighted) : Option (Highlighted × Highlighted) 
         else continue
       else failure
     failure
-  | .point .. | .text .. => none
+  | .point .. | .text .. | .unparsed .. => none
   | .tactics _ _ _ x | .span _ x => firstToken x
   | .token .. => pure (hl, .empty)
 

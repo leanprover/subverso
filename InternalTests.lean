@@ -20,6 +20,7 @@ partial def SubVerso.Highlighting.Highlighted.asString (hl : Highlighted) : Stri
     out := out ++ hl'.asString
   | .point .. => pure ()
   | .text s => out := out ++ s
+  | .unparsed s => out := out ++ s
   | .token t => out := out ++ t.content
   out
 
@@ -189,5 +190,86 @@ open SubVerso.Highlighting
 #evalString "none\n" (anchor? "           -- ANCHOR_END :    foo").toOption
 
 end
+
+/-! # Highlighting Unparsed Spans -/
+section HighlightUnparsed
+
+partial def hlStringWithMessages : Highlighting.Highlighted → String
+  | .seq xs => xs.foldl (init := "") (fun s hl => s ++ hlStringWithMessages hl)
+  | .point .. => ""
+  | .tactics _ _ _ x => hlStringWithMessages x
+  | .span info x =>
+    let labels := info.map fun (k, s) => s!"{k}: {s}"
+    let labelStr := ", ".intercalate labels.toList
+    s!"[{labelStr}]({hlStringWithMessages x})"
+  | .text s | .token ⟨_, s⟩ | .unparsed s => s
+
+open Lean Elab Command in
+def highlightWithPrefixedMessages (input : String) (msgPrefix := "subverso_test")
+    : CommandElabM Highlighting.Highlighted := do
+  let inputCtx := Parser.mkInputContext input "<input>"
+  let commandState : Command.State := {
+    env := (← getEnv)
+    maxRecDepth := (← get).maxRecDepth
+  }
+  let (_, { commandState, commands, .. }) ← Frontend.processCommands
+    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let mut hls : Highlighting.Highlighted := .empty
+  let mut lastPos : String.Pos := 0
+  for stx in commands do
+    let hl ← runTermElabM fun _ =>
+      withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
+        let msgs ← commandState.messages.toArray.filterM fun msg =>
+          return (← msg.toString).startsWith msgPrefix
+        Highlighting.highlightIncludingUnparsed stx (startPos? := lastPos)
+          msgs commandState.infoState.trees
+    lastPos := Compat.getTrailingTailPos? stx |>.getD lastPos
+    hls := hls ++ hl
+  return hls
+
+/--
+`#evalHighlight inp exp` highlights `inp` using the including-unparsed
+highlighter and checks that the result matches `exp`, where only messages
+beginning with the prefix "subverso_test" are included (to avoid version
+discrepancies).
+-/
+elab "#evalHighlight" inp:str exp:str : command => do
+  let input := inp.getString
+  let hl ← highlightWithPrefixedMessages input
+  let expected := exp.getString
+  let hlStr := hlStringWithMessages hl
+  if hlStr != expected then
+    throwError m!"Mismatched output\n---Found:---\n{hlStr}\n\n---Expected:---\n{expected}"
+
+#evalHighlight "deriving a bunch of other filler text def b := true
+
+def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do
+  let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])
+  Lean.logInfoAt stx str
+
+elab \"inject_info\" : command => do
+  inject 0 16 \"subverso_test: 1\"
+  inject 20 25 \"subverso_test: 2\"
+  inject 26 26 \"subverso_test: 3\"
+  inject 20 43 \"subverso_test: 4\"
+  inject 33 43 \"subverso_test: 5\"
+
+inject_info"
+  "[info: subverso_test: 1](deriving )[info: subverso_test: 1](a bunch) of [info: subverso_test: 4]([info: subverso_test: 2](other) [info: subverso_test: 3](filler) [info: subverso_test: 5](text def b)) := true
+
+def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do
+  let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])
+  Lean.logInfoAt stx str
+
+elab \"inject_info\" : command => do
+  inject 0 16 \"subverso_test: 1\"
+  inject 20 25 \"subverso_test: 2\"
+  inject 26 26 \"subverso_test: 3\"
+  inject 20 43 \"subverso_test: 4\"
+  inject 33 43 \"subverso_test: 5\"
+
+inject_info"
+
+end HighlightUnparsed
 
 def main : IO Unit := pure ()
