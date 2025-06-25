@@ -7,7 +7,6 @@ import SubVerso.Compat
 import SubVerso.Examples.Env
 import SubVerso.Helper
 import SubVerso.Signature
-import Lean.Util.Paths
 
 /-!
 This is a helper to be run as a subprocess from Verso, allowing it to request
