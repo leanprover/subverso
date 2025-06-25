@@ -4,7 +4,9 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
 import Lean.Elab
-import Lean.Util.Paths
+-- This transitively gets us Lean.Util.Paths on Lean versions prior to nightly-2025-06-24, where
+-- that module was deleted.
+import Lean.Elab.Import
 
 open Lean Elab Term
 
