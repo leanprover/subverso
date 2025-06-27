@@ -68,7 +68,7 @@ jobs:
         run: |
           set -o pipefail
           ${{ matrix.platform.installer }}
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Which lake?
         run: |
