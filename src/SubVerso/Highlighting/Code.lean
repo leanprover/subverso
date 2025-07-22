@@ -6,7 +6,6 @@ Author: David Thrane Christiansen
 import Lean.Widget.InteractiveCode
 import Lean.Widget.TaggedText
 
-
 import SubVerso.Compat
 import SubVerso.Highlighting.Highlighted
 import SubVerso.Highlighting.Messages
@@ -79,7 +78,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .anonCtor .. => 6
   | .option .. => 4
   | .sort .. => 4
-  | .keyword _ _ _ => 3
+  | .keyword .. => 3
   | .levelConst .. | .levelVar .. | .levelOp .. => 4
   | .docComment | .withType .. => 1
   | .unknown => 0
@@ -1388,6 +1387,9 @@ partial def highlight'
       for child in children do
         highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
+def sortSuppress (nss : List Name) : List Name :=
+  nss.toArray.qsort (fun x y => x.components.length > y.components.length) |>.toList
+
 def highlight (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := []) : TermElabM Highlighted := do
@@ -1398,7 +1400,7 @@ def highlight (stx : Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages stx messages
   let infoTable : InfoTable := .ofInfoTrees trees
 
-  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, false, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
@@ -1429,7 +1431,7 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     if let some endPos := endPos? then
       fillMissingSourceUpTo endPos
 
-  let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, true, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, true, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
@@ -1448,7 +1450,7 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages (mkNullNode stxs) messages
 
   if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
-  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, false, suppressNamespaces⟩ |>.run infoTable |>.run st
+  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
   pure hls
 where
   go t stx := do
@@ -1463,5 +1465,5 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
   let infoTable : InfoTable := .ofInfoTrees trees
-  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, false, suppressNamespaces⟩ |>.run infoTable |>.run .empty
+  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run .empty
   pure hlGoals
