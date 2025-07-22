@@ -68,7 +68,7 @@ initialize highlighted : PersistentEnvExtension (NameMap (NameMap Json)) (Name Ã
       let mut s := {}
       for imp in imported do
         for found in imp do
-          s := s.mergeBy (fun _ exs1 exs2 => exs1.mergeBy (fun _ _ v => v) exs2) found
+          s := Compat.NameMap.mergeBy (fun _ exs1 exs2 => Compat.NameMap.mergeBy (fun _ _ v => v) exs1 exs2) s found
       pure s
     addEntryFn := fun s (mod, ex, val) =>
       let forMod := s.find? mod |>.getD .empty

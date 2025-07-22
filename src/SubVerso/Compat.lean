@@ -314,8 +314,44 @@ def initSrcSearchPath (pkgSearchPath : SearchPath := ∅) : IO SearchPath := do
 
 namespace NameSet
 def union (xs ys : NameSet) : NameSet :=
-  xs.mergeBy (fun _ _ _ => .unit) ys
+  %first_succeeding [
+    -- Old Lean NameSet impl
+    xs.mergeBy (fun _ _ _ => .unit) ys,
+    -- Newer Std.Data.TreeSet version
+    xs.insertMany ys
+  ]
 end NameSet
+
+namespace InfoPerPos
+open Lean PrettyPrinter
+
+def get? (xs : InfoPerPos) (x : Nat) : Option Elab.Info :=
+  %first_succeeding [
+    xs[x]?,
+    xs.find? x
+  ]
+
+open Lean PrettyPrinter in
+instance : GetElem InfoPerPos Nat Elab.Info (fun xs x => get? xs x |>.isSome) where
+  getElem xs i _ok :=
+    %first_succeeding [
+      xs.get! i,
+      xs.find? i |>.get!
+    ]
+
+end InfoPerPos
+
+namespace NameMap
+def mergeBy (f : Name → α → α → α) (xs ys : NameMap α) : NameMap α :=
+  %first_succeeding [
+    Std.TreeMap.mergeWith f xs ys,
+    Lean.RBMap.mergeBy f xs ys
+  ]
+def get? (xs : NameMap α) (x : Name) : Option α :=
+  %first_succeeding [
+    xs[x]?, xs.find? x
+  ]
+end NameMap
 
 namespace List
 -- bind was renamed to flatMap in 4.14

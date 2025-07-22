@@ -338,6 +338,8 @@ where
   -- non-dependent
   quoteField {α : _} (_inst : Quote α) (f : (_ : String) × α) : TSyntax `term :=
     mkCApp ``Prod.mk #[quote f.fst, quote f.snd]
+  quoteField' {α : _} (_inst : Quote α) (f : String × α) : TSyntax `term :=
+    mkCApp ``Prod.mk #[quote f.fst, quote f.snd]
   q
     | .null => mkCApp ``Json.null #[]
     | .str s => mkCApp ``Json.str #[quote s]
@@ -348,6 +350,7 @@ where
       mkCApp ``Json.arr #[quote xs]
     | .obj fields =>
       have : Quote ((_ : String) × Json) := ⟨quoteField ⟨q⟩⟩
+      have : Quote (String × Json) := ⟨quoteField' ⟨q⟩⟩
       let fieldList := quote fields.toArray.toList
       mkCApp ``Json.mkObj #[fieldList]
 
@@ -634,7 +637,7 @@ where
       match (← f.path.metadata).type with
       | .dir =>
         let sub ← collectExamples (.str modName f.fileName) f.path
-        out := out.mergeBy (fun _ j1 j2 => j1.mergeBy (fun _ _ x => x) j2) sub
+        out := Compat.NameMap.mergeBy (fun _ j1 j2 => Compat.NameMap.mergeBy (fun _ _ x => x) j1 j2) out sub
       | .file =>
         if f.path.extension == some "json" && f.path.fileStem.map (·.takeRight 4) != some ".log" then
           if let some mod := f.path.fileStem then
@@ -648,7 +651,7 @@ where
               for ⟨exName, exJson⟩ in o.toArray do
                 match FromJson.fromJson? (α := Example) exJson with
                 | .error err => throw <| IO.userError s!"Couldn't deserialize example '{exName}': {err}"
-                | .ok ex => out := out.insert name' (out.find? name' |>.getD {} |>.insert exName.toName ex)
+                | .ok ex => out := out.insert name' (Compat.NameMap.get? out name' |>.getD {} |>.insert exName.toName ex)
       | _ => pure ()
     return out
 
