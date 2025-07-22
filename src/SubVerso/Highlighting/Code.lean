@@ -213,7 +213,7 @@ partial def stripNamespaces [Monad m] [MonadReaderOf Context m] : FormatWithInfo
           return .text (str.drop ns.length)
       pure <| .text str -- only rewrite when tagged
     | .tag x fmt' =>
-      if let some i := infos.find? x then
+      if let some i := Compat.InfoPerPos.get? infos x then
         match i, fmt' with
         | .ofTermInfo _, .text str =>
           let mut str := str

@@ -36,9 +36,9 @@ jobs:
           - "4.20.1"
           - "4.21.0"
           - "4.22.0-rc2"
-          - "nightly-2025-06-24"
           - "nightly-2025-07-03"
           - "nightly-2025-07-19"
+          - "nightly-2025-07-22"
 
         platform:
           - os: ubuntu-latest
