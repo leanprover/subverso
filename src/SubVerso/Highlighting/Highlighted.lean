@@ -413,6 +413,9 @@ partial def MessageContents.toString : MessageContents Highlighted → String
   | .term hl => hl.toString
   | .text s => s
 
+def Message.toString (message : Message) : String :=
+  message.contents.toString
+
 private def minIndentString (str : String) : Nat :=
   let indents := str.split (· == '\n') |>.filterMap fun line =>
     if line.all (· == ' ') then none
