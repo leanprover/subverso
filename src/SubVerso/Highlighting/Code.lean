@@ -697,6 +697,14 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
 where
   tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
+def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
+  match code with
+  | .text s => pure s
+  | .append xs =>
+    let xs ← xs.mapM codeWithInfosIsString?
+    pure <| xs.foldl (init := "") (· ++ ·)
+  | .tag .. => failure
+
 section Compat
 partial def messageContents (message : Message) : HighlightM (Highlighted.MessageContents Highlighted) := do
   let head := if message.caption != "" then message.caption ++ ":\n" else ""
@@ -709,8 +717,10 @@ where
     | .tag embed _ =>
       Compat.msgEmbedCase (α := HighlightM (Highlighted.MessageContents Highlighted)) embed
         (onExpr := fun e =>
-          try .term <$> renderTagged none e
-          catch | _ => pure <| .term (.text e.pretty))
+          if let some txt := codeWithInfosIsString? e then pure <| .text txt
+          else
+            try .term <$> renderTagged none e
+            catch | _ => pure <| .term (.text e.pretty))
         (onGoal := fun g => do
           let mut hypotheses : Array (Name × Token.Kind × Highlighted) := #[]
           for h in g.hyps do
