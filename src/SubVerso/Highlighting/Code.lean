@@ -389,7 +389,7 @@ def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Synta
 open Highlighted in
 inductive Output where
   | seq (emitted : Array Highlighted)
-  | span (info : Array (Span.Kind × Message Highlighted)) (startPos : String.Pos) (endPos : Option String.Pos)
+  | span (info : Array Highlighted.Message) (startPos : String.Pos) (endPos : Option String.Pos)
   | tactics (info : Array (Goal Highlighted)) (startPos : String.Pos) (endPos : String.Pos)
 deriving Repr
 
@@ -434,7 +434,7 @@ def Output.addUnparsed (output : List Output) (text : String) : List Output :=
 open Highlighted in
 def Output.openSpan
     (output : List Output)
-    (messages : Array (Span.Kind × Message Highlighted))
+    (messages : Array Highlighted.Message)
     (startPos : String.Pos) (endPos : Option String.Pos) :
     List Output :=
   match output with
@@ -459,7 +459,7 @@ def Output.closeSpan (output : List Output) : List Output :=
   let rec go (acc : Highlighted) : List Output → List Output
     | [] => [.seq #[acc]]
     | .span info _ _ :: more =>
-      Output.add more (.span info acc)
+      Output.add more (.span (info.map (fun x => ⟨x.1, x.2⟩)) acc)
     | .tactics info startPos endPos :: more =>
       Output.add more (.tactics info startPos.byteIdx endPos.byteIdx acc)
     | .seq left :: more =>
@@ -470,7 +470,7 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
   let rec go (acc : Highlighted) : List Output → Highlighted
     | [] => acc
     | .seq left :: more => go (.seq (left.push acc)) more
-    | .span info _ _ :: more => go (.span info acc) more
+    | .span info _ _ :: more => go (.span (info.map (fun x => ⟨x.1, x.2⟩)) acc) more
     | .tactics info startPos endPos :: more => go (.tactics info startPos.byteIdx endPos.byteIdx acc) more
   go .empty output
 
@@ -698,16 +698,16 @@ where
   tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
 section Compat
-partial def messageContents (message : Message) : HighlightM (Highlighted.Message Highlighted) := do
+partial def messageContents (message : Message) : HighlightM (Highlighted.MessageContents Highlighted) := do
   let head := if message.caption != "" then message.caption ++ ":\n" else ""
   let body ← Lean.Widget.msgToInteractive message.data true
   return .append #[.text head, ← convert body]
 where
-  convert : TaggedText MsgEmbed → HighlightM (Highlighted.Message Highlighted)
+  convert : TaggedText MsgEmbed → HighlightM (Highlighted.MessageContents Highlighted)
     | .text str => pure (.text str)
     | .append xs => .append <$> xs.mapM convert
     | .tag embed _ =>
-      Compat.msgEmbedCase (α := HighlightM (Highlighted.Message Highlighted)) embed
+      Compat.msgEmbedCase (α := HighlightM (Highlighted.MessageContents Highlighted)) embed
         (onExpr := fun e =>
           try .term <$> renderTagged none e
           catch | _ => pure <| .term (.text e.pretty))
@@ -755,7 +755,7 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
             | .warning => .warning
             | .information => .info
           let str ← messageContents m
-          pure (kind, str)
+          pure ⟨kind, str⟩
 
       modify fun st =>
     {st with
@@ -1515,3 +1515,13 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
   let infoTable : InfoTable := .ofInfoTrees trees
   let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run .empty
   pure hlGoals
+
+
+def highlightMessage (message : Message) (suppressNamespaces : List Name := []) : TermElabM Highlighted.Message := do
+  let (contents, _) ← messageContents message |>.run ⟨{}, false, false, sortSuppress suppressNamespaces⟩ |>.run {} |>.run .empty
+  let severity : Highlighted.Span.Kind :=
+    match message.severity with
+    | .error => .error
+    | .warning => .warning
+    | .information => .info
+  return {severity, contents}

@@ -164,17 +164,17 @@ instance : Quote Kind where
     | .info => mkCApp ``info #[]
 
 /-- A first-order, context-independent, fixed-width approximation of `MessageData` -/
-inductive Highlighted.Message (expr) where
-  | text : String → Message expr
-  | goal : Goal expr → Message expr
-  | term : expr → Message expr
-  | trace (cls : Name) (msg : Message expr) (children : Array (Message expr)) (collapsed : Bool) : Message expr
-  | append : Array (Message expr) → Message expr
+inductive Highlighted.MessageContents (expr) where
+  | text : String → MessageContents expr
+  | goal : Goal expr → MessageContents expr
+  | term : expr → MessageContents expr
+  | trace (cls : Name) (msg : MessageContents expr) (children : Array (MessageContents expr)) (collapsed : Bool) : MessageContents expr
+  | append : Array (MessageContents expr) → MessageContents expr
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
-open Highlighted Message in
+open Highlighted MessageContents in
 open Syntax in
-partial instance [Quote expr] : Quote (Message expr) where
+partial instance [Quote expr] : Quote (MessageContents expr) where
   quote := q
 where
   q
@@ -182,10 +182,10 @@ where
     | .goal g => mkCApp ``goal #[quote g]
     | .term e => mkCApp ``term #[quote e]
     | .trace cls msg children collapsed =>
-      have : Quote (Message expr) := ⟨q⟩
-      mkCApp ``Message.trace #[quote cls, q msg, quote children, quote collapsed]
+      have : Quote (MessageContents expr) := ⟨q⟩
+      mkCApp ``MessageContents.trace #[quote cls, q msg, quote children, quote collapsed]
     | .append ms =>
-      have : Quote (Message expr) := ⟨q⟩
+      have : Quote (MessageContents expr) := ⟨q⟩
       mkCApp ``append #[quote ms]
 
 open Highlighted in
@@ -193,10 +193,15 @@ inductive Highlighted where
   | token (tok : Token)
   | text (str : String)
   | seq (highlights : Array Highlighted)
-  | span (info : Array (Span.Kind × Message Highlighted)) (content : Highlighted)
+  | span (info : Array (Span.Kind × MessageContents Highlighted)) (content : Highlighted)
   | tactics (info : Array (Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
-  | point (kind : Span.Kind) (info : Message Highlighted)
+  | point (kind : Span.Kind) (info : MessageContents Highlighted)
   | unparsed (str : String)
+deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
+
+structure Highlighted.Message where
+  severity : Span.Kind
+  contents : MessageContents Highlighted
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.empty : Highlighted := .seq #[]
@@ -322,6 +327,12 @@ where
       let post := xs.extract n xs.size
       mkCApp ``Highlighted.append #[quoteSeq pre, quoteSeq post]
 
+open Highlighted Message in
+open Syntax in
+instance : Quote Highlighted.Message where
+  quote
+    | ⟨severity, contents⟩ => mkCApp ``Message.mk #[quote severity, quote contents]
+
 namespace Highlighted
 
 /--
@@ -391,7 +402,7 @@ partial def Goal.toString : Highlighted.Goal Highlighted → String
     conclusion.toString
 where hString | (x, k, t) => s!"  {Highlighted.token ⟨k, x.toString⟩ |>.toString}: {t.toString}\n"
 
-partial def Message.toString : Message Highlighted → String
+partial def MessageContents.toString : MessageContents Highlighted → String
   | .trace cls msg children collapsed =>
     if collapsed then
       s!" ▶ [{cls}] {msg.toString}"
