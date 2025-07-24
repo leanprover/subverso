@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
 import Lean.Widget.InteractiveCode
+import Lean.Widget.InteractiveDiagnostic
 import Lean.Widget.TaggedText
 
 import SubVerso.Compat
@@ -385,11 +386,11 @@ def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Synta
       return true
   return false
 
-
+open Highlighted in
 inductive Output where
   | seq (emitted : Array Highlighted)
-  | span (info : Array (Highlighted.Span.Kind × String)) (startPos : String.Pos) (endPos : Option String.Pos)
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : String.Pos) (endPos : String.Pos)
+  | span (info : Array (Span.Kind × Message Highlighted)) (startPos : String.Pos) (endPos : Option String.Pos)
+  | tactics (info : Array (Goal Highlighted)) (startPos : String.Pos) (endPos : String.Pos)
 deriving Repr
 
 -- Tactic info regions are detected based on the entire syntax of a term or tactic, but the leading
@@ -430,7 +431,12 @@ def Output.addToken (output : List Output) (token : Token) : List Output :=
 def Output.addUnparsed (output : List Output) (text : String) : List Output :=
   Output.add output (.unparsed text)
 
-def Output.openSpan (output : List Output) (messages : Array (Highlighted.Span.Kind × String)) (startPos : String.Pos) (endPos : Option String.Pos) : List Output :=
+open Highlighted in
+def Output.openSpan
+    (output : List Output)
+    (messages : Array (Span.Kind × Message Highlighted))
+    (startPos : String.Pos) (endPos : Option String.Pos) :
+    List Output :=
   match output with
   | t@(.tactics _ start stop) :: output' =>
     if start == startPos && (endPos.map (fun e => (stop ≤ e : Bool)) |>.getD false) then
@@ -643,30 +649,114 @@ def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
 private def leanPosToUtf8Pos (text : FileMap) : Position → String.Pos :=
   text.lspPosToUtf8Pos ∘ text.leanPosToLspPos
 
+
+partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
+    (outer : Option Token.Kind) (doc : CodeWithInfos)
+    : ReaderT Context m Highlighted := do
+  match doc with
+  | .text txt => do
+    -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
+    let mut todo := txt
+    let mut toks : Highlighted := .empty
+    while !todo.isEmpty do
+      let ws := todo.takeWhile (·.isWhitespace)
+      unless ws.isEmpty do
+        toks := toks ++ .text ws
+        todo := todo.drop ws.length
+
+      let mut foundKw := false
+      for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
+        if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
+          foundKw := true
+          toks := toks ++ .token ⟨.keyword none none none, kw⟩
+          todo := todo.drop kw.length
+          break
+      if foundKw then continue -- for whitespace or subsequent keywords
+
+      -- It's not enough to just push a text node when the token kind isn't set, because that breaks
+      -- the code that matches Highlighted against strings for extraction. Instead, we need to split
+      -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
+      -- pretty printer output.
+      let tok := todo.takeWhile (!·.isWhitespace)
+      unless tok.isEmpty do
+        toks := toks ++ .token ⟨outer.getD .unknown, tok⟩
+        todo := todo.drop tok.length
+
+    pure toks
+  | .tag t doc' =>
+    let {ctx, info, children := _} := t.info.val
+    if let .text tok := doc' then
+      let wsPre := tok.takeWhile (·.isWhitespace)
+      let wsPost := tok.takeRightWhile (·.isWhitespace)
+      let k := (← infoKind ctx info).getD .unknown
+      pure <| .seq #[.text wsPre, .token ⟨k, tok.trim⟩, .text wsPost]
+    else
+      let k? ← infoKind ctx info
+      renderTagged k? doc'
+  | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
+where
+  tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
+
+section Compat
+partial def messageContents (message : Message) : HighlightM (Highlighted.Message Highlighted) := do
+  let head := if message.caption != "" then message.caption ++ ":\n" else ""
+  let body ← Lean.Widget.msgToInteractive message.data true
+  return .append #[.text head, ← convert body]
+where
+  convert : TaggedText MsgEmbed → HighlightM (Highlighted.Message Highlighted)
+    | .text str => pure (.text str)
+    | .append xs => .append <$> xs.mapM convert
+    | .tag embed _ =>
+      Compat.msgEmbedCase (α := HighlightM (Highlighted.Message Highlighted)) embed
+        (fun e => .term <$> renderTagged none e)
+        (fun g => do
+          let mut hypotheses : Array (Name × Token.Kind × Highlighted) := #[]
+          for h in g.hyps do
+            -- TODO mvar ctx?
+            for x in h.names, fv in h.fvarIds do
+              let t ← renderTagged none h.type
+              let nk := .var fv h.type.pretty
+              hypotheses := hypotheses.push (s!"{x}".toName, nk, t)
+
+          let conclusion ← renderTagged none g.type
+          let g := {
+            name := g.userName?.map (s!"{·}".toName), -- This is to account for version differences, where it's a string or name
+            goalPrefix := g.goalPrefix,
+            hypotheses,
+            conclusion
+          }
+          return .goal g)
+        (fun _indent cls msg collapsed children => do
+          let msg ← convert msg
+          let children ← match children with
+            | .strict xs => xs.mapM convert
+            | .lazy xs => xs.val.children.mapM fun x => do
+              let child ← Lean.Widget.msgToInteractive x.val true
+              convert child
+          return .trace cls msg children collapsed)
+        (fun _wi alt => convert alt)
+end Compat
+
 partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
   let text ← getFileMap
   if let some msg ← nextMessage? then
     if needsOpening pos msg then
       advanceMessages
-      let str ← msg.messages.mapM fun m => do
+      let txt ← msg.messages.mapM fun m => do
           let kind : Highlighted.Span.Kind :=
             match SubVerso.Highlighting.Messages.severity m with
             | .error => .error
             | .warning => .warning
             | .information => .info
-          let str ← contents m
+          let str ← messageContents m
           pure (kind, str)
 
       modify fun st =>
     {st with
-        output := Output.openSpan st.output str (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
+        output := Output.openSpan st.output txt (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
         inMessages := msg :: st.inMessages
       }
       openUntil pos
-where
-  contents (message : Message) : IO String := do
-    let head := if message.caption != "" then message.caption ++ ":\n" else ""
-    pure <| head ++ (← message.data.toString)
 
 partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
   let text ← getFileMap
@@ -853,54 +943,6 @@ partial def childHasTactics (stx : Syntax) : HighlightM Bool := do
       {st with childHasTacticCache := st.childHasTacticCache.insert rng v}
 
   return res
-
-
-partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
-    (outer : Option Token.Kind) (doc : CodeWithInfos)
-    : ReaderT Context m Highlighted := do
-  match doc with
-  | .text txt => do
-    -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
-    let mut todo := txt
-    let mut toks : Highlighted := .empty
-    while !todo.isEmpty do
-      let ws := todo.takeWhile (·.isWhitespace)
-      unless ws.isEmpty do
-        toks := toks ++ .text ws
-        todo := todo.drop ws.length
-
-      let mut foundKw := false
-      for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
-        if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
-          foundKw := true
-          toks := toks ++ .token ⟨.keyword none none none, kw⟩
-          todo := todo.drop kw.length
-          break
-      if foundKw then continue -- for whitespace or subsequent keywords
-
-      -- It's not enough to just push a text node when the token kind isn't set, because that breaks
-      -- the code that matches Highlighted against strings for extraction. Instead, we need to split
-      -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
-      -- pretty printer output.
-      let tok := todo.takeWhile (!·.isWhitespace)
-      unless tok.isEmpty do
-        toks := toks ++ .token ⟨outer.getD .unknown, tok⟩
-        todo := todo.drop tok.length
-
-    pure toks
-  | .tag t doc' =>
-    let {ctx, info, children := _} := t.info.val
-    if let .text tok := doc' then
-      let wsPre := tok.takeWhile (·.isWhitespace)
-      let wsPost := tok.takeRightWhile (·.isWhitespace)
-      let k := (← infoKind ctx info).getD .unknown
-      pure <| .seq #[.text wsPre, .token ⟨k, tok.trim⟩, .text wsPost]
-    else
-      let k? ← infoKind ctx info
-      renderTagged k? doc'
-  | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
-where
-  tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
 partial def _root_.Lean.Widget.TaggedText.oneLine (txt : TaggedText α) : Bool :=
   match txt with

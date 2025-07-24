@@ -106,9 +106,10 @@ private partial def normHl : Highlighted → Highlighted
   | .token t => .token t
   | .unparsed s => .unparsed s
 
+open Highlighted in
 private inductive HlCtx where
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat)
-  | span (info : Array (Highlighted.Span.Kind × String))
+  | tactics (info : Array (Goal Highlighted)) (startPos endPos : Nat)
+  | span (info : Array (Span.Kind × Message Highlighted))
 deriving Repr
 
 private def HlCtx.wrap (ctx : HlCtx) (hl : Highlighted) : Highlighted :=

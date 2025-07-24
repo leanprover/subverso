@@ -199,7 +199,7 @@ partial def hlStringWithMessages : Highlighting.Highlighted → String
   | .point .. => ""
   | .tactics _ _ _ x => hlStringWithMessages x
   | .span info x =>
-    let labels := info.map fun (k, s) => s!"{k}: {s}"
+    let labels := info.map fun (k, s) => s!"{k}: {s.toString}"
     let labelStr := ", ".intercalate labels.toList
     s!"[{labelStr}]({hlStringWithMessages x})"
   | .text s | .token ⟨_, s⟩ | .unparsed s => s

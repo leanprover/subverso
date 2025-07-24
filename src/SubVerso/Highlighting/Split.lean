@@ -7,9 +7,10 @@ import SubVerso.Highlighting.Highlighted
 
 namespace SubVerso.Highlighting
 
+open Highlighted in
 private inductive SplitCtxF where
-  | tactics : Array (Highlighted.Goal Highlighted) → Nat → Nat → SplitCtxF
-  | span : Array (Highlighted.Span.Kind × String) → SplitCtxF
+  | tactics : Array (Goal Highlighted) → Nat → Nat → SplitCtxF
+  | span : Array (Span.Kind × Message Highlighted) → SplitCtxF
 deriving Repr
 
 private def SplitCtxF.wrap (hl : Highlighted) : SplitCtxF → Highlighted

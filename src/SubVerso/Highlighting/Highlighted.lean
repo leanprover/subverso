@@ -163,14 +163,39 @@ instance : Quote Kind where
     | .warning => mkCApp ``warning #[]
     | .info => mkCApp ``info #[]
 
+/-- A first-order, context-independent, fixed-width approximation of `MessageData` -/
+inductive Highlighted.Message (expr) where
+  | text : String → Message expr
+  | goal : Goal expr → Message expr
+  | term : expr → Message expr
+  | trace (cls : Name) (msg : Message expr) (children : Array (Message expr)) (collapsed : Bool) : Message expr
+  | append : Array (Message expr) → Message expr
+deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
+
+open Highlighted Message in
+open Syntax in
+partial instance [Quote expr] : Quote (Message expr) where
+  quote := q
+where
+  q
+    | .text s => mkCApp ``text #[quote s]
+    | .goal g => mkCApp ``goal #[quote g]
+    | .term e => mkCApp ``term #[quote e]
+    | .trace cls msg children collapsed =>
+      have : Quote (Message expr) := ⟨q⟩
+      mkCApp ``Message.trace #[quote cls, q msg, quote children, quote collapsed]
+    | .append ms =>
+      have : Quote (Message expr) := ⟨q⟩
+      mkCApp ``append #[quote ms]
+
+open Highlighted in
 inductive Highlighted where
   | token (tok : Token)
   | text (str : String)
   | seq (highlights : Array Highlighted)
-  -- TODO replace messages as strings with structured info
-  | span (info : Array (Highlighted.Span.Kind × String)) (content : Highlighted)
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
-  | point (kind : Highlighted.Span.Kind) (info : String)
+  | span (info : Array (Span.Kind × Message Highlighted)) (content : Highlighted)
+  | tactics (info : Array (Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
+  | point (kind : Span.Kind) (info : Message Highlighted)
   | unparsed (str : String)
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
@@ -277,11 +302,15 @@ where
     | .token tok => mkCApp ``token #[quote tok]
     | .text str => mkCApp ``text #[quote str]
     | .seq hls => quoteSeq hls
-    | .span info content => mkCApp ``span #[quote info, quote' content]
+    | .span info content =>
+      have : Quote Highlighted := ⟨quote'⟩
+      mkCApp ``span #[quote info, quote' content]
     | .tactics info startPos endPos content =>
       have : Quote Highlighted := ⟨quote'⟩
       mkCApp ``tactics #[quote info, quote startPos, quote endPos, quote' content]
-    | .point k info => mkCApp ``point #[quote k, quote info]
+    | .point k info =>
+      have : Quote Highlighted := ⟨quote'⟩
+      mkCApp ``point #[quote k, quote info]
     | .unparsed str => mkCApp ``unparsed #[quote str]
 
   quoteSeq (xs : Array Highlighted) : Term :=
@@ -361,6 +390,17 @@ partial def Goal.toString : Highlighted.Goal Highlighted → String
     goalPrefix ++
     conclusion.toString
 where hString | (x, k, t) => s!"  {Highlighted.token ⟨k, x.toString⟩ |>.toString}: {t.toString}\n"
+
+partial def Message.toString : Message Highlighted → String
+  | .trace cls msg children collapsed =>
+    if collapsed then
+      s!" ▶ [{cls}] {msg.toString}"
+    else
+      children.foldl (init := s!" ▼ [{cls}] {msg.toString}") (· ++ ·.toString ++ "\n")
+  | .goal g => g.toString
+  | .append xs => xs.foldl (init := "") (· ++ ·.toString)
+  | .term hl => hl.toString
+  | .text s => s
 
 private def minIndentString (str : String) : Nat :=
   let indents := str.split (· == '\n') |>.filterMap fun line =>
