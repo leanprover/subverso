@@ -706,7 +706,7 @@ def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
   | .tag .. => failure
 
 section Compat
-partial def messageContents (message : Message) : HighlightM (Highlighted.MessageContents Highlighted) := do
+partial def messageContents (message : Message) (highlightTerms : Bool := true) : HighlightM (Highlighted.MessageContents Highlighted) := do
   let head := if message.caption != "" then message.caption ++ ":\n" else ""
   let body ← Lean.Widget.msgToInteractive message.data true
   return .append #[.text head, ← convert body]
@@ -715,26 +715,25 @@ where
     | .text str => pure (.text str)
     | .append xs => .append <$> xs.mapM convert
     | .tag embed _ =>
+      let render (e : CodeWithInfos) : HighlightM Highlighted  :=
+        if highlightTerms then
+          try renderTagged none e
+          catch | _ => pure <| .text e.pretty
+        else
+          pure <| .text e.pretty
       Compat.msgEmbedCase (α := HighlightM (Highlighted.MessageContents Highlighted)) embed
         (onExpr := fun e =>
           if let some txt := codeWithInfosIsString? e then pure <| .text txt
-          else
-            try .term <$> renderTagged none e
-            catch | _ => pure <| .term (.text e.pretty))
+          else .term <$> render e)
         (onGoal := fun g => do
           let mut hypotheses : Array (Name × Token.Kind × Highlighted) := #[]
           for h in g.hyps do
             -- TODO mvar ctx?
             for x in h.names, fv in h.fvarIds do
-              let t ←
-                try renderTagged none h.type
-                catch | _ => pure <| .text h.type.pretty
+              let t ← render h.type
               let nk := .var fv h.type.pretty
               hypotheses := hypotheses.push (s!"{x}".toName, nk, t)
-
-          let conclusion ←
-            try renderTagged none g.type
-            catch | _ => pure <| .text g.type.pretty
+          let conclusion ← render g.type
           let g := {
             name := g.userName?.map (s!"{·}".toName), -- This is to account for version differences, where it's a string or name
             goalPrefix := g.goalPrefix,

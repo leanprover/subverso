@@ -410,7 +410,7 @@ partial def Goal.toString : Highlighted.Goal Highlighted → String
     ((hypotheses.map hString) |>.toList |> String.join) ++
     goalPrefix ++
     conclusion.toString
-where hString | (x, k, t) => s!"  {Highlighted.token ⟨k, x.toString⟩ |>.toString}: {t.toString}\n"
+where hString | (x, k, t) => s!"{Highlighted.token ⟨k, x.toString⟩ |>.toString} : {t.toString}\n"
 
 partial def MessageContents.toString : MessageContents Highlighted → String
   | .trace cls msg children collapsed =>
