@@ -708,17 +708,23 @@ where
     | .append xs => .append <$> xs.mapM convert
     | .tag embed _ =>
       Compat.msgEmbedCase (α := HighlightM (Highlighted.Message Highlighted)) embed
-        (fun e => .term <$> renderTagged none e)
-        (fun g => do
+        (onExpr := fun e =>
+          try .term <$> renderTagged none e
+          catch | _ => pure <| .term (.text e.pretty))
+        (onGoal := fun g => do
           let mut hypotheses : Array (Name × Token.Kind × Highlighted) := #[]
           for h in g.hyps do
             -- TODO mvar ctx?
             for x in h.names, fv in h.fvarIds do
-              let t ← renderTagged none h.type
+              let t ←
+                try renderTagged none h.type
+                catch | _ => pure <| .text h.type.pretty
               let nk := .var fv h.type.pretty
               hypotheses := hypotheses.push (s!"{x}".toName, nk, t)
 
-          let conclusion ← renderTagged none g.type
+          let conclusion ←
+            try renderTagged none g.type
+            catch | _ => pure <| .text g.type.pretty
           let g := {
             name := g.userName?.map (s!"{·}".toName), -- This is to account for version differences, where it's a string or name
             goalPrefix := g.goalPrefix,
@@ -726,7 +732,7 @@ where
             conclusion
           }
           return .goal g)
-        (fun _indent cls msg collapsed children => do
+        (onTrace := fun _indent cls msg collapsed children => do
           let msg ← convert msg
           let children ← match children with
             | .strict xs => xs.mapM convert
@@ -734,7 +740,7 @@ where
               let child ← Lean.Widget.msgToInteractive x.val true
               convert child
           return .trace cls msg children collapsed)
-        (fun _wi alt => convert alt)
+        (onWidget := fun _wi alt => convert alt)
 end Compat
 
 partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
