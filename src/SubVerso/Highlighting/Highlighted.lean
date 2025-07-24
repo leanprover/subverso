@@ -152,6 +152,16 @@ def Highlighted.Span.Kind.toString : Highlighted.Span.Kind → String
   | .warning => "warning"
   | .info => "info"
 
+def Highlighted.Span.Kind.ofSeverity : MessageSeverity → Highlighted.Span.Kind
+  | .error => .error
+  | .warning => .warning
+  | .information => .info
+
+def Highlighted.Span.Kind.toSeverity : Highlighted.Span.Kind → MessageSeverity
+  | .error => .error
+  | .warning => .warning
+  | .info => .information
+
 instance : ToString Highlighted.Span.Kind where
   toString := Highlighted.Span.Kind.toString
 
