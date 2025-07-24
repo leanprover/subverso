@@ -84,6 +84,14 @@ open Lean Elab Command
           s.toSubstring.dropPrefix? p.toSubstring)
     elabCommand cmd
 
+#eval show CommandElabM Unit from do
+  /- If this type doesn't yet exist, define a harmless stand-in. -/
+  if !(← getEnv).contains `Lean.Widget.WidgetInstance then
+    let cmd ←
+      `(def $(mkIdent `_root_.Lean.Widget.WidgetInstance) := Unit)
+    elabCommand cmd
+
+
 end
 
 namespace SubVerso.Compat
