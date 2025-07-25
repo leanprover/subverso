@@ -437,7 +437,7 @@ rather than display to readers.
 -/
 partial def Goal.toString : Highlighted.Goal Highlighted → String
   | {name, goalPrefix, hypotheses, conclusion} =>
-    (name.map ("case " ++ · ++ " =>\n") |>.getD "") ++
+    (name.map ("case " ++ · ++ "\n") |>.getD "") ++
     ((hypotheses.map hString) |>.toList |> String.join) ++
     goalPrefix ++
     conclusion.toString
