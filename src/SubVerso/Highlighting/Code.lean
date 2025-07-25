@@ -321,6 +321,7 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
 def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
     ReaderT Context m (Option Token.Kind) := do
+  dbg_trace s!"term is {termInfo.expr}"
   let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
     if let some (.const name sig docs _isDef) := k then
