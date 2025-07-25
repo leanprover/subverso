@@ -684,7 +684,9 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
 
     pure toks
   | .tag t doc' =>
-    let {ctx, info, children := _} := t.info.val
+    let {ctx, info, children := children} := t.info.val
+    dbg_trace (← info.format ctx)
+    dbg_trace (← children.toArray.mapM (·.format))
     if let .text tok := doc' then
       let wsPre := tok.takeWhile (·.isWhitespace)
       let wsPost := tok.takeRightWhile (·.isWhitespace)
