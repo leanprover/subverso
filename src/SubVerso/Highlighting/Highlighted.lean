@@ -125,8 +125,7 @@ instance : Quote Token where
       mkCApp ``Token.mk #[quote kind, quote content]
 
 structure Highlighted.Hypothesis (expr : Type) where
-  name : String
-  tokenKind : Token.Kind
+  names : Array Token
   typeAndVal : expr
 deriving Repr, BEq, Hashable, ToJson, FromJson
 
@@ -147,8 +146,8 @@ def Highlighted.Goal.map (f : α → β) (g : Goal α) : Goal β :=
 
 instance [Quote expr] : Quote (Highlighted.Hypothesis expr) where
   quote
-    | {name, tokenKind, typeAndVal} =>
-      Syntax.mkCApp ``Highlighted.Hypothesis.mk #[quote name, quote tokenKind, quote typeAndVal]
+    | {names, typeAndVal} =>
+      Syntax.mkCApp ``Highlighted.Hypothesis.mk #[quote names, quote typeAndVal]
 
 instance [Quote expr] : Quote (Highlighted.Goal expr) where
   quote
@@ -429,7 +428,11 @@ partial def Goal.toString : Highlighted.Goal Highlighted → String
     ((hypotheses.map hString) |>.toList |> String.join) ++
     goalPrefix ++
     conclusion.toString
-where hString | ⟨x, k, t⟩ => s!"{Highlighted.token ⟨k, x⟩ |>.toString} : {t.toString}\n"
+where hString
+  | ⟨xs, t⟩ =>
+    let names := xs.map (fun tok => Highlighted.token tok |>.toString) |>.toList
+    let names := " ".intercalate names
+    s!"{names} : {t.toString}\n"
 
 partial def MessageContents.toString : MessageContents Highlighted → String
   | .trace cls msg children collapsed =>

@@ -730,12 +730,14 @@ where
           let mut hypotheses : Array (Highlighted.Hypothesis Highlighted) := #[]
           for h in g.hyps do
             -- TODO mvar ctx?
+            let mut names : Array Token := #[]
+            let t ← render h.type
+            let v? ← h.val?.mapM render
+            let v := v?.map (.text " := " ++ ·.indent 2) |>.getD .empty
             for x in h.names, fv in h.fvarIds do
-              let t ← render h.type
-              let v? ← h.val?.mapM render
-              let v := v?.map (.text " := " ++ ·.indent 2) |>.getD .empty
-              let nk := .var fv h.type.pretty
-              hypotheses := hypotheses.push ⟨Compat.nameString x, nk, t ++ v⟩
+              let nk := .var fv t.toString
+              names := names.push ⟨nk, Compat.nameString x⟩
+            hypotheses := hypotheses.push ⟨names, t ++ v⟩
           let conclusion ← render g.type
           let g := {
             name := g.userName?.map Compat.nameString
@@ -1000,7 +1002,7 @@ def highlightGoals
       | .cdecl _index fvar name type _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
         let tyStr ← renderTagged none (← runMeta (ppExprTagged =<< instantiateMVars type))
-        hyps := hyps.push ⟨name.toString, nk.getD .unknown, tyStr⟩
+        hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr⟩
       | .ldecl _index fvar name type val _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
         let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
@@ -1008,7 +1010,7 @@ def highlightGoals
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
-        hyps := hyps.push ⟨name.toString, nk.getD .unknown, tyValStr⟩
+        hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr⟩
     let concl ← renderTagged none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
