@@ -706,10 +706,11 @@ partial def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
   | .tag .. => failure
 
 section Compat
-partial def messageContents (message : Message) (highlightTerms : Bool := true) : HighlightM (Highlighted.MessageContents Highlighted) := do
-  let head := if message.caption != "" then message.caption ++ ":\n" else ""
-  let body ← Lean.Widget.msgToInteractive message.data true
-  return .append #[.text head, ← convert body]
+partial def messageContents (message : Message) (highlightTerms : Bool := true) : HighlightM (Highlighted.MessageContents Highlighted) :=
+  withOptions (pp.sanitizeNames.set · true) do
+    let head := if message.caption != "" then message.caption ++ ":\n" else ""
+    let body ← Lean.Widget.msgToInteractive message.data true
+    return .append #[.text head, ← convert body]
 where
   convert : TaggedText MsgEmbed → HighlightM (Highlighted.MessageContents Highlighted)
     | .text str => pure (.text str)
