@@ -355,7 +355,7 @@ open Highlighted in
 open Syntax in
 instance : Quote Highlighted.Message where
   quote
-    | ⟨severity, contents⟩ => mkCApp ``Message.mk #[quote severity, quote contents]
+    | ⟨severity, contents⟩ => mkCApp ``Highlighted.Message.mk #[quote severity, quote contents]
 
 namespace Highlighted
 
