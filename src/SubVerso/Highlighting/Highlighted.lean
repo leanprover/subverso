@@ -228,6 +228,11 @@ structure Highlighted.Message where
   contents : MessageContents Highlighted
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
+/-- Constructs a message without any “live” elements from a string and a severity -/
+def Highlighted.Message.ofSeverityString (sev : MessageSeverity) (contents : String) : Highlighted.Message where
+  severity := .ofSeverity sev
+  contents := .text contents
+
 def Highlighted.empty : Highlighted := .seq #[]
 
 /--
