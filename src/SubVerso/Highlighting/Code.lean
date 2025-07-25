@@ -314,7 +314,6 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
       some r
     else (← builtinDeclRanges.get (m := IO)).find? name
   if let some declRanges := ranges then
-    dbg_trace (stx, repr declRanges)
     let some range ← Compat.getDeclarationRange? stx | return false
     return range == declRanges.range || range == declRanges.selectionRange
   return false
@@ -771,7 +770,7 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
             | .error => .error
             | .warning => .warning
             | .information => .info
-          let str ← messageContents m
+          let str ← withReader ({ · with definitionsPossible := false}) (messageContents m)
           pure ⟨kind, str⟩
 
       modify fun st =>
