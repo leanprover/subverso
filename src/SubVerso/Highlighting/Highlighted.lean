@@ -449,14 +449,18 @@ where hString
 
 partial def MessageContents.toString : MessageContents Highlighted → String
   | .trace cls msg children collapsed =>
-    if collapsed then
-      s!"[{cls}] {msg.toString}"
+    let parent := s!"[{cls}] {msg.toString}"
+    if collapsed then parent ++ "\n"
     else
-      children.foldl (init := s!"[{cls}] {msg.toString}") (· ++ ·.toString ++ "\n")
+      children.foldl (init := parent ++ "\n") (fun acc ch => acc ++ (indentString ch.toString))
   | .goal g => g.toString
   | .append xs => xs.foldl (init := "") (· ++ ·.toString)
   | .term hl => hl.toString
   | .text s => s
+where
+  withNL (s : String) := if s.endsWith "\n" then s else s.push '\n'
+  indentString (s : String) : String :=
+    "\n".intercalate <| s.splitOn "\n" |>.map (fun l => if l.any (!·.isWhitespace) then "  " ++ l else l)
 
 def Message.toString (message : Message) : String :=
   message.contents.toString
