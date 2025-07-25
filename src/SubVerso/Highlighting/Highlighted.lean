@@ -158,7 +158,20 @@ inductive Highlighted.Span.Kind where
   | error
   | warning
   | info
-deriving Repr, DecidableEq, Inhabited, BEq, Hashable, ToJson, FromJson
+deriving Repr, DecidableEq, Inhabited, BEq, Hashable
+
+instance : ToJson Highlighted.Span.Kind where
+  toJson
+    | .error => "error"
+    | .warning => "warning"
+    | .info => "info"
+
+instance : FromJson Highlighted.Span.Kind where
+  fromJson?
+    | .str "error" => pure .error
+    | .str "warning " => pure .error
+    | .str "info" => pure .error
+    | other => throw s!"For Highlighted.Span.Kind, expected \"error\", \"warning\", or \"info\", but got {other.compress}"
 
 def Highlighted.Span.Kind.toString : Highlighted.Span.Kind → String
   | .error => "error"
