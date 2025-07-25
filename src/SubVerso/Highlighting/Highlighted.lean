@@ -450,9 +450,9 @@ where hString
 partial def MessageContents.toString : MessageContents Highlighted → String
   | .trace cls msg children collapsed =>
     if collapsed then
-      s!" ▶ [{cls}] {msg.toString}"
+      s!"[{cls}] {msg.toString}"
     else
-      children.foldl (init := s!" ▼ [{cls}] {msg.toString}") (· ++ ·.toString ++ "\n")
+      children.foldl (init := s!"[{cls}] {msg.toString}") (· ++ ·.toString ++ "\n")
   | .goal g => g.toString
   | .append xs => xs.foldl (init := "") (· ++ ·.toString)
   | .term hl => hl.toString
