@@ -458,7 +458,6 @@ partial def MessageContents.toString : MessageContents Highlighted → String
   | .term hl => hl.toString
   | .text s => s
 where
-  withNL (s : String) := if s.endsWith "\n" then s else s.push '\n'
   indentString (s : String) : String :=
     "\n".intercalate <| s.splitOn "\n" |>.map (fun l => if l.any (!·.isWhitespace) then "  " ++ l else l)
 
