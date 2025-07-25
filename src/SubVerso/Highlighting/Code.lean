@@ -697,7 +697,7 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
 where
   tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
 
-def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
+partial def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
   match code with
   | .text s => pure s
   | .append xs =>
