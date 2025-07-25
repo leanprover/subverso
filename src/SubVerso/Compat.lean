@@ -206,6 +206,21 @@ def refIdentCase (ri : Lsp.RefIdent)
     | .const x => onConst x
   ]
 
+/--
+Some versions of Lean use `Name` in for hypothesis names in `InteractiveGoal`, while others use
+`String`. When names have daggers, round-tripping through `toString` and `toName` doesn't work.
+-/
+class NameString (α) where
+  nameString : α → String
+
+export NameString (nameString)
+
+instance : NameString Name where
+  nameString n := n.toString
+
+instance : NameString String where
+  nameString s := s
+
 open Lean.Widget in
 open Lean.Server in
 def msgEmbedCase (embed : MsgEmbed)

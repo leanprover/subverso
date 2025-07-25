@@ -726,7 +726,7 @@ where
           if let some txt := codeWithInfosIsString? e then pure <| .text txt
           else .term <$> render e)
         (onGoal := fun g => do
-          let mut hypotheses : Array (Name × Token.Kind × Highlighted) := #[]
+          let mut hypotheses : Array (Highlighted.Hypothesis Highlighted) := #[]
           for h in g.hyps do
             -- TODO mvar ctx?
             for x in h.names, fv in h.fvarIds do
@@ -734,10 +734,10 @@ where
               let v? ← h.val?.mapM render
               let v := v?.map (.text " := " ++ ·.indent 2) |>.getD .empty
               let nk := .var fv h.type.pretty
-              hypotheses := hypotheses.push (s!"{x}".toName, nk, t ++ v)
+              hypotheses := hypotheses.push ⟨Compat.nameString x, nk, t ++ v⟩
           let conclusion ← render g.type
           let g := {
-            name := g.userName?.map (s!"{·}".toName), -- This is to account for version differences, where it's a string or name
+            name := g.userName?.map Compat.nameString
             goalPrefix := g.goalPrefix,
             hypotheses,
             conclusion
@@ -983,7 +983,7 @@ def highlightGoals
     let mut hyps := #[]
     let some mvDecl := ci.mctx.findDecl? g
       | continue
-    let name := if mvDecl.userName.isAnonymous then none else some mvDecl.userName
+    let name := if mvDecl.userName.isAnonymous then none else some mvDecl.userName.toString
     let lctx := mvDecl.lctx |>.sanitizeNames.run' {options := (← getOptions)}
 
     -- Tell the delaborator to tag functions that are being applied. Otherwise,
@@ -999,7 +999,7 @@ def highlightGoals
       | .cdecl _index fvar name type _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
         let tyStr ← renderTagged none (← runMeta (ppExprTagged =<< instantiateMVars type))
-        hyps := hyps.push (name, nk.getD .unknown, tyStr)
+        hyps := hyps.push ⟨name.toString, nk.getD .unknown, tyStr⟩
       | .ldecl _index fvar name type val _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
         let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
@@ -1007,7 +1007,7 @@ def highlightGoals
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
-        hyps := hyps.push (name, nk.getD .unknown, tyValStr)
+        hyps := hyps.push ⟨name.toString, nk.getD .unknown, tyValStr⟩
     let concl ← renderTagged none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView

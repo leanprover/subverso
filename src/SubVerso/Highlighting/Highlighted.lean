@@ -124,17 +124,31 @@ instance : Quote Token where
     | (.mk kind content) =>
       mkCApp ``Token.mk #[quote kind, quote content]
 
-structure Highlighted.Goal (expr) where
-  name : Option Name
+structure Highlighted.Hypothesis (expr : Type) where
+  name : String
+  tokenKind : Token.Kind
+  typeAndVal : expr
+deriving Repr, BEq, Hashable, ToJson, FromJson
+
+def Highlighted.Hypothesis.map (f : α → β) (h : Hypothesis α) : Hypothesis β :=
+  { h with typeAndVal := f h.typeAndVal }
+
+structure Highlighted.Goal (expr : Type) where
+  name : Option String
   goalPrefix : String
-  hypotheses : Array (Name × Token.Kind × expr)
+  hypotheses : Array (Hypothesis expr)
   conclusion : expr
 deriving Repr, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.Goal.map (f : α → β) (g : Goal α) : Goal β :=
-  {g with
-    hypotheses := g.hypotheses.map (fun (x, k, e) => (x, k, f e))
-    conclusion := f g.conclusion}
+  { g with
+    hypotheses := g.hypotheses.map (·.map f)
+    conclusion := f g.conclusion }
+
+instance [Quote expr] : Quote (Highlighted.Hypothesis expr) where
+  quote
+    | {name, tokenKind, typeAndVal} =>
+      Syntax.mkCApp ``Highlighted.Hypothesis.mk #[quote name, quote tokenKind, quote typeAndVal]
 
 instance [Quote expr] : Quote (Highlighted.Goal expr) where
   quote
@@ -406,11 +420,11 @@ rather than display to readers.
 -/
 partial def Goal.toString : Highlighted.Goal Highlighted → String
   | {name, goalPrefix, hypotheses, conclusion} =>
-    (name.map ("case " ++ ·.toString ++ " =>\n") |>.getD "") ++
+    (name.map ("case " ++ · ++ " =>\n") |>.getD "") ++
     ((hypotheses.map hString) |>.toList |> String.join) ++
     goalPrefix ++
     conclusion.toString
-where hString | (x, k, t) => s!"{Highlighted.token ⟨k, x.toString⟩ |>.toString} : {t.toString}\n"
+where hString | ⟨x, k, t⟩ => s!"{Highlighted.token ⟨k, x⟩ |>.toString} : {t.toString}\n"
 
 partial def MessageContents.toString : MessageContents Highlighted → String
   | .trace cls msg children collapsed =>
