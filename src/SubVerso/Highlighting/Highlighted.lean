@@ -169,7 +169,7 @@ instance : ToJson Highlighted.Span.Kind where
 instance : FromJson Highlighted.Span.Kind where
   fromJson?
     | .str "error" => pure .error
-    | .str "warning " => pure .error
+    | .str "warning" => pure .error
     | .str "info" => pure .error
     | other => throw s!"For Highlighted.Span.Kind, expected \"error\", \"warning\", or \"info\", but got {other.compress}"
 
