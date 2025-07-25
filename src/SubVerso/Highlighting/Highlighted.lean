@@ -351,7 +351,7 @@ where
       let post := xs.extract n xs.size
       mkCApp ``Highlighted.append #[quoteSeq pre, quoteSeq post]
 
-open Highlighted Message in
+open Highlighted in
 open Syntax in
 instance : Quote Highlighted.Message where
   quote
