@@ -437,3 +437,16 @@ Returns the minimal indentation of any non-whitespace line of code.
 -/
 def indentation (hl : Highlighted) : Nat := Id.run do
   minIndentString hl.toString
+
+/--
+Adds `howMuch` spaces after each newline.
+-/
+partial def indent (hl : Highlighted) (howMuch : Nat := 2) : Highlighted :=
+  let i := "\n".pushn ' ' howMuch
+  match hl with
+  | .seq hls => .seq (hls.map (·.indent howMuch))
+  | .unparsed str => .unparsed (str.replace "\n" i)
+  | .text str => .text (str.replace "\n" i)
+  | .tactics info s e hl => .tactics info s e (hl.indent howMuch)
+  | .span info hl => .span info (hl.indent howMuch)
+  | .point .. | .token .. => hl

@@ -731,8 +731,10 @@ where
             -- TODO mvar ctx?
             for x in h.names, fv in h.fvarIds do
               let t ← render h.type
+              let v? ← h.val?.mapM render
+              let v := v?.map (.text " := " ++ ·.indent 2) |>.getD .empty
               let nk := .var fv h.type.pretty
-              hypotheses := hypotheses.push (s!"{x}".toName, nk, t)
+              hypotheses := hypotheses.push (s!"{x}".toName, nk, t ++ v)
           let conclusion ← render g.type
           let g := {
             name := g.userName?.map (s!"{·}".toName), -- This is to account for version differences, where it's a string or name
