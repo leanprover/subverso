@@ -124,17 +124,30 @@ instance : Quote Token where
     | (.mk kind content) =>
       mkCApp ``Token.mk #[quote kind, quote content]
 
-structure Highlighted.Goal (expr) where
-  name : Option Name
+structure Highlighted.Hypothesis (expr : Type) where
+  names : Array Token
+  typeAndVal : expr
+deriving Repr, BEq, Hashable, ToJson, FromJson
+
+def Highlighted.Hypothesis.map (f : α → β) (h : Hypothesis α) : Hypothesis β :=
+  { h with typeAndVal := f h.typeAndVal }
+
+structure Highlighted.Goal (expr : Type) where
+  name : Option String
   goalPrefix : String
-  hypotheses : Array (Name × Token.Kind × expr)
+  hypotheses : Array (Hypothesis expr)
   conclusion : expr
 deriving Repr, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.Goal.map (f : α → β) (g : Goal α) : Goal β :=
-  {g with
-    hypotheses := g.hypotheses.map (fun (x, k, e) => (x, k, f e))
-    conclusion := f g.conclusion}
+  { g with
+    hypotheses := g.hypotheses.map (·.map f)
+    conclusion := f g.conclusion }
+
+instance [Quote expr] : Quote (Highlighted.Hypothesis expr) where
+  quote
+    | {names, typeAndVal} =>
+      Syntax.mkCApp ``Highlighted.Hypothesis.mk #[quote names, quote typeAndVal]
 
 instance [Quote expr] : Quote (Highlighted.Goal expr) where
   quote
@@ -145,12 +158,35 @@ inductive Highlighted.Span.Kind where
   | error
   | warning
   | info
-deriving Repr, DecidableEq, Inhabited, BEq, Hashable, ToJson, FromJson
+deriving Repr, DecidableEq, Inhabited, BEq, Hashable
+
+instance : ToJson Highlighted.Span.Kind where
+  toJson
+    | .error => "error"
+    | .warning => "warning"
+    | .info => "info"
+
+instance : FromJson Highlighted.Span.Kind where
+  fromJson?
+    | .str "error" => pure .error
+    | .str "warning" => pure .warning
+    | .str "info" => pure .info
+    | other => throw s!"For Highlighted.Span.Kind, expected \"error\", \"warning\", or \"info\", but got {other.compress}"
 
 def Highlighted.Span.Kind.toString : Highlighted.Span.Kind → String
   | .error => "error"
   | .warning => "warning"
   | .info => "info"
+
+def Highlighted.Span.Kind.ofSeverity : MessageSeverity → Highlighted.Span.Kind
+  | .error => .error
+  | .warning => .warning
+  | .information => .info
+
+def Highlighted.Span.Kind.toSeverity : Highlighted.Span.Kind → MessageSeverity
+  | .error => .error
+  | .warning => .warning
+  | .info => .information
 
 instance : ToString Highlighted.Span.Kind where
   toString := Highlighted.Span.Kind.toString
@@ -163,16 +199,51 @@ instance : Quote Kind where
     | .warning => mkCApp ``warning #[]
     | .info => mkCApp ``info #[]
 
+/-- A first-order, context-independent, fixed-width approximation of `MessageData` -/
+inductive Highlighted.MessageContents (expr) where
+  | text : String → MessageContents expr
+  | goal : Goal expr → MessageContents expr
+  | term : expr → MessageContents expr
+  | trace (cls : Name) (msg : MessageContents expr) (children : Array (MessageContents expr)) (collapsed : Bool) : MessageContents expr
+  | append : Array (MessageContents expr) → MessageContents expr
+deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
+
+open Highlighted MessageContents in
+open Syntax in
+partial instance [Quote expr] : Quote (MessageContents expr) where
+  quote := q
+where
+  q
+    | .text s => mkCApp ``text #[quote s]
+    | .goal g => mkCApp ``goal #[quote g]
+    | .term e => mkCApp ``term #[quote e]
+    | .trace cls msg children collapsed =>
+      have : Quote (MessageContents expr) := ⟨q⟩
+      mkCApp ``MessageContents.trace #[quote cls, q msg, quote children, quote collapsed]
+    | .append ms =>
+      have : Quote (MessageContents expr) := ⟨q⟩
+      mkCApp ``append #[quote ms]
+
+open Highlighted in
 inductive Highlighted where
   | token (tok : Token)
   | text (str : String)
   | seq (highlights : Array Highlighted)
-  -- TODO replace messages as strings with structured info
-  | span (info : Array (Highlighted.Span.Kind × String)) (content : Highlighted)
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
-  | point (kind : Highlighted.Span.Kind) (info : String)
+  | span (info : Array (Span.Kind × MessageContents Highlighted)) (content : Highlighted)
+  | tactics (info : Array (Goal Highlighted)) (startPos : Nat) (endPos : Nat) (content : Highlighted)
+  | point (kind : Span.Kind) (info : MessageContents Highlighted)
   | unparsed (str : String)
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
+
+structure Highlighted.Message where
+  severity : Span.Kind
+  contents : MessageContents Highlighted
+deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
+
+/-- Constructs a message without any “live” elements from a string and a severity -/
+def Highlighted.Message.ofSeverityString (sev : MessageSeverity) (contents : String) : Highlighted.Message where
+  severity := .ofSeverity sev
+  contents := .text contents
 
 def Highlighted.empty : Highlighted := .seq #[]
 
@@ -277,11 +348,15 @@ where
     | .token tok => mkCApp ``token #[quote tok]
     | .text str => mkCApp ``text #[quote str]
     | .seq hls => quoteSeq hls
-    | .span info content => mkCApp ``span #[quote info, quote' content]
+    | .span info content =>
+      have : Quote Highlighted := ⟨quote'⟩
+      mkCApp ``span #[quote info, quote' content]
     | .tactics info startPos endPos content =>
       have : Quote Highlighted := ⟨quote'⟩
       mkCApp ``tactics #[quote info, quote startPos, quote endPos, quote' content]
-    | .point k info => mkCApp ``point #[quote k, quote info]
+    | .point k info =>
+      have : Quote Highlighted := ⟨quote'⟩
+      mkCApp ``point #[quote k, quote info]
     | .unparsed str => mkCApp ``unparsed #[quote str]
 
   quoteSeq (xs : Array Highlighted) : Term :=
@@ -292,6 +367,12 @@ where
       let pre := xs.extract 0 n
       let post := xs.extract n xs.size
       mkCApp ``Highlighted.append #[quoteSeq pre, quoteSeq post]
+
+open Highlighted in
+open Syntax in
+instance : Quote Highlighted.Message where
+  quote
+    | ⟨severity, contents⟩ => mkCApp ``Highlighted.Message.mk #[quote severity, quote contents]
 
 namespace Highlighted
 
@@ -356,11 +437,32 @@ rather than display to readers.
 -/
 partial def Goal.toString : Highlighted.Goal Highlighted → String
   | {name, goalPrefix, hypotheses, conclusion} =>
-    (name.map ("case " ++ ·.toString ++ " =>\n") |>.getD "") ++
+    (name.map ("case " ++ · ++ "\n") |>.getD "") ++
     ((hypotheses.map hString) |>.toList |> String.join) ++
     goalPrefix ++
     conclusion.toString
-where hString | (x, k, t) => s!"  {Highlighted.token ⟨k, x.toString⟩ |>.toString}: {t.toString}\n"
+where hString
+  | ⟨xs, t⟩ =>
+    let names := xs.map (fun tok => Highlighted.token tok |>.toString) |>.toList
+    let names := " ".intercalate names
+    s!"{names} : {t.toString}\n"
+
+partial def MessageContents.toString : MessageContents Highlighted → String
+  | .trace cls msg children collapsed =>
+    let parent := s!"[{cls}] {msg.toString}"
+    if collapsed then parent ++ "\n"
+    else
+      children.foldl (init := parent ++ "\n") (fun acc ch => acc ++ (indentString ch.toString))
+  | .goal g => g.toString
+  | .append xs => xs.foldl (init := "") (· ++ ·.toString)
+  | .term hl => hl.toString
+  | .text s => s
+where
+  indentString (s : String) : String :=
+    "\n".intercalate <| s.splitOn "\n" |>.map (fun l => if l.any (!·.isWhitespace) then "  " ++ l else l)
+
+def Message.toString (message : Message) : String :=
+  message.contents.toString
 
 private def minIndentString (str : String) : Nat :=
   let indents := str.split (· == '\n') |>.filterMap fun line =>
@@ -373,3 +475,16 @@ Returns the minimal indentation of any non-whitespace line of code.
 -/
 def indentation (hl : Highlighted) : Nat := Id.run do
   minIndentString hl.toString
+
+/--
+Adds `howMuch` spaces after each newline.
+-/
+partial def indent (hl : Highlighted) (howMuch : Nat := 2) : Highlighted :=
+  let i := "\n".pushn ' ' howMuch
+  match hl with
+  | .seq hls => .seq (hls.map (·.indent howMuch))
+  | .unparsed str => .unparsed (str.replace "\n" i)
+  | .text str => .text (str.replace "\n" i)
+  | .tactics info s e hl => .tactics info s e (hl.indent howMuch)
+  | .span info hl => .span info (hl.indent howMuch)
+  | .point .. | .token .. => hl

@@ -117,8 +117,8 @@ elab "#evalStrings " "[" ss:str,* "] " e:term : command => do
 #evalStrings [ -- NB #5677 changed goal displays, so the second
                -- version here became the expected output after
                -- nightly-2024-10-18.
-    "[[some `zero], [some `succ], [none], [some `succ.succ], [none]]\n",
-    "[[none], [some `succ.succ], [none]]\n"]
+    "[[some \"zero\"], [some \"succ\"], [none], [some \"succ.succ\"], [none]]\n",
+    "[[none], [some \"succ.succ\"], [none]]\n"]
  (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
 
 /-! # Message Normalization -/
@@ -199,7 +199,7 @@ partial def hlStringWithMessages : Highlighting.Highlighted → String
   | .point .. => ""
   | .tactics _ _ _ x => hlStringWithMessages x
   | .span info x =>
-    let labels := info.map fun (k, s) => s!"{k}: {s}"
+    let labels := info.map fun (k, s) => s!"{k}: {s.toString}"
     let labelStr := ", ".intercalate labels.toList
     s!"[{labelStr}]({hlStringWithMessages x})"
   | .text s | .token ⟨_, s⟩ | .unparsed s => s

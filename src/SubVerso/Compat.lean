@@ -8,6 +8,7 @@ import Lean.Elab
 -- that module was deleted.
 import Lean.Util
 import Lean.Elab.Import
+import Lean.Widget.InteractiveDiagnostic
 
 open Lean Elab Term
 
@@ -82,6 +83,14 @@ open Lean Elab Command
       `(partial def $(mkIdent `String.dropPrefix?) (s p : String) : Option Substring :=
           s.toSubstring.dropPrefix? p.toSubstring)
     elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  /- If this type doesn't yet exist, define a harmless stand-in. -/
+  if !(← getEnv).contains `Lean.Widget.WidgetInstance then
+    let cmd ←
+      `(def $(mkIdent `_root_.Lean.Widget.WidgetInstance) := Unit)
+    elabCommand cmd
+
 
 end
 
@@ -196,6 +205,43 @@ def refIdentCase (ri : Lsp.RefIdent)
     | .fvar id => onFVar id
     | .const x => onConst x
   ]
+
+/--
+Some versions of Lean use `Name` in for hypothesis names in `InteractiveGoal`, while others use
+`String`. When names have daggers, round-tripping through `toString` and `toName` doesn't work.
+-/
+class NameString (α) where
+  nameString : α → String
+
+export NameString (nameString)
+
+instance : NameString Name where
+  nameString n := n.toString
+
+instance : NameString String where
+  nameString s := s
+
+open Lean.Widget in
+open Lean.Server in
+def msgEmbedCase (embed : MsgEmbed)
+    (onExpr : CodeWithInfos → α)
+    (onGoal : InteractiveGoal → α)
+    (onTrace : (indent : Nat) → (cls : Name) → (msg : TaggedText MsgEmbed) → (collapsed : Bool) →
+        (children : StrictOrLazy (Array (TaggedText MsgEmbed)) (WithRpcRef LazyTraceChildren)) → α)
+    (onWidget : (wi : Widget.WidgetInstance) → (alt : TaggedText MsgEmbed) → α) :
+    α :=
+  %first_succeeding [
+    match embed with
+    | .expr e => onExpr e
+    | .goal g => onGoal g
+    | .trace i cls msg c cs => onTrace i cls msg c cs
+    | .widget wi alt => onWidget wi alt,
+    match embed with
+    | .expr e => onExpr e
+    | .goal g => onGoal g
+    | .trace i cls msg c cs => onTrace i cls msg c cs
+  ]
+
 
 section
 /- Backports of syntax position functions from later Lean versions-/

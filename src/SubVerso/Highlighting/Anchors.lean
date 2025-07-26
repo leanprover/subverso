@@ -106,15 +106,16 @@ private partial def normHl : Highlighted → Highlighted
   | .token t => .token t
   | .unparsed s => .unparsed s
 
+open Highlighted in
 private inductive HlCtx where
-  | tactics (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Nat)
-  | span (info : Array (Highlighted.Span.Kind × String))
+  | tactics (info : Array (Goal Highlighted)) (startPos endPos : Nat)
+  | span (info : Array Message)
 deriving Repr
 
 private def HlCtx.wrap (ctx : HlCtx) (hl : Highlighted) : Highlighted :=
   match ctx with
   | .tactics info start stop => .tactics info start stop hl
-  | .span info => .span info hl
+  | .span info => .span (info.map fun x => (x.1, x.2)) hl
 
 private structure Hl where
   here : Highlighted
@@ -136,7 +137,7 @@ private def Hl.close (hl : Hl) : Hl :=
     context := hl.context.pop
   }
   | some (left, .span info) => { hl with
-    here := left ++ .span info hl.here,
+    here := left ++ .span (info.map fun x => (x.1, x.2)) hl.here,
     context := hl.context.pop
   }
 
@@ -147,7 +148,7 @@ private def Hl.open (ctx : HlCtx) (hl : Hl) : Hl where
 private def Hl.toHighlighted (hl : Hl) : Highlighted :=
   hl.context.foldr (init := hl.here) fun
     | (left, .tactics info startPos endPos), h => left ++ .tactics info startPos endPos h
-    | (left, .span info), h => left ++ .span info h
+    | (left, .span info), h => left ++ .span (info.map fun x => (x.1, x.2)) h
 
 private instance : HAppend Hl Highlighted Hl where
   hAppend hl h :=
@@ -202,7 +203,7 @@ private def Hl.tacticsAt? (hl : Hl) (column : Nat) : Option Highlighted := do
       right := .empty
       focus := x
     | .span info x =>
-      context := context.push (left, .span info, right)
+      context := context.push (left, .span (info.map fun x => ⟨x.1, x.2⟩), right)
       left := .empty
       right := .empty
       focus := x
@@ -375,6 +376,7 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
       openAnchors := openAnchors.map fun _ hl => hl.open (.tactics info startPos endPos)
       doc := doc.open (.tactics info startPos endPos)
     | some (.span info x) :: hs =>
+      let info := info.map fun x => ⟨x.1, x.2⟩
       ctx := ctx.push (.span info)
       todo := some x :: none :: hs
       openAnchors := openAnchors.map fun _ hl => hl.open (.span info)

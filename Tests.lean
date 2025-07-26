@@ -247,82 +247,82 @@ def desiredAnchors : List (String × String) := [
   ("NatList", "inductive NatList where\n  | nil\n  | cons : Nat → NatList → NatList\n")
 ]
 def desiredProofs : List (String × String) := [
-  ("base", "case cons =>\n  ys: NatList\n  a✝¹: Nat\n  a✝: NatList\n  a_ih✝: ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), (cons a✝¹ a✝).append (ys.append zs) = ((cons a✝¹ a✝).append ys).append zs"),
-  ("ind", "case nil =>\n  ys: NatList\n⊢ ∀ (zs : NatList), nil.append (ys.append zs) = (nil.append ys).append zs\n\ncase cons =>\n  ys: NatList\n  a✝¹: Nat\n  a✝: NatList\n  a_ih✝: ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), (cons a✝¹ a✝).append (ys.append zs) = ((cons a✝¹ a✝).append ys).append zs"),
-  ("doubleIntro", "  xs: NatList\n  ys: NatList\n⊢ ∀ (zs : NatList), xs.append (ys.append zs) = (xs.append ys).append zs"),
-  ("step", "case cons =>\n  ys: NatList\n  a✝¹: Nat\n  a✝: NatList\n  a_ih✝: ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
-  ("ih", "case cons =>\n  ys: NatList\n  a✝¹: Nat\n  a✝: NatList\n  ih: ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
+  ("base", "case cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\na_ih✝ : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), (cons a✝¹ a✝).append (ys.append zs) = ((cons a✝¹ a✝).append ys).append zs"),
+  ("ind", "case nil\nys : NatList\n⊢ ∀ (zs : NatList), nil.append (ys.append zs) = (nil.append ys).append zs\n\ncase cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\na_ih✝ : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), (cons a✝¹ a✝).append (ys.append zs) = ((cons a✝¹ a✝).append ys).append zs"),
+  ("doubleIntro", "xs : NatList\nys : NatList\n⊢ ∀ (zs : NatList), xs.append (ys.append zs) = (xs.append ys).append zs"),
+  ("step", "case cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\na_ih✝ : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
+  ("ih", "case cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\nih : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
   ("done", "")
 ]
 
 def desiredAltProofs : List (String × String × String) := [
   ("A",
    "| inl hp =>",
-   "case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("A'",
    "| inl hp =>",
-   "case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("A''",
    "| inl hp =>",
-   "case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("A'''",
    "apply Or.inr",
-   "case inl.h =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl.h
+p : Prop
+q : Prop
+hp : p
 ⊢ p"),
   ("B",
    "| inr hq =>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p"),
   ("B'",
    "| inr hq =>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p"),
   ("B''",
    "| inr hq =>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p"),
   ("B'''",
    "apply Or.inl",
-   "case inr.h =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr.h
+p : Prop
+q : Prop
+hq : q
 ⊢ q"),
   ("Arr",
    "=>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p
-case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("Two",
    "simp [*]",
