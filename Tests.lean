@@ -258,71 +258,71 @@ def desiredProofs : List (String × String) := [
 def desiredAltProofs : List (String × String × String) := [
   ("A",
    "| inl hp =>",
-   "case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("A'",
    "| inl hp =>",
-   "case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("A''",
    "| inl hp =>",
-   "case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("A'''",
    "apply Or.inr",
-   "case inl.h =>
-  p: Prop
-  q: Prop
-  hp: p
+   "case inl.h
+p : Prop
+q : Prop
+hp : p
 ⊢ p"),
   ("B",
    "| inr hq =>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p"),
   ("B'",
    "| inr hq =>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p"),
   ("B''",
    "| inr hq =>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p"),
   ("B'''",
    "apply Or.inl",
-   "case inr.h =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr.h
+p : Prop
+q : Prop
+hq : q
 ⊢ q"),
   ("Arr",
    "=>",
-   "case inr =>
-  p: Prop
-  q: Prop
-  hq: q
+   "case inr
+p : Prop
+q : Prop
+hq : q
 ⊢ q ∨ p
-case inl =>
-  p: Prop
-  q: Prop
-  hp: p
+case inl
+p : Prop
+q : Prop
+hp : p
 ⊢ q ∨ p"),
   ("Two",
    "simp [*]",
