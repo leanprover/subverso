@@ -234,7 +234,12 @@ unsafe def main : (args : List String) → IO UInt32
       let env ← Compat.importModules imports {}
       let pctx : Context := {inputCtx := ictx}
 
-      let commandState := {env, maxRecDepth := defaultMaxRecDepth, messages := msgs}
+      let commandState : Command.State := { env, maxRecDepth := defaultMaxRecDepth, messages := msgs }
+      let scopes :=
+        let sc := commandState.scopes[0]!
+        {sc with opts := sc.opts.setBool `pp.tagAppFns true } :: commandState.scopes.tail!
+      let commandState := { commandState with scopes }
+
       let cmdPos := parserState.pos
       let cmdSt ← IO.mkRef {commandState, parserState, cmdPos}
       processCommands pctx cmdSt
