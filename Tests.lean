@@ -248,7 +248,7 @@ def desiredAnchors : List (String × String) := [
 ]
 def desiredProofs : List (String × String) := [
   ("base", "case cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\na_ih✝ : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), (cons a✝¹ a✝).append (ys.append zs) = ((cons a✝¹ a✝).append ys).append zs"),
-  ("ind", "case nil\nys : NatList\n⊢ ∀ (zs : NatList), nil.append (ys.append zs) = (nil.append ys).append zs\n\ncase cons\nys: NatList\n  a✝¹: Nat\na✝: NatList\na_ih✝: ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), (cons a✝¹ a✝).append (ys.append zs) = ((cons a✝¹ a✝).append ys).append zs"),
+  ("ind", "case nil\nys : NatList\n⊢ ∀ (zs : NatList), nil.append (ys.append zs) = (nil.append ys).append zs\n\ncase cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\na_ih✝ : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), (cons a✝¹ a✝).append (ys.append zs) = ((cons a✝¹ a✝).append ys).append zs"),
   ("doubleIntro", "xs : NatList\nys : NatList\n⊢ ∀ (zs : NatList), xs.append (ys.append zs) = (xs.append ys).append zs"),
   ("step", "case cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\na_ih✝ : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
   ("ih", "case cons\nys : NatList\na✝¹ : Nat\na✝ : NatList\nih : ∀ (zs : NatList), a✝.append (ys.append zs) = (a✝.append ys).append zs\n⊢ ∀ (zs : NatList), cons a✝¹ (a✝.append (ys.append zs)) = cons a✝¹ ((a✝.append ys).append zs)"),
