@@ -61,10 +61,37 @@ open Lean Elab Command Term in
     elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : IndexBuildM (Array Lake.Module) := lib.modules.fetch)
   else throwError "Didn't recognize type of lib.modules.fetch to define compatibility shim for 'getMods': {ty}"
 end Compat
+
+def nightly? (version : String) : Option (Nat × Nat × Nat) := do
+  let [_, date] := version.splitOn "-nightly-"
+    | none
+  let [y, m, d] := date.splitOn "-"
+    | none
+  return (← y.toNat?, ← m.toNat?, ← d.toNat?)
+
+/--
+Are precompiled modules known to work with this version and SubVerso?
+
+Precompiled modules give a performance boost to elaboration-time code that manipulates SubVerso's
+data structures, but they work differently across Lean versions.
+
+Precompiled modules may work with more versions; the versions checked here are those releases that
+have been specifically checked together with nightly releases that are considered probable (and
+implicitly checked by downstream projects).
+-/
+def supportsPrecompile (version : String) : Bool :=
+  if let some (y, m, _d) := nightly? version then
+    y ≥ 2025 && m ≥ 6
+  else
+    version ∈ [
+      "4.21.0",
+      "4.22.0-rc4"
+    ]
+
 -- End compatibility infrastructure
 
 package «subverso» where
-  precompileModules := true
+  precompileModules := supportsPrecompile Lean.versionString
   -- add package configuration options here
 
 lean_lib SubVerso where
