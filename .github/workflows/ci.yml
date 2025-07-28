@@ -42,7 +42,7 @@ jobs:
           - "nightly-2025-07-26"
 
         platform:
-          - os: ubuntu-latest
+          - os: nscloud-ubuntu-22.04-amd64-8x16
             installer: |
               curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
         # Mac runners are rare and expensive, so spot-check that the
