@@ -167,11 +167,16 @@ else
     let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
 
     exeJob.bindM fun exeFile =>
-      modJob.mapM fun _oleanPath => do
+      modJob.mapM fun oleanFile => do
         addPureTrace suppNS
         buildFileUnlessUpToDate' (text := true) nsFile do
           IO.FS.createDirAll (buildDir / "highlighted")
           IO.FS.writeFile nsFile suppNS
+
+        -- Rebuild if either the SubVerso executable changes, or if the module changes
+        addTrace (← fetchFileTrace exeFile)
+        addTrace (← fetchFileTrace oleanFile)
+
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
@@ -239,10 +244,11 @@ else
   library_facet highlighted lib : FilePath := do
     let ws ← getWorkspace
     let mods ← Compat.getMods lib
-    let moduleJobs := Job.mixArray <$> mods.mapM (·.facet `highlighted |>.fetch)
-    let buildDir := ws.root.buildDir
-    let hlDir := buildDir / "highlighted"
-    moduleJobs <&> fun _ => pure hlDir
+    let moduleJobs ← Job.mixArray <$> mods.mapM (·.facet `highlighted |>.fetch)
+    moduleJobs.mapM fun () => do
+      let buildDir := ws.root.buildDir
+      let hlDir := buildDir / "highlighted"
+      pure hlDir
 
 meta if Compat.useOldMixArray then
   library_facet examples lib : FilePath := do
@@ -257,10 +263,11 @@ else
   library_facet examples lib : FilePath := do
     let ws ← getWorkspace
     let mods ← Compat.getMods lib
-    let moduleJobs := Job.mixArray <$> mods.mapM (·.facet `examples |>.fetch)
-    let buildDir := ws.root.buildDir
-    let hlDir := buildDir / "examples"
-    moduleJobs <&> fun _ => pure hlDir
+    let moduleJobs ← Job.mixArray <$> mods.mapM (·.facet `examples |>.fetch)
+    moduleJobs.mapM fun () => do
+      let buildDir := ws.root.buildDir
+      let hlDir := buildDir / "examples"
+      pure hlDir
 
 meta if Compat.useOldMixArray then
   package_facet highlighted pkg : FilePath := do
@@ -278,12 +285,13 @@ else
     let ws ← getWorkspace
     let libs := pkg.leanLibs
     let exes := pkg.leanExes.map (·.toLeanLib)
-    let libJobs := (libs ++ exes).mapM fun x => x.facet `highlighted |>.fetch
-    let buildDir := ws.root.buildDir
-    let hlDir := buildDir / "highlighted"
-    libJobs >>= fun _ => do
+    let libJobs ← Job.mixArray <$> ((libs ++ exes).mapM fun x => x.facet `highlighted |>.fetch)
+
+    libJobs.mapM fun () => do
+      let buildDir := ws.root.buildDir
+      let hlDir := buildDir / "highlighted"
       Compat.logInfo s!"Highlighted code written to '{hlDir}'"
-      pure (pure hlDir)
+      pure hlDir
 
 meta if Compat.useOldMixArray then
   package_facet examples pkg : FilePath := do
@@ -299,9 +307,9 @@ else
   package_facet examples pkg : FilePath := do
     let ws ← getWorkspace
     let libs := pkg.leanLibs
-    let libJobs := libs.mapM (·.facet `examples |>.fetch)
-    let buildDir := ws.root.buildDir
-    let hlDir := buildDir / "examples"
-    libJobs >>= fun _ => do
+    let libJobs ← Job.mixArray <$> libs.mapM (·.facet `examples |>.fetch)
+    libJobs.mapM fun () => do
+      let buildDir := ws.root.buildDir
+      let hlDir := buildDir / "examples"
       logInfo s!"Highlighted code written to '{hlDir}'"
-      pure (pure hlDir)
+      pure hlDir
