@@ -172,6 +172,11 @@ else
         buildFileUnlessUpToDate' (text := true) nsFile do
           IO.FS.createDirAll (buildDir / "highlighted")
           IO.FS.writeFile nsFile suppNS
+
+        -- Rebuild if either the SubVerso executable changes, or if the module changes
+        addTrace exeJob.getTrace
+        addTrace modJob.getTrace
+
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
