@@ -125,7 +125,7 @@ unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.St
       code := hl
     }
 
-    out.putStrLn (toString (Json.arr (items.map toJson)))
+    out.putStrLn (toString (Module.mk items).toJson)
 
     return (0 : UInt32)
 

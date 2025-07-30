@@ -58,3 +58,45 @@ def ModuleItem.fromJson? (json : Json) : Except String ModuleItem := do
 
 instance : ToJson ModuleItem := ⟨ModuleItem.toJson⟩
 instance : FromJson ModuleItem := ⟨ModuleItem.fromJson?⟩
+
+/--
+A sequence of module items. The JSON instances for this type produce output that is much more
+compact than the underlying array.
+-/
+structure Module where
+  items : Array ModuleItem
+
+def Module.toJson (mod : Module) : Json :=
+  let (items, state) := mod.items.mapM itemJson |>.run {}
+  Json.mkObj [
+    ("data", state.toExport.toJson),
+    ("items", .arr items)
+  ]
+where
+  itemJson : ModuleItem → ExportM Json
+    | {range, kind, defines, code} => do
+      return Json.mkObj [
+        ("range", range.map rangeToJson |>.getD .null),
+        ("kind", ToJson.toJson <| toString kind),
+        ("defines", ToJson.toJson <| defines.map toString),
+        ("code", ToJson.toJson (← code.export))
+      ]
+
+instance : ToJson Module := ⟨Module.toJson⟩
+
+def Module.fromJson? (json : Json) : Except String Module := do
+  let data ← json.getObjVal? "data"
+  let data ← Export.fromJson? data
+  let .arr items ← json.getObjVal? "items"
+    | throw "Expected array for key 'items'"
+  return ⟨← items.mapM (getItem data)⟩
+where
+  getItem (data : Export) (v : Json) : Except String ModuleItem := do
+    let range ← v.getObjVal? "range" >>= rangeFromJson
+    let kind ← v.getObjValAs? String "kind" <&> (·.toName)
+    let defines ← v.getObjValAs? (Array String) "defines" <&> (·.map (·.toName))
+    let code ← v.getObjValAs? Export.Key "code"
+    let code ← data.toHighlighted code
+    return {range, kind, defines, code}
+
+instance : FromJson Module := ⟨Module.fromJson?⟩

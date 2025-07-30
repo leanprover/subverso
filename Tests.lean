@@ -214,13 +214,13 @@ def loadModuleContent
   if res.exitCode != 0 then reportFail projectDir cmd args res
   let output := res.stdout
 
-  let .ok (.arr json) := Lean.Json.parse output
+  let .ok json := Lean.Json.parse output
     | throw <| IO.userError s!"Expected JSON array"
-  match json.mapM fromJson? with
+  match Module.Module.fromJson? json with
   | .error err =>
     throw <| IO.userError s!"Couldn't parse JSON from output file: {err}\nIn:\n{json}"
-  | .ok vals =>
-    pure vals
+  | .ok m =>
+    pure m.items
 
 
 where
