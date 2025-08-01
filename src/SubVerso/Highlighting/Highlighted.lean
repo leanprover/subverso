@@ -462,6 +462,109 @@ where
   indentString (s : String) : String :=
     "\n".intercalate <| s.splitOn "\n" |>.map (fun l => if l.any (!·.isWhitespace) then "  " ++ l else l)
 
+/--
+Truncates a message to textual content at the beginning, inclusive.
+-/
+partial def MessageContents.startAt (pattern : String) (txt : MessageContents expr) : Option (MessageContents expr) := do
+  let mut todo := [txt]
+  let mut pat := pattern
+  let mut strict : Bool := false
+
+  while !todo.isEmpty do
+    match todo with
+    | [] => break
+    | .trace .. :: todo' | .goal .. :: todo' | .term .. :: todo' => todo := todo'
+    | .text s :: todo' =>
+      if strict then
+        if s.startsWith (pat.take s.length) then
+          let s' := s.drop pat.length
+          if s'.isEmpty then
+            pat := pat.drop s.length
+            todo := todo'
+          else
+            return .append (.text (pattern ++ s') :: todo').toArray
+        else failure
+      else if let some (startFrom', s') := prefixMatch pat s then
+        if s'.isEmpty then
+          pat := startFrom'
+          todo := todo'
+        else
+          return .append (.text (pattern ++ s') :: todo').toArray
+      else
+        todo := todo'
+    | .append xs :: todo' =>
+      todo := xs.toList ++ todo'
+
+  failure
+where
+  prefixMatch (needle haystack : String) : Option (String × String) := do
+    let mut haystack := haystack
+
+    while !haystack.isEmpty do
+      let pat := needle.take haystack.length
+      if haystack.startsWith pat then
+        return (needle.drop pat.length, haystack.drop pat.length)
+      haystack := haystack.drop 1
+    failure
+
+/--
+Truncates a message to textual content at the end, inclusive.
+-/
+partial def MessageContents.stopAt (pattern : String) (txt : MessageContents expr) : Option (MessageContents expr) := do
+  let mut todo := [txt]
+  let mut pat := pattern
+  let mut strict : Bool := false
+
+  while !todo.isEmpty do
+    match todo with
+    | [] => break
+    | .trace .. :: todo' | .goal .. :: todo' | .term .. :: todo' => todo := todo'
+    | .text s :: todo' =>
+      if strict then
+        if s.endsWith (pat.takeRight s.length) then
+          let s' := s.dropRight pat.length
+          if s'.isEmpty then
+            pat := pat.dropRight s.length
+            todo := todo'
+          else
+            return .append (.text (s' ++ pattern) :: todo').toArray.reverse
+        else failure
+      else if let some (endAt', s') := suffixMatch pat s then
+        if s'.isEmpty then
+          pat := endAt'
+          todo := todo'
+        else
+          return .append (.text (s' ++ pattern) :: todo').toArray.reverse
+      else
+        todo := todo'
+    | .append xs :: todo' =>
+      todo := xs.reverse.toList ++ todo'
+
+  failure
+where
+  suffixMatch (needle haystack : String) : Option (String × String) := do
+    let mut haystack := haystack
+
+    while !haystack.isEmpty do
+      let pat := needle.takeRight haystack.length
+      if haystack.endsWith pat then
+        return (needle.dropRight pat.length, haystack.dropRight pat.length)
+      haystack := haystack.dropRight 1
+    failure
+
+/--
+Truncates a message to textual content at the beginning, inclusive.
+-/
+def Message.startAt (pat : String) (msg : Message) : Option Message := do
+  msg.contents.startAt pat |>.map ({msg with contents := ·})
+
+/--
+Truncates a message to textual content at the end, inclusive.
+-/
+def Message.stopAt (pat : String) (msg : Message) : Option Message := do
+  msg.contents.stopAt pat |>.map ({msg with contents := ·})
+
+
 def Message.toString (expandTraces : List Name := []) (message : Message) : String :=
   message.contents.toString (expandTraces := expandTraces)
 
