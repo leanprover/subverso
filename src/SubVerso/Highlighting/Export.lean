@@ -50,6 +50,9 @@ deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson, Inhabited
 
 end Export
 
+/--
+SubVerso data, split up and de-duplicated.
+-/
 structure Export where
   nextKey : Export.Key := 0
   tokens : Compat.HashMap Export.Key Token := {}
