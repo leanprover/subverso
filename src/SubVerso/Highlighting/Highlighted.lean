@@ -447,22 +447,23 @@ where hString
     let names := " ".intercalate names
     s!"{names} : {t.toString}\n"
 
-partial def MessageContents.toString : MessageContents Highlighted → String
+partial def MessageContents.toString (expandTraces : List Name := []) : MessageContents Highlighted → String
   | .trace cls msg children collapsed =>
-    let parent := s!"[{cls}] {msg.toString}"
+    let collapsed := collapsed && !(expandTraces.contains cls)
+    let parent := s!"[{cls}] {msg.toString expandTraces}"
     if collapsed then parent ++ "\n"
     else
-      children.foldl (init := parent ++ "\n") (fun acc ch => acc ++ (indentString ch.toString))
+      children.foldl (init := parent ++ "\n") (fun acc ch => acc ++ (indentString (ch.toString expandTraces)))
   | .goal g => g.toString
-  | .append xs => xs.foldl (init := "") (· ++ ·.toString)
+  | .append xs => xs.foldl (init := "") (fun str msg => str ++ msg.toString expandTraces)
   | .term hl => hl.toString
   | .text s => s
 where
   indentString (s : String) : String :=
     "\n".intercalate <| s.splitOn "\n" |>.map (fun l => if l.any (!·.isWhitespace) then "  " ++ l else l)
 
-def Message.toString (message : Message) : String :=
-  message.contents.toString
+def Message.toString (expandTraces : List Name := []) (message : Message) : String :=
+  message.contents.toString (expandTraces := expandTraces)
 
 private def minIndentString (str : String) : Nat :=
   let indents := str.split (· == '\n') |>.filterMap fun line =>
