@@ -105,7 +105,38 @@ def infoIncludingSyntax (t : InfoTree) (stx : Syntax) : List (ContextInfo × Inf
       (ci, info) :: soFar
     else soFar
 
+section
 
+private structure State where
+  out    : Array CodeWithInfos := #[]
+  column : Nat    := 0
+
+private instance : Std.Format.MonadPrettyFormat (StateM State) where
+  -- We avoid a structure instance update, and write these functions using pattern matching because of issue #316
+  pushOutput s       :=
+    modify fun ⟨out, col⟩ =>
+      ⟨out.push (TaggedText.text s), col + s.length⟩
+  pushNewline indent :=
+    modify fun ⟨out, _⟩ =>
+      ⟨out.push (TaggedText.text ("\n".pushn ' ' indent)), indent⟩
+  currColumn         := return (← get).column
+  startTag _         := return
+  endTags _          := return
+
+private abbrev PrettyM := StateM State
+
+def ppCodeWithInfos (e : Expr) : MetaM CodeWithInfos:= do
+  let e ← instantiateMVars e
+  -- ppExprTagged can thow exceptions when the local context is incorrect, which can sometimes
+  -- happen due to tactic internals. In this case we fall back to plain text goal views.
+  tryCatch (ppExprTagged e) fun _ => do
+      try
+        let e ← Meta.ppExpr e
+        pure <| .append <| e.prettyM (m := PrettyM) Std.Format.defWidth |>.run {} |>.2.out
+      catch
+      | _ => pure <| .text e.dbgToString
+
+end
 
 partial def bestD (sems : Array Token.Kind) (default : Token.Kind) : Token.Kind :=
   if let some m := sems.back? then
@@ -229,7 +260,9 @@ partial def stripNamespaces [Monad m] [MonadReaderOf Context m] : FormatWithInfo
     | .align b => pure (.align b)
     | .nil => pure .nil
 
-
+/--
+Finds the appropriate token kind for a token whose meaning is the expression `expr`.
+-/
 def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative m]
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
@@ -238,42 +271,41 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
   -- qualifiers
-  let ppSig x (env := ci.env) : ReaderT Context m String := do
+  let ppSig (x : Name) (env := ci.env) : ReaderT Context m String := do
     let sig ← runMeta (env := env) (lctx := {}) (PrettyPrinter.ppSignature x)
     return toString (← stripNamespaces sig)
 
   let rec findKind e := do
     match e with
     | Expr.fvar id =>
-      let seen ←
-        if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
-          Compat.refIdentCase y
-            (onFVar := fun x => do
-              let tyStr ← runMeta do
-                try -- Needed for robustness in the face of tactics that create strange contexts
-                  let ty ← instantiateMVars (← Meta.inferType expr)
-                  toString <$> Meta.ppExpr ty
-                catch | _ => pure ""
-              if let some localDecl := lctx.find? x then
-                if localDecl.isAuxDecl then
-                  let e ← runMeta <| Meta.ppExpr expr
-                  -- FIXME the mkSimple is a bit of a kludge
-                  return some <| .const (.mkSimple (toString e)) tyStr none false
-              return some <| .var x tyStr)
-            (onConst := fun x => do
-              -- This is a bit of a hack. The environment in the ContextInfo may not have some
-              -- helper constants from where blocks yet, so we retry in the final environment if the
-              -- first one fails.
-              let sig ← ppSig x <|> ppSig (env := (← getEnv)) x
-              let docs ← findDocString? (← getEnv) x
-              return some <| .const x sig docs false)
-        else
-          let tyStr ← runMeta do
-            try -- Needed for robustness in the face of tactics that create strange contexts
-              let ty ← instantiateMVars (← Meta.inferType expr)
-              toString <$> Meta.ppExpr ty
-            catch | _ => pure ""
-          return some <| .var id tyStr
+      if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
+        Compat.refIdentCase y
+          (onFVar := fun x => do
+            let tyStr ← runMeta do
+              try -- Needed for robustness in the face of tactics that create strange contexts
+                let ty ← instantiateMVars (← Meta.inferType expr)
+                toString <$> Meta.ppExpr ty
+              catch | _ => pure ""
+            if let some localDecl := lctx.find? x then
+              if localDecl.isAuxDecl then
+                let e ← runMeta <| Meta.ppExpr expr
+                -- FIXME the mkSimple is a bit of a kludge
+                return some <| .const (.mkSimple (toString e)) tyStr none false
+            return some <| .var x tyStr)
+          (onConst := fun x => do
+            -- This is a bit of a hack. The environment in the ContextInfo may not have some
+            -- helper constants from where blocks yet, so we retry in the final environment if the
+            -- first one fails.
+            let sig ← ppSig x <|> ppSig (env := (← getEnv)) x
+            let docs ← findDocString? (← getEnv) x
+            return some <| .const x sig docs false)
+      else
+        let tyStr ← runMeta do
+          try -- Needed for robustness in the face of tactics that create strange contexts
+            let ty ← instantiateMVars (← Meta.inferType expr)
+            toString <$> Meta.ppExpr ty
+          catch | _ => pure ""
+        return some <| .var id tyStr
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
       let sig ← ppSig name
@@ -300,6 +332,7 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative
 
   findKind (← instantiateMVars expr)
 
+
 /-- Checks whether an occurrence of a name is in fact the definition of the name -/
 def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name : Name) (stx : Syntax) : m Bool := do
   -- This gets called a lot, so it's important to bail early if it's not likely to be a global
@@ -324,16 +357,25 @@ def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFi
   let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
     if let some (.const name sig docs _isDef) := k then
-      (some ∘ .const name sig docs) <$> (fun _ctxt => isDefinition name termInfo.stx)
-    else return k
-  else return k
+      let isDef ← fun _ => isDefinition name termInfo.stx
+
+      return some <| .const name sig docs isDef
+  return k
 
 def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
     (ci : ContextInfo) (fieldInfo : FieldInfo) :
     m Token.Kind := do
   let runMeta {α} (act : MetaM α) : m α := ci.runMetaM fieldInfo.lctx act
-  let ty ← instantiateMVars (← runMeta <| Meta.inferType fieldInfo.val)
-  let tyStr := toString (← runMeta <| Meta.ppExpr ty)
+  let ty ← runMeta
+    try
+      let valTy ← instantiateMVars (← Meta.inferType fieldInfo.val)
+      Meta.ppExpr valTy
+    catch
+      | _ =>
+        try
+          PrettyPrinter.ppSignature fieldInfo.projName <&> (·.fmt)
+        catch _ => pure <| .nil
+  let tyStr := toString ty
   let docs ← findDocString? (← getEnv) fieldInfo.projName
   return .const fieldInfo.projName tyStr docs false
 
@@ -367,8 +409,8 @@ def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMC
   pure kind
 
 def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
-    (trees : Array InfoTree) (stx : Syntax)
-    : ReaderT Context m (Option Token.Kind) := do
+    (trees : Array InfoTree) (stx : Syntax) :
+    ReaderT Context m (Option Token.Kind) := do
   let mut kind : Token.Kind := .unknown
   for t in trees do
     for (ci, info) in infoForSyntax t stx do
@@ -651,8 +693,8 @@ private def leanPosToUtf8Pos (text : FileMap) : Position → String.Pos :=
 
 
 partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
-    (outer : Option Token.Kind) (doc : CodeWithInfos)
-    : ReaderT Context m Highlighted := do
+    (outer : Option Token.Kind) (doc : CodeWithInfos) :
+    ReaderT Context m Highlighted := do
   match doc with
   | .text txt => do
     -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
@@ -706,7 +748,9 @@ partial def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
   | .tag .. => failure
 
 section Compat
-partial def messageContents (message : Message) (highlightTerms : Bool := true) : HighlightM (Highlighted.MessageContents Highlighted) :=
+partial def messageContents
+    (message : Message) (highlightTerms : Bool := true) :
+    HighlightM (Highlighted.MessageContents Highlighted) := do
   withOptions (pp.sanitizeNames.set · true) do
     let head := if message.caption != "" then message.caption ++ ":\n" else ""
     let body ←
@@ -714,7 +758,8 @@ partial def messageContents (message : Message) (highlightTerms : Bool := true) 
         Lean.Widget.msgToInteractive message.data true
     return .append #[.text head, ← convert body]
 where
-  convert : TaggedText MsgEmbed → HighlightM (Highlighted.MessageContents Highlighted)
+  convert (txt : TaggedText MsgEmbed) : HighlightM (Highlighted.MessageContents Highlighted) :=
+    match txt with
     | .text str => pure (.text str)
     | .append xs => .append <$> xs.mapM convert
     | .tag embed _ =>
@@ -979,10 +1024,8 @@ partial def _root_.Lean.Widget.TaggedText.indent (doc : TaggedText α) : TaggedT
     | .append docs => .append (docs.map indent')
   .append #[.text "  ", indent' doc]
 
-def highlightGoals
-    (ci : ContextInfo)
-    (goals : List MVarId)
-    : HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
+def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
+    HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
   let mut goalView := #[]
   for g in goals do
     let mut hyps := #[]
@@ -996,6 +1039,7 @@ def highlightGoals
     -- cf https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/Function.20application.20delaboration/near/265800665
     let ci' := {ci with options := ci.options.set `pp.tagAppFns true}
     let runMeta {α} (act : MetaM α) : HighlightM α := ci'.runMetaM lctx act
+
     for c in lctx.decls do
       let some decl := c
         | continue
@@ -1003,17 +1047,17 @@ def highlightGoals
       match decl with
       | .cdecl _index fvar name type _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
-        let tyStr ← renderTagged none (← runMeta (ppExprTagged =<< instantiateMVars type))
+        let tyStr ← renderTagged none (← runMeta (ppCodeWithInfos type))
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr⟩
       | .ldecl _index fvar name type val _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
-        let tyDoc ← runMeta (ppExprTagged =<< instantiateMVars type)
-        let valDoc ← runMeta (ppExprTagged =<< instantiateMVars val)
+        let tyDoc ← ppCodeWithInfos type
+        let valDoc ← ppCodeWithInfos val
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr⟩
-    let concl ← renderTagged none (← runMeta <| ppExprTagged =<< instantiateMVars mvDecl.type)
+    let concl ← renderTagged none (← runMeta <| ppCodeWithInfos mvDecl.type)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
 

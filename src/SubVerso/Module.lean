@@ -18,6 +18,7 @@ structure ModuleItem where
   kind : SyntaxNodeKind
   defines : Array Name
   code : Highlighted
+deriving Inhabited
 
 def ModuleItem.start (item : ModuleItem) : Option Lean.Position := item.range.map (·.1)
 def ModuleItem.stop (item : ModuleItem) : Option Lean.Position := item.range.map (·.2)
@@ -65,6 +66,7 @@ compact than the underlying array.
 -/
 structure Module where
   items : Array ModuleItem
+deriving Inhabited
 
 def Module.toJson (mod : Module) : Json :=
   let (items, state) := mod.items.mapM itemJson |>.run {}
