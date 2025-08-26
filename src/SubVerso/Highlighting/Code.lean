@@ -1031,7 +1031,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     let mut hyps := #[]
     let some mvDecl := ci.mctx.findDecl? g
       | continue
-    let name := if mvDecl.userName.isAnonymous then none else some mvDecl.userName.toString
+    let name := if mvDecl.userName.isAnonymous then none else some mvDecl.userName.eraseMacroScopes.toString
     let lctx := mvDecl.lctx |>.sanitizeNames.run' {options := (← getOptions)}
 
     -- Tell the delaborator to tag functions that are being applied. Otherwise,
