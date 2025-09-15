@@ -4,6 +4,8 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
 import Lean.Elab
+-- This transitively gets us Std.Internal.Parsec.Basic on Lean versions in which it exists
+import Lean.Data.Json.Parser
 -- These transitively get us Lean.Util.Paths on Lean versions prior to nightly-2025-06-24, where
 -- that module was deleted.
 import Lean.Util
@@ -91,7 +93,13 @@ open Lean Elab Command
       `(def $(mkIdent `_root_.Lean.Widget.WidgetInstance) := Unit)
     elabCommand cmd
 
-
+#eval show CommandElabM Unit from do
+  -- This coercion papers over an API incompatibility. Older versions of Lean used a string instead
+  -- of an inductive type for parser errors.
+  if (← getEnv).contains `Std.Internal.Parsec.Error.other then
+    let cmd ←
+      `(instance : Coe String Std.Internal.Parsec.Error := ⟨Std.Internal.Parsec.Error.other⟩)
+    elabCommand cmd
 end
 
 namespace SubVerso.Compat
