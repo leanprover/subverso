@@ -79,6 +79,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .anonCtor .. => 6
   | .option .. => 4
   | .sort .. => 4
+  | .moduleName .. => 4
   | .keyword .. => 3
   | .levelConst .. | .levelVar .. | .levelOp .. => 4
   | .docComment | .withType .. => 1
@@ -335,12 +336,7 @@ def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative
 
 /-- Checks whether an occurrence of a name is in fact the definition of the name -/
 def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name : Name) (stx : Syntax) : m Bool := do
-  -- This gets called a lot, so it's important to bail early if it's not likely to be a global
-  -- definition. Right now, all global definitions in Lean use `declId` to enable explicit universe
-  -- polymorphism, except for constructors. This does mean that `example` and `instance` won't work
-  -- yet, but they're a more marginal use case - there's no name to hyperlink to them in rendered
-  -- HTML.
-  if !((← getEnv).isConstructor name || (← getEnv).isProjectionFn name || stx.getKind == ``Parser.Command.declId) then return false
+  if !((← getEnv).isConstructor name || (← getEnv).isProjectionFn name || stx.getKind == ``Parser.Command.declId || stx.getKind == identKind) then return false
   if let .none := stx.getHeadInfo then return false
   let ranges :=
     if let some r := (← findDeclarationRangesCore? name) then
@@ -1285,6 +1281,23 @@ def highlightArrowLike
   hl trees lhsTactics lookingAt arr
   hl trees tactics lookingAt rhs
 
+partial def highlightImport (stx : Syntax) : HighlightM Unit :=
+  go ((stx.getKind, ·) <$> stx.getPos?) stx
+where
+  go (lookingAt : Option (Name × String.Pos)) (stx : Syntax) : HighlightM Unit :=
+    match stx with
+    | .atom i x => do
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Keyword while looking at {lookingAt}") do
+      if let some (name, pos) := lookingAt then
+        let docs ← findDocString? (← getEnv) name
+        let occ := some s!"{name}-{pos}"
+        emitToken stx i ⟨.keyword (some name) occ docs, x⟩
+      else
+        emitToken stx i ⟨.keyword none none none, x⟩
+    | .ident i str x _ => emitToken stx i ⟨.moduleName x, str.toString⟩
+    | .node _ _ args => args.forM (go lookingAt)
+    | .missing => pure () -- TODO emit unhighlighted string
+
 -- Special cases for highlighting. These are a separate function because the nested syntax/normal
 -- pattern match was causing Lean to work very, very hard to compile the pattern match
 def highlightSpecial
@@ -1311,7 +1324,6 @@ def highlightSpecial
     highlightUniverse stx s (some u)
   | `(term|Type%$s) | `(term|Prop%$s) =>
     highlightUniverse stx s none
-
   | `(Lean.Parser.Tactic.inductionAlt|$lhs* =>%$arr $rhs) =>
     let mut lhsTactics := tactics
     -- Get the before state of the RHS
@@ -1440,6 +1452,13 @@ partial def highlight'
           if c.isAlpha then .keyword name occ docs
           else .unknown
         | _ => .unknown
+    | stx@(.node _ `Lean.Parser.Command.versoCommentBody _) =>
+      if let some endPos := stx.getTrailingTailPos? then
+        fillMissingSourceUpTo endPos
+      else
+        logErrorAt stx m!"Failed to get source range for Verso docs `{stx}`"
+    | stx@(.node _ `Lean.Parser.Module.import _) =>
+      highlightImport stx
     | .node _ `str #[.atom i string] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"String") do
       if let some s := Syntax.decodeStrLit string then
@@ -1490,10 +1509,16 @@ partial def highlight'
       if h : alts.size > 0 then
         highlight' trees alts[0]  tactics
     | stx@(.node _ k children) =>
-      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Other node, kind {k}, with {children.size} children") do
-      let pos := stx.getPos?
-      for child in children do
-        highlight' trees child tactics (lookingAt := pos.map (k, ·))
+      if (`Lean.Doc.Syntax).isPrefixOf k then
+        if let some endPos := stx.getTrailingTailPos? then
+          fillMissingSourceUpTo endPos
+        else
+          logErrorAt stx m!"Failed to get source range for Verso docs `{stx}`"
+      else
+        withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Other node, kind {k}, with {children.size} children") do
+        let pos := stx.getPos?
+        for child in children do
+          highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
 def sortSuppress (nss : List Name) : List Name :=
   nss.toArray.qsort (fun x y => x.components.length > y.components.length) |>.toList

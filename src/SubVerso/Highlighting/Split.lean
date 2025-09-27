@@ -74,6 +74,47 @@ def Highlighted.split (p : String → Bool) (hl : Highlighted) : Array Highlight
 
   return out
 
+def Highlighted.substM [Monad m] (values : String → m (Option α)) (hl : Highlighted) : m (Array (Highlighted ⊕ α)) := do
+  let mut todo := [some hl]
+  let mut out : Array (Highlighted ⊕ α) := #[]
+  let mut ctx : SplitCtx := {}
+  let mut current : Highlighted := .empty
+  repeat
+    match todo with
+    | [] =>
+      out := out.push (.inl current)
+      break
+    | none :: hs =>
+      todo := hs
+      let (c, ctx') := ctx.split current
+      current := c
+      ctx := ctx'.pop
+    | some (.seq xs) :: hs =>
+      todo := xs.toList.map some ++ hs
+    | some this@(.token ⟨_, t⟩) :: hs =>
+      todo := hs
+      if let some v ← values t then
+        out := out.push (.inl current)
+        current := .empty
+        out := out.push (.inr v)
+      else
+        current := current ++ this
+    | some this@(.text ..) :: hs | some this@(.point ..) :: hs | some this@(.unparsed ..) :: hs =>
+      todo := hs
+      current := current ++ this
+    | some (.span msgs x) :: hs =>
+      todo := some x :: none :: hs
+      ctx := ctx.push current (.span (msgs.map (fun x => ⟨x.1, x.2⟩)))
+      current := .empty
+    | some (.tactics gs b e x) :: hs =>
+      todo := some x :: none :: hs
+      ctx := ctx.push current (.tactics gs b e)
+      current := .empty
+  return out
+
+def Highlighted.subst (values : String → Option α) (hl : Highlighted) : Array (Highlighted ⊕ α) :=
+  hl.substM (m := Id) values
+
 def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
   let mut todo := [some hl]
   let mut out := #[]
