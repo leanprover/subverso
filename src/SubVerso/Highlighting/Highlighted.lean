@@ -75,6 +75,7 @@ inductive Token.Kind where
   /-- A level operator, such as "+" or "imax" -/
   | levelOp (which : String)
   | levelConst (i : Nat)
+  | moduleName (name : Name)
   | /-- The token represents some otherwise-undescribed Expr whose type is known -/
     withType (type : String)
   | unknown
@@ -109,6 +110,7 @@ instance : Quote Token.Kind where
     | .sort doc? => mkCApp ``sort #[quote doc?]
     | .levelVar n => mkCApp ``levelVar #[quote n]
     | .levelConst v => mkCApp ``levelConst #[quote v]
+    | .moduleName m => mkCApp ``moduleName #[quote m]
     | .levelOp n => mkCApp ``levelOp #[quote n]
     | .withType t => mkCApp ``withType #[quote t]
     | .unknown => mkCApp ``unknown #[]
@@ -400,9 +402,106 @@ partial def toStringPrefix (n : Nat) (hl : Highlighted) : String := Id.run do
     | .seq xs :: more => todo := xs.toList ++ more
     | .text s :: more | .token ⟨_, s⟩ :: more | .unparsed s :: more =>
       todo := more
-      str := s
+      str := str ++ s
       n := n - s.length
   return str
+
+/--
+Converts highlighted code to a string from the right, stopping when the provided length is reached.
+-/
+def toStringSuffix (n : Nat) (hl : Highlighted) : String := Id.run do
+  let mut n := n
+  let mut todo := #[hl]
+  let mut str := ""
+  while n > 0 do
+    match todo.back? with
+    | none => break
+    | some hl =>
+      todo := todo.pop
+      match hl with
+      | .point .. => pure ()
+      | .tactics _ _ _ x | .span _ x => todo := todo.push x
+      | .seq xs  => todo := todo ++ xs
+      | .text s | .token ⟨_, s⟩ | .unparsed s =>
+        str := s ++ str
+        n := n - s.length
+  return str
+
+/--
+Converts highlighted code to a string from the right, stopping when a character that doesn't satisfy `p` is reached.
+-/
+def takeStringRightWhile (hl : Highlighted) (p : Char → Bool) : String := Id.run do
+  let mut todo := #[hl]
+  let mut str := ""
+  repeat
+    match todo.back? with
+    | none => break
+    | some hl =>
+      todo := todo.pop
+      match hl with
+      | .point .. => pure ()
+      | .tactics _ _ _ x | .span _ x => todo := todo.push x
+      | .seq xs  => todo := todo ++ xs
+      | .text s | .token ⟨_, s⟩ | .unparsed s =>
+        let s' := s.takeRightWhile p
+        str := s' ++ str
+        if s' != s then return str
+  return str
+
+/--
+Removes the first `n` characters of the leading `text` content, stopping if some other content is
+encountered, even metadata.
+-/
+def dropText (n : Nat) (hl : Highlighted) : Highlighted := Id.run do
+  let mut n := n
+  let mut todo := [hl]
+  let mut out : Highlighted := .empty
+  while n > 0 do
+    match todo with
+    | [] => break
+    | hl@(.point ..) :: more | hl@(.tactics ..) :: more | hl@(.span ..) :: more  | hl@(.token ..) :: more | hl@(.unparsed ..) :: more =>
+      out := out ++ hl
+      for hl' in more do out := out ++ hl'
+      return out
+    | .seq xs :: more =>
+      todo := xs.toList ++ more
+    | .text s :: more =>
+      todo := more
+      if n ≤ s.length then
+        if n < s.length then
+          out := out ++ .text (s.drop n)
+        for hl' in more do out := out ++ hl'
+        return out
+      else
+        n := n - s.length
+  return out
+
+/--
+Removes the last `n` characters of the leading `text` content, stopping if some other content is
+encountered, even metadata.
+-/
+def dropTextRight (n : Nat) (hl : Highlighted) : Highlighted := Id.run do
+  let mut n := n
+  let mut todo := #[hl]
+  while n > 0 do
+    match todo.back? with
+    | none => break
+    | some hl =>
+      match hl with
+      | .point .. | .tactics .. | .span .. | .token .. | .unparsed .. =>
+        return .seq todo
+      | .seq xs =>
+        todo := todo.pop ++ xs
+      | .text s =>
+        todo := todo.pop
+        if n < s.length then
+          return .seq todo ++ .text (s.dropRight n)
+        else if n = s.length then
+          return .seq todo
+        else
+          n := n - s.length
+  -- If the loop terminates then we ran out of code before running out of Nat
+  return .seq todo
 
 /--
 Keep at least `n` characters of the original source.
