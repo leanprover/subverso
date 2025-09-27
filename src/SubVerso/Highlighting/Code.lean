@@ -1453,7 +1453,7 @@ partial def highlight'
           else .unknown
         | _ => .unknown
     | stx@(.node _ `Lean.Parser.Command.versoCommentBody _) =>
-      if let some endPos := stx.getTrailingTailPos? then
+      if let some endPos := Compat.getTrailingTailPos? stx then
         fillMissingSourceUpTo endPos
       else
         logErrorAt stx m!"Failed to get source range for Verso docs `{stx}`"
@@ -1510,7 +1510,7 @@ partial def highlight'
         highlight' trees alts[0]  tactics
     | stx@(.node _ k children) =>
       if (`Lean.Doc.Syntax).isPrefixOf k then
-        if let some endPos := stx.getTrailingTailPos? then
+        if let some endPos := Compat.getTrailingTailPos? stx then
           fillMissingSourceUpTo endPos
         else
           logErrorAt stx m!"Failed to get source range for Verso docs `{stx}`"
