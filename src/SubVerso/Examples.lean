@@ -489,8 +489,8 @@ Check the signature by elaborating and comparing.
 -/
 def checkSignature
     (sigName : TSyntax `Lean.Parser.Command.declId)
-    (sig : TSyntax `Lean.Parser.Command.declSig)
-    : CommandElabM (Array Highlighted × String × String.Pos × String.Pos) := do
+    (sig : TSyntax `Lean.Parser.Command.declSig) :
+    CommandElabM (Array Highlighted × String × Compat.String.Pos × Compat.String.Pos) := do
   let (sig, termExamples) := extractExamples sig .empty
   let sig : TSyntax `Lean.Parser.Command.declSig := ⟨sig⟩
 
