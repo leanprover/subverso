@@ -427,8 +427,8 @@ def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Synta
 open Highlighted in
 inductive Output where
   | seq (emitted : Array Highlighted)
-  | span (info : Array Highlighted.Message) (startPos : String.Pos) (endPos : Option String.Pos)
-  | tactics (info : Array (Goal Highlighted)) (startPos : String.Pos) (endPos : String.Pos)
+  | span (info : Array Highlighted.Message) (startPos : Compat.String.Pos) (endPos : Option Compat.String.Pos)
+  | tactics (info : Array (Goal Highlighted)) (startPos : Compat.String.Pos) (endPos : Compat.String.Pos)
 deriving Repr
 
 -- Tactic info regions are detected based on the entire syntax of a term or tactic, but the leading
@@ -473,7 +473,7 @@ open Highlighted in
 def Output.openSpan
     (output : List Output)
     (messages : Array Highlighted.Message)
-    (startPos : String.Pos) (endPos : Option String.Pos) :
+    (startPos : Compat.String.Pos) (endPos : Option Compat.String.Pos) :
     List Output :=
   match output with
   | t@(.tactics _ start stop) :: output' =>
@@ -513,8 +513,8 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
   go .empty output
 
 structure OpenTactic where
-  openedAt : String.Pos
-  closesAt : String.Pos
+  openedAt : Compat.String.Pos
+  closesAt : Compat.String.Pos
 
 structure MessageBundle where
   messages : Array Message
@@ -572,7 +572,7 @@ Returns the input's trailing tail position, unless that position is "obviously"
 incorrect (i.e., it falls before the end position), in which case the end
 position is returned instead.
 -/
-private def getInfoTrailingOrTailPos? (info : SourceInfo) : Option String.Pos :=
+private def getInfoTrailingOrTailPos? (info : SourceInfo) : Option Compat.String.Pos :=
   /- The following accounts for the fact that some syntax (e.g., the `y` given
      by `stx.identComponents` in the field-syntax case in `highlight'`) carries
      an erroneous `0` trailing tail position -/
@@ -583,7 +583,7 @@ private def getInfoTrailingOrTailPos? (info : SourceInfo) : Option String.Pos :=
     Compat.getInfoTrailingTailPos? info
 
 @[inherit_doc getInfoTrailingOrTailPos?]
-private def getTrailingOrTailPos? (stx : Syntax) : Option String.Pos :=
+private def getTrailingOrTailPos? (stx : Syntax) : Option Compat.String.Pos :=
   getInfoTrailingOrTailPos? stx.getTailInfo
 
 structure HighlightState where
@@ -597,7 +597,7 @@ structure HighlightState where
   /-- Currently-open tactic info -/
   inTactic : Option OpenTactic -- No nested tactic states!
   /-- Last source position added to the output -/
-  lastPos? : Option String.Pos := none
+  lastPos? : Option Compat.String.Pos := none
   /-- Memoized results of searching for tactic info (by canonical range) -/
   hasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
   /-- Memoized results of searching for tactic info in children (by canonical range) -/
@@ -643,7 +643,7 @@ private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
       some (x' :: xs)
     else (x :: ·) <$> modify? f xs
 
-def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : String.Pos) (_pos : Position) : HighlightState :=
+def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Compat.String.Pos) (_pos : Position) : HighlightState :=
   if let some out' := modify? update? st.output then
     {st with output := out'}
   else { st with
@@ -658,7 +658,7 @@ where
       else none
     | _ => none
 
-def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : String.Pos) (pos : Position) : HighlightM Unit :=
+def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Compat.String.Pos) (pos : Position) : HighlightM Unit :=
   modify fun st => st.openTactic info startPos endPos pos
 
 instance : Inhabited (HighlightM α) where
@@ -684,7 +684,7 @@ def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
 def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.endPos.map (·.notAfter pos) |>.getD true
 
-private def leanPosToUtf8Pos (text : FileMap) : Position → String.Pos :=
+private def leanPosToUtf8Pos (text : FileMap) : Position → Compat.String.Pos :=
   text.lspPosToUtf8Pos ∘ text.leanPosToLspPos
 
 
@@ -821,7 +821,7 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
       }
       openUntil pos
 
-partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
+partial def closeUntil (pos : Compat.String.Pos) : HighlightM Unit := do
   let text ← getFileMap
   let more ← modifyGet fun st =>
     match st.inMessages, st.inTactic with
@@ -851,7 +851,7 @@ partial def closeUntil (pos : String.Pos) : HighlightM Unit := do
   if more then closeUntil pos
 
 /-- Records the corresponding source position of the syntax most recently added to the output. -/
-def setLastPos (lastPos? : Option String.Pos) : HighlightM Unit := do
+def setLastPos (lastPos? : Option Compat.String.Pos) : HighlightM Unit := do
   modify fun st => { st with lastPos? }
 
 /--
@@ -859,11 +859,11 @@ Returns a set of message start and end positions between `startPos` and `endPos`
 
 This is used for splitting unparsed regions so that messages appear within the proper spans.
 -/
-def collectMessageBoundariesBetween (startPos endPos : String.Pos)
-    : HighlightM (Compat.HashSet String.Pos) := do
+def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
+    : HighlightM (Compat.HashSet Compat.String.Pos) := do
   let text ← getFileMap
   let { messages, nextMessage, inMessages, .. } ← get
-  let mut boundaries : Compat.HashSet String.Pos := {}
+  let mut boundaries : Compat.HashSet Compat.String.Pos := {}
   -- Add in-range end positions of active messages:
   for msg in inMessages do
     if let some msgEndPos := msg.endPos then
@@ -896,7 +896,7 @@ def collectMessageBoundariesBetween (startPos endPos : String.Pos)
   return boundaries
 
 /-- Adds to the output any source (if any exists) lying between the last added position and `pos`. -/
-def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
+def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
   if let some lastPos := (← get).lastPos? then
     if lastPos < pos then
       let text ← getFileMap
@@ -912,7 +912,7 @@ def fillMissingSourceUpTo (pos : String.Pos) : HighlightM Unit := do
         closeUntil endPos
         setLastPos endPos
 
-def emitString (pos endPos : String.Pos) (string : String) : HighlightM Unit := do
+def emitString (pos endPos : Compat.String.Pos) (string : String) : HighlightM Unit := do
   if (← read).includeUnparsed then fillMissingSourceUpTo pos
   let text ← getFileMap
   openUntil <| text.toPosition pos
@@ -1059,10 +1059,10 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
 
 def tacticInfoGoals
     (ci : ContextInfo) (tacticInfo : TacticInfo)
-    (startPos endPos : String.Pos)
+    (startPos endPos : Compat.String.Pos)
     (endPosition : Position)
     (before : Bool := false) :
-    HighlightM (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position) := do
+    HighlightM (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position) := do
   let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
   let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
   let goalView ← highlightGoals ci goals
@@ -1076,10 +1076,10 @@ If found, returns the goals, the byte indices of the span, and the provided end 
 -/
 partial def findTactics'
     (stx : Syntax)
-    (startPos endPos : String.Pos)
+    (startPos endPos : Compat.String.Pos)
     (endPosition : Position)
     (before : Bool := false)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position)) := do
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) := do
 
   if let some res := (← readThe InfoTable).tacticInfo? stx then
     for (ci, tacticInfo) in res.reverse do
@@ -1103,10 +1103,10 @@ If found, returns the goals, the byte indices of the span, and the provided end 
 -/
 partial def findAllTactics'
     (stx : Syntax)
-    (startPos endPos : String.Pos)
+    (startPos endPos : Compat.String.Pos)
     (endPosition : Position)
     (before : Bool := false)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position)) := do
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) := do
 
   let mut found := #[]
 
@@ -1130,7 +1130,7 @@ partial def findTactics
     (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
     (before : Bool := false)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × String.Pos × String.Pos × Position)) :=
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) :=
   withTraceNode `SubVerso.Highlighting.Code (fun x => pure m!"findTactics {stx} ==> {match x with | .error _ => "err" | .ok v => v.map (fun _ => "yes") |>.getD "no"}") <| do
   let text ← getFileMap
   let some startPos := stx.getPos?
@@ -1263,8 +1263,8 @@ def highlightArrowLike
     (trees : Array Lean.Elab.InfoTree)
     (lhs arr rhs : Syntax)
     (tactics : Bool)
-    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × String.Pos) → Syntax → HighlightM Unit)
-    (lookingAt : Option (Name × String.Pos) := none) :
+    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × Compat.String.Pos) → Syntax → HighlightM Unit)
+    (lookingAt : Option (Name × Compat.String.Pos) := none) :
     HighlightM Unit := do
   let mut lhsTactics := tactics
   let text ← getFileMap
@@ -1284,7 +1284,7 @@ def highlightArrowLike
 partial def highlightImport (stx : Syntax) : HighlightM Unit :=
   go ((stx.getKind, ·) <$> stx.getPos?) stx
 where
-  go (lookingAt : Option (Name × String.Pos)) (stx : Syntax) : HighlightM Unit :=
+  go (lookingAt : Option (Name × Compat.String.Pos)) (stx : Syntax) : HighlightM Unit :=
     match stx with
     | .atom i x => do
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Keyword while looking at {lookingAt}") do
@@ -1304,8 +1304,8 @@ def highlightSpecial
     (trees : Array Lean.Elab.InfoTree)
     (stx : Syntax)
     (tactics : Bool)
-    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × String.Pos) → Syntax → HighlightM Unit)
-    (lookingAt : Option (Name × String.Pos) := none) :
+    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × Compat.String.Pos) → Syntax → HighlightM Unit)
+    (lookingAt : Option (Name × Compat.String.Pos) := none) :
     HighlightM Unit := do
   -- Highlight things like conv => specially
   if let some (lhs, arr, rhs) := arrowLike? stx then
@@ -1383,7 +1383,7 @@ partial def highlight'
     (trees : Array Lean.Elab.InfoTree)
     (stx : Syntax)
     (tactics : Bool)
-    (lookingAt : Option (Name × String.Pos) := none) :
+    (lookingAt : Option (Name × Compat.String.Pos) := none) :
     HighlightM Unit :=
   withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting {stx}") do
   let mut tactics := tactics
@@ -1443,7 +1443,7 @@ partial def highlight'
         emitToken stx i <| (⟨ ·,  x⟩) <|
         match x.get? 0 with
         | some '#' =>
-          match x.get? ((0 : String.Pos) + '#') with
+          match x.get? ((0 : Compat.String.Pos) + '#') with
           | some c =>
             if c.isAlpha then .keyword name occ docs
             else .unknown
@@ -1548,7 +1548,7 @@ override these.
 def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := [])
-    (startPos? endPos? : Option String.Pos := none) : TermElabM Highlighted := do
+    (startPos? endPos? : Option Compat.String.Pos := none) : TermElabM Highlighted := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs

@@ -215,7 +215,7 @@ def highlightWithPrefixedMessages (input : String) (msgPrefix := "subverso_test"
   let (_, { commandState, commands, .. }) ← Frontend.processCommands
     |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
   let mut hls : Highlighting.Highlighted := .empty
-  let mut lastPos : String.Pos := 0
+  let mut lastPos : Compat.String.Pos := 0
   for stx in commands do
     let hl ← runTermElabM fun _ =>
       withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do

@@ -122,25 +122,41 @@ def realizeNameNoOverloads
     Lean.Elab.resolveGlobalConstNoOverloadWithInfo
   ] ident
 
+scoped syntax "%first_succeeding" ("-" &"warning")? "[" term,* "]" : term
 
-elab "%first_succeeding" "[" es:term,* "]" : term <= ty => do
-  let mut errs := #[]
-  let msgs ← Core.getMessageLog
-  for e in es.getElems do
-    Core.setMessageLog msgs
-    try
-      let expr ←
-        withReader ({· with errToSorry := false}) <|
-            elabTermEnsuringType e (some ty)
-      let ty' ← Meta.inferType expr
-      if ← Meta.isDefEq ty ty' then
-        return expr
-    catch err =>
-      errs := errs.push (e, err)
-      continue
-  let msgErrs := errs.toList.map fun (tm, msg) => m!"{tm}: {indentD msg.toMessageData}"
-  throwError m!"No alternative succeeded. Attempts were: " ++
-    indentD (MessageData.joinSep msgErrs Format.line)
+elab_rules : term <= ty
+  | `(%first_succeeding $[- warning%$w]? [$es,*]) => do
+    let mut errs := #[]
+    let msgs ← Core.getMessageLog
+    for e in es.getElems do
+      Core.setMessageLog {}
+      try
+        let expr ←
+          withReader ({· with errToSorry := false}) <|
+              elabTermEnsuringType e (some ty)
+        let ty' ← Meta.inferType expr
+        if ← Meta.isDefEq ty ty' then
+          let mut ok := true
+          let msgs' ← Core.getMessageLog
+          for msg in msgs'.toArray do
+            match msg.severity with
+            | .error =>
+              errs := errs.push (e, msg.data)
+              ok := false
+            | .warning =>
+              if w.isSome then
+                errs := errs.push (e, msg.data)
+                ok := false
+            | .information => pure ()
+          if ok then
+            Core.setMessageLog (msgs ++ msgs')
+            return expr
+      catch err =>
+        errs := errs.push (e, err.toMessageData)
+        continue
+    let msgErrs := errs.toList.map fun (tm, msg) => m!"{tm}: {indentD msg}"
+    throwError m!"No alternative succeeded. Attempts were: " ++
+      indentD (MessageData.joinSep msgErrs Format.line)
 
 scoped syntax "export_from_namespaces " "(" ident+ ") " "(" ident+ ")" : command
 
@@ -250,6 +266,17 @@ def msgEmbedCase (embed : MsgEmbed)
     | .trace i cls msg c cs => onTrace i cls msg c cs
   ]
 
+section
+/- Compatibility layer for the big String refactor -/
+
+/--
+A byte position in a `String`, according to its UTF-8 encoding.
+-/
+abbrev String.Pos := %first_succeeding -warning [
+  _root_.String.Pos,
+  _root_.String.Pos.Raw
+]
+end
 
 section
 /- Backports of syntax position functions from later Lean versions-/

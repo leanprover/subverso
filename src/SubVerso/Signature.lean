@@ -52,8 +52,8 @@ Check the signature by elaborating and comparing.
 -/
 def checkSignature
     (sigName : TSyntax ``Lean.Parser.Command.declId)
-    (sig : TSyntax ``Lean.Parser.Command.declSig)
-    : CommandElabM (Highlighted × String × String.Pos × String.Pos) := do
+    (sig : TSyntax ``Lean.Parser.Command.declSig) :
+    CommandElabM (Highlighted × String × Compat.String.Pos × Compat.String.Pos) := do
   let sig : TSyntax `Lean.Parser.Command.declSig := ⟨sig⟩
 
   -- First make sure the names won't clash - we want two different declarations to compare.

@@ -12,7 +12,7 @@ import SubVerso.Examples.Slice.Attribute
 
 open Lean (SourceInfo Syntax Environment FileMap MonadEnv MonadError MonadFileMap getFileMap getEnv nullKind)
 
-open SubVerso.Compat (Parsec HashMap)
+open SubVerso.Compat (Parsec HashMap String.Pos)
 
 namespace SubVerso.Examples.Slice
 
@@ -161,7 +161,7 @@ private partial def removeRanges (env : Environment) (rngs : Array String.Range)
     else pure stx
 
 private def getSlices (slices : Array SliceCommand) : Except String (HashMap String (Array String.Range)) := do
-  let mut opened : HashMap String (String.Pos) := {}
+  let mut opened : HashMap String (Compat.String.Pos) := {}
   let mut closed : HashMap String (Array String.Range) := {}
   for s in slices do
     match s with
