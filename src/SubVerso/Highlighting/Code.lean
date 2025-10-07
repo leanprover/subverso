@@ -1508,6 +1508,8 @@ partial def highlight'
       -- both alternatives!
       if h : alts.size > 0 then
         highlight' trees alts[0]  tactics
+    | .node .none `hygieneInfo #[.ident (.original leading pos trailing endPos) s .anonymous ..] =>
+      emitString leading.startPos trailing.stopPos (leading.toString ++ s.toString ++ trailing.toString)
     | stx@(.node _ k children) =>
       if (`Lean.Doc.Syntax).isPrefixOf k then
         if let some endPos := Compat.getTrailingTailPos? stx then
