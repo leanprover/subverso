@@ -270,6 +270,49 @@ elab \"inject_info\" : command => do
 
 inject_info"
 
+#evalHighlight "def x := (· ++ ·)" "def x := (· ++ ·)"
+
 end HighlightUnparsed
+
+section
+
+open Lean Elab Command in
+def highlightFromString (input : String) : CommandElabM Highlighting.Highlighted := do
+  let inputCtx := Parser.mkInputContext input "<input>"
+  let commandState : Command.State := {
+    env := (← getEnv)
+    maxRecDepth := (← get).maxRecDepth
+  }
+  let (_, { commandState, commands, .. }) ← Frontend.processCommands
+    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let mut hls : Highlighting.Highlighted := .empty
+  for stx in commands do
+    let hl ← runTermElabM fun _ =>
+      withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
+        let msgs := commandState.messages.toArray
+        unless msgs.isEmpty do
+          throwError "Unwanted messages: {← msgs.mapM (·.toString)}"
+        Highlighting.highlight stx msgs commandState.infoState.trees
+    hls := hls ++ hl
+  return hls
+
+/--
+`#evalHighlight inp exp` highlights `inp` using the including-unparsed
+highlighter and checks that the result matches `exp`, where only messages
+beginning with the prefix "subverso_test" are included (to avoid version
+discrepancies).
+-/
+elab "#evalHighlight'" inp:str exp:str : command => do
+  let input := inp.getString
+  let hl ← highlightFromString input
+  let expected := exp.getString
+  let hlStr := hlStringWithMessages hl
+  if hlStr != expected then
+    throwError m!"Mismatched output\n---Found:---\n{hlStr}\n\n---Expected:---\n{expected}"
+
+-- Check that the · regression is fixed
+#evalHighlight' "def x : String → String → String := (· ++ ·)" "def x : String → String → String := (· ++ ·)"
+
+end
 
 def main : IO Unit := pure ()
