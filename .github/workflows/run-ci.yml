@@ -1,0 +1,73 @@
+name: CI - Build and test
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        required: true
+        type: string
+      module-system:
+        required: true
+        type: boolean
+      os:
+        required: false
+        type: string
+        default: nscloud-ubuntu-22.04-amd64-8x16
+      installer:
+        required: false
+        type: string
+        default: |
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+
+
+jobs:
+  build:
+    runs-on: ${{ inputs.os }}
+    strategy:
+      fail-fast: false
+
+    name: Build and test ${{ inputs.module-system && '(with modules) ' || '(without modules) ' }}(${{ inputs.os }}, ${{ inputs.installer}}, ${{ inputs.toolchain}})
+    
+    steps:
+      - name: Install elan
+        run: |
+          set -o pipefail
+          ${{ inputs.installer }}
+          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+      - name: Which lake?
+        run: |
+          which lake
+
+      - uses: actions/checkout@v3
+
+      - name: Demodulize if needed
+        if: ${{ !inputs.module-system }}
+        run: |
+          python3 demodulize.py src
+
+      - name: List all files
+        run: |
+          find . -name "*.lean" -type f
+
+      - name: Select Lean version
+        run: |
+          echo "leanprover/lean4:${{ inputs.toolchain }}" > lean-toolchain
+
+      - name: Lean version
+        run: |
+          lean --version
+
+      - name: Cache .lake
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: ${{ runner.os }}-${{ hashFiles('lake-manifest.json') }}-${{ hashFiles('lean-toolchain') }}
+
+      - name: Build the project
+        run: |
+          lake build
+
+      - name: Run tests
+        run: |
+          lake exe subverso-tests

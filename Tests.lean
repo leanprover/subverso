@@ -329,6 +329,16 @@ hp : p
    "")
 ]
 
+partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool) : IO Unit := do
+  if (← src.isDir) then
+    for ⟨_, name⟩ in ← src.readDir do
+      if visit name then
+        IO.FS.createDirAll tgt
+        copyRecursively (src / name) (tgt / name) visit
+  else
+    let data ← IO.FS.readBinFile src
+    IO.FS.writeBinFile tgt data
+
 def main : IO UInt32 := do
   IO.println "Checking the slice log"
   -- The pretty-printer used to show the modified syntax had some bug-fixes. We can just check both.
@@ -338,6 +348,23 @@ def main : IO UInt32 := do
     IO.println "and actual:"
     IO.println sliceLog
     return 1
+
+  IO.println "Setting up demodulized SubVerso for test code"
+
+  let demoDirs : List System.FilePath := ["demo", "demo-toml", "small-tests"]
+  for dir in demoDirs do
+    let srcDir := dir / "no-mod"
+    let manifest := dir / "lake-manifest.json"
+    -- First, delete potentially stale info. This doesn't matter for CI, but makes local builds reliable.
+    if ← srcDir.pathExists then
+      IO.FS.removeDirAll srcDir
+    if ← manifest.pathExists then
+      IO.FS.removeFile manifest
+    -- Then put the demodulized code where the Lake configs expect it.
+    IO.FS.createDirAll srcDir
+    copyRecursively "." srcDir (fun f => !f.startsWith "." && !(f.startsWith "demo" || f.startsWith "small-tests") && f != "lake-manifest.json")
+    discard <| IO.Process.run {cmd := "python3", args := #["demodulize.py", srcDir.toString]}
+
 
   IO.println "Checking that the TOML project will load"
   cleanupDemo (demo := "demo-toml")

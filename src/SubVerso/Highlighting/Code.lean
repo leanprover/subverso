@@ -3,13 +3,17 @@ Copyright (c) 2023-2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
+module
 import Lean.Widget.InteractiveCode
 import Lean.Widget.InteractiveDiagnostic
 import Lean.Widget.TaggedText
+import Lean.Server.References
+import Lean.Elab.Term
 
-import SubVerso.Compat
-import SubVerso.Highlighting.Highlighted
+public import SubVerso.Compat
+public import SubVerso.Highlighting.Highlighted
 import SubVerso.Highlighting.Messages
+public section
 
 open Lean hiding perhaps (HashMap)
 open Elab
@@ -583,7 +587,7 @@ private def getInfoTrailingOrTailPos? (info : SourceInfo) : Option Compat.String
     Compat.getInfoTrailingTailPos? info
 
 @[inherit_doc getInfoTrailingOrTailPos?]
-private def getTrailingOrTailPos? (stx : Syntax) : Option Compat.String.Pos :=
+def Internal.getTrailingOrTailPos? (stx : Syntax) : Option Compat.String.Pos :=
   getInfoTrailingOrTailPos? stx.getTailInfo
 
 structure HighlightState where
@@ -613,8 +617,9 @@ def HighlightState.empty : HighlightState where
   inTactic := none
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
-    (stx : Syntax) (messages : Array Message) (startPos? := stx.getPos?) (endPos? := getTrailingOrTailPos? stx)
-    : m HighlightState := do
+    (stx : Syntax) (messages : Array Message)
+    (startPos? := stx.getPos?) (endPos? := Internal.getTrailingOrTailPos? stx) :
+    m HighlightState := do
   let msgs ← bundleMessages <$> messages.filterM isRelevant
   pure {
     messages := msgs
@@ -941,7 +946,7 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
   modify fun st => {st with output := Output.addToken st.output token}
   closeUntil endPos
   emitString' trailing.toString
-  let trailingPos := getTrailingOrTailPos? blame
+  let trailingPos := Internal.getTrailingOrTailPos? blame
   setLastPos trailingPos
 
 def emitToken' (token : Token) : HighlightM Unit := do
@@ -1522,7 +1527,7 @@ partial def highlight'
         for child in children do
           highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
-def sortSuppress (nss : List Name) : List Name :=
+private def sortSuppress (nss : List Name) : List Name :=
   nss.toArray.qsort (fun x y => x.components.length > y.components.length) |>.toList
 
 def highlight (stx : Syntax) (messages : Array Message)
@@ -1556,7 +1561,7 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
   let ids := build modrefs
 
   let startPos? := startPos? <|> stx.getPos?
-  let endPos? := endPos? <|> getTrailingOrTailPos? stx
+  let endPos? := endPos? <|> Internal.getTrailingOrTailPos? stx
 
   let st ← HighlightState.ofMessages stx messages startPos? endPos?
   let infoTable : InfoTable := .ofInfoTrees trees

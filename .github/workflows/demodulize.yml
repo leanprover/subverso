@@ -1,0 +1,40 @@
+name: Save demodulized code to no-modules branch
+
+on:
+  push:
+    branches:
+      - main    
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'leanprover/subverso' }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Verify .source-commit doesn't exist
+        run: |
+          if [ -f .source-commit ]; then
+            echo "Error: .source-commit should not exist in main branch"
+            exit 1
+          fi
+            
+      - name: Remove uses of the module system
+        run: python3 demodulize.py src
+      
+      - name: Record source commit
+        run: echo "${{ github.sha }}" > .source-commit
+            
+      - name: Update no-modules branch
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B no-modules
+          git add -f .source-commit
+          git add -A
+          git commit -m "Auto-generated from main@${{ github.sha }}
+
+          De-modulized version of https://github.com/${{ github.repository }}/commit/${{ github.sha }}" || true
+          git push --force origin no-modules

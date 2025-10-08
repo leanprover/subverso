@@ -3,7 +3,7 @@ defaultTargets = ["demo", "Demo", "Anchors"]
 
 [[require]]
 name = "subverso"
-git = ".."
+path = "no-mod"
 
 [[lean_lib]]
 name = "Demo"

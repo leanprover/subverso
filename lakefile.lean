@@ -69,6 +69,14 @@ def nightly? (version : String) : Option (Nat × Nat × Nat) := do
     | none
   return (← y.toNat?, ← m.toNat?, ← d.toNat?)
 
+def release? (version : String) : Option (Nat × Nat × Option Nat) := do
+  if let [v, rc] := version.splitOn "-rc" then
+    if let [_four, major, minor] := v.splitOn "." then
+      return (← major.toNat?, ← minor.toNat?, some (← rc.toNat?))
+  if let [_four, major, minor] := version.splitOn "." then
+    return (← major.toNat?, ← minor.toNat?, none)
+  none
+
 /--
 Are precompiled modules known to work with this version and SubVerso?
 
@@ -88,11 +96,28 @@ def supportsPrecompile (version : String) : Bool :=
       "4.22.0-rc4"
     ]
 
+def supportsMod (version : String) : Bool :=
+  if let some (y, m, _d) := nightly? version then
+    y ≥ 2025 && m ≥ 10
+  else if let some (major, _minor, _) := release? version then
+    major > 23
+  else false
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let fieldExists := (← getEnv).contains `Lake.Package.leanOptions
+  elabCommand <| ← `(def $(mkIdent `leanOptionsExists) : Bool := $(quote fieldExists))
+
 -- End compatibility infrastructure
 
-package «subverso» where
-  precompileModules := supportsPrecompile Lean.versionString
-  -- add package configuration options here
+-- Old Lean doesn't have `leanOptions` field
+meta if leanOptionsExists then
+  package «subverso» where
+    precompileModules := false -- supportsPrecompile Lean.versionString
+    leanOptions := if supportsMod Lean.versionString then #[⟨`experimental.module, true⟩] else #[]
+else
+  package «subverso» where
+    precompileModules := false -- supportsPrecompile Lean.versionString
 
 lean_lib SubVerso where
   srcDir := "src/"

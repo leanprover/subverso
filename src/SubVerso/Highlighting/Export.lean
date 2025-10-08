@@ -3,8 +3,11 @@ Copyright (c) 2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
+module
 import Lean.Data.Json
-import SubVerso.Highlighting.Highlighted
+public import SubVerso.Highlighting.Highlighted
+public import SubVerso.Compat
+public section
 
 /-!
 This module contains tools for reducing the size of JSON exported from SubVerso.

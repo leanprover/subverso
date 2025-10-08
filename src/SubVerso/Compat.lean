@@ -3,14 +3,24 @@ Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-import Lean.Elab
+module
+public meta import Lean.Elab
+import Lean.Data.Lsp
 -- This transitively gets us Std.Internal.Parsec.Basic on Lean versions in which it exists
 import Lean.Data.Json.Parser
 -- These transitively get us Lean.Util.Paths on Lean versions prior to nightly-2025-06-24, where
 -- that module was deleted.
 import Lean.Util
 import Lean.Elab.Import
+
+import Lean.Elab.DeclarationRange
+import Lean.Elab.Command
 import Lean.Widget.InteractiveDiagnostic
+
+-- nomodule skip
+import Std.Data.HashMap
+
+public section
 
 open Lean Elab Term
 
@@ -459,7 +469,9 @@ export_from_namespaces
   (ws skipString skipChar many1Chars satisfy)
 end Parsec
 
+@[expose]
 def HashMap := %first_succeeding [Std.HashMap, Lean.HashMap]
+@[expose]
 def HashSet := %first_succeeding [Std.HashSet, Lean.HashSet]
 
 namespace HashMap
