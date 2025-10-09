@@ -446,7 +446,7 @@ def main : IO UInt32 := do
   IO.println "Setting up small-tests directory"
   let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
   cleanupDemo "small-tests"
-  let out ← do
+  let _out ← do
     try
       IO.Process.run {
         cmd := "elan",
@@ -461,15 +461,11 @@ def main : IO UInt32 := do
         cwd := "./small-tests",
         env := lakeVars.map (·, none)
       }
-  unless out.trim.isEmpty do
-    IO.println s!"Output from setup of small-tests: {out}"
-  let out ← IO.Process.run {
+  let _out ← IO.Process.run {
     cmd := "elan", args := #["run", "--install", myToolchain, "lake", "build", "subverso-extract-mod"],
     cwd := "./small-tests",
     env := lakeVars.map (·, none)
   }
-  unless out.trim.isEmpty do
-    IO.println s!"Output from building the exe in small-tests: {out}"
 
   IO.println "Loading content from small-tests directory"
   let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := myToolchain)
