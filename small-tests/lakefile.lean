@@ -6,11 +6,8 @@ Author: David Thrane Christiansen
 import Lake
 open Lake DSL
 
--- This needs to be git rather than a filesystem path, because git
--- will clone the project. This results in a separate .lake build dir,
--- so the different versions of Lake don't stomp on each others'
--- files.
-require subverso from "no-mod"
+-- This project is never used to cross Lean versions, so no need to do anything fancy here.
+require subverso from ".."
 
 package «small» where
   -- add package configuration options here

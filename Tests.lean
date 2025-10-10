@@ -443,41 +443,36 @@ def main : IO UInt32 := do
     return 1
 
 
-  let oldest := ["4.0.0", "4.1.0", "4.2.0"]
-  let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
   let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
-  if oldest.contains myToolchain.trim then
-    IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {myToolchain.trim}"
-  else
-    IO.println "Checking proof states for induction/cases alts"
-    IO.println "Setting up small-tests directory"
+  IO.println "Checking proof states for induction/cases alts"
+  IO.println "Setting up small-tests directory"
 
-    cleanupDemo (demo := "small-tests")
+  cleanupDemo (demo := "small-tests")
 
-    IO.println s!"Loading content from small-tests directory using Lean toolchain {myToolchain}"
-    let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := some myToolchain)
-    let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
-    match content.anchored with
-      | .error e =>
-        IO.eprintln s!"Error loading anchored content: {e}"
+  IO.println s!"Loading content from small-tests directory using Lean toolchain {myToolchain}"
+  let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := some myToolchain)
+  let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+  match content.anchored with
+    | .error e =>
+      IO.eprintln s!"Error loading anchored content: {e}"
+      return 1
+    | .ok {code:=_, anchors:=_, proofStates} =>
+      let mut errors := 0
+      IO.println s!"There are {proofStates.size} proof states to check"
+      for (name, code, state) in desiredAltProofs do
+        if let some hl := proofStates.get? name then
+          let .tactics goals _ _ hl := hl
+            | IO.eprintln s!"Proof state '{name}' not a proof state: {repr hl}"; errors := errors + 1
+          if hl.toString != code then
+            IO.eprintln s!"Proof state '{name}': expected {repr code} but got {repr hl.toString}"; errors := errors + 1
+          let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
+          if state != goalString then
+            IO.eprintln s!"Proof state '{name}': expected {repr state} but got {repr goalString}"; errors := errors + 1
+        else
+          IO.eprintln "Not found: proof state '{name}'"; errors := errors + 1
+      if errors > 0 then
+        IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
         return 1
-      | .ok {code:=_, anchors:=_, proofStates} =>
-        let mut errors := 0
-        IO.println s!"There are {proofStates.size} proof states to check"
-        for (name, code, state) in desiredAltProofs do
-          if let some hl := proofStates.get? name then
-            let .tactics goals _ _ hl := hl
-              | IO.eprintln s!"Proof state '{name}' not a proof state: {repr hl}"; errors := errors + 1
-            if hl.toString != code then
-              IO.eprintln s!"Proof state '{name}': expected {repr code} but got {repr hl.toString}"; errors := errors + 1
-            let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
-            if state != goalString then
-              IO.eprintln s!"Proof state '{name}': expected {repr state} but got {repr goalString}"; errors := errors + 1
-          else
-            IO.eprintln "Not found: proof state '{name}'"; errors := errors + 1
-        if errors > 0 then
-          IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
-          return 1
-    IO.println "Proof states for induction/cases alts OK"
+  IO.println "Proof states for induction/cases alts OK"
 
   pure 0
