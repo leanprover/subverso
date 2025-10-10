@@ -238,10 +238,16 @@ where
       "\nstderr: " ++ res.stderr
 
     throw <| .userError <|
+      -- "Build process failed." ++
+      -- decorateOut "stdout" res.stdout ++
+      -- decorateOut "stderr" res.stderr
       "Build process failed." ++
-      decorateOut "stdout" res.stdout ++
-      decorateOut "stderr" res.stderr
-
+      "\nCWD: " ++ projectDir.toString ++
+      "\nCommand: " ++ cmd ++
+      "\nArgs: " ++ toString (repr args) ++
+      "\nExit code: " ++ toString res.exitCode ++
+      "\nstdout: " ++ res.stdout ++
+      "\nstderr: " ++ res.stderr
 
 def desiredAnchors : List (String × String) := [
   ("cons", "  | cons : Nat → NatList → NatList\n"),
