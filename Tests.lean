@@ -447,7 +447,8 @@ def main : IO UInt32 := do
   let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
   cleanupDemo (demo := "small-tests")
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
-  if oldest.contains (myToolchain.trim.dropWhile (· == 'v')) then
+  let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
+  if oldest.contains myToolchain.trim then
     -- Must run `lake update` for oldest Lean versions
     let out ←
       IO.Process.run {
