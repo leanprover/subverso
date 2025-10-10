@@ -10,7 +10,7 @@ open Lake DSL
 -- will clone the project. This results in a separate .lake build dir,
 -- so the different versions of Lake don't stomp on each others'
 -- files.
-require subverso from git ".."
+require subverso from "no-mod"
 
 package «small» where
   -- add package configuration options here

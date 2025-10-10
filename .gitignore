@@ -1,4 +1,6 @@
-/build
+build
 *.olean
 /lake-packages/*
-/.lake
+.lake
+.source-commit
+no-mod

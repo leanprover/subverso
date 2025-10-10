@@ -167,6 +167,12 @@ def testNetstrings := do
     longStr := s!"{i}({longStr}{longStr})"
   testNetstring longStr
 
+def lakeVars :=
+  #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP",
+    "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH",
+    "LEAN_GITHASH",
+    "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
+
 -- Loads a module. To work well, it really should lock the toolchain file, but that's not available
 -- in all targeted versions, so it's just part of these tests. See Verso for a version to use in
 -- documents.
@@ -197,11 +203,6 @@ def loadModuleContent
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
   -- LD_LIBRARY_PATH is useful so the version selected by Elan doesn't get the wrong shared
   -- libraries.
-  let lakeVars :=
-    #["LAKE", "LAKE_HOME", "LAKE_PKG_URL_MAP",
-      "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH",
-      "LEAN_GITHASH",
-      "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
 
 
   let cmd := "elan"
@@ -329,6 +330,16 @@ hp : p
    "")
 ]
 
+partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool) : IO Unit := do
+  if (← src.isDir) then
+    for ⟨_, name⟩ in ← src.readDir do
+      if visit name then
+        IO.FS.createDirAll tgt
+        copyRecursively (src / name) (tgt / name) visit
+  else
+    let data ← IO.FS.readBinFile src
+    IO.FS.writeBinFile tgt data
+
 def main : IO UInt32 := do
   IO.println "Checking the slice log"
   -- The pretty-printer used to show the modified syntax had some bug-fixes. We can just check both.
@@ -338,6 +349,23 @@ def main : IO UInt32 := do
     IO.println "and actual:"
     IO.println sliceLog
     return 1
+
+  IO.println "Setting up demodulized SubVerso for test code"
+
+  let demoDirs : List System.FilePath := ["demo", "demo-toml", "small-tests"]
+  for dir in demoDirs do
+    let srcDir := dir / "no-mod"
+    let manifest := dir / "lake-manifest.json"
+    -- First, delete potentially stale info. This doesn't matter for CI, but makes local builds reliable.
+    if ← srcDir.pathExists then
+      IO.FS.removeDirAll srcDir
+    if ← manifest.pathExists then
+      IO.FS.removeFile manifest
+    -- Then put the demodulized code where the Lake configs expect it.
+    IO.FS.createDirAll srcDir
+    copyRecursively "." srcDir (fun f => !f.startsWith "." && !(f.startsWith "demo" || f.startsWith "small-tests") && f != "lake-manifest.json")
+    discard <| IO.Process.run {cmd := "python3", args := #["demodulize.py", srcDir.toString]}
+
 
   IO.println "Checking that the TOML project will load"
   cleanupDemo (demo := "demo-toml")
@@ -414,33 +442,42 @@ def main : IO UInt32 := do
     IO.eprintln "Example proof count mismatch"
     return 1
 
-  IO.println "Checking proof states for induction/cases alts"
-  let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
-  cleanupDemo "small-tests"
-  discard do
-    try
-      IO.Process.run {cmd := "lake", args := #["update", "--keep-toolchain"], cwd := "./small-tests"}
-    catch _ =>
-      IO.Process.run {cmd := "lake", args := #["update"], cwd := "./small-tests"}
 
-  let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := myToolchain)
-  let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
-  match content.anchored with
-    | .error e => IO.eprintln e; return 1
-    | .ok {code:=_, anchors:=_, proofStates} =>
-      let mut errors := false
-      for (name, code, state) in desiredAltProofs do
-        if let some hl := proofStates.get? name then
-          let .tactics goals _ _ hl := hl
-            | IO.eprintln s!"Proof state '{name}' not a proof state: {repr hl}"; errors := true
-          if hl.toString != code then
-            IO.eprintln s!"Proof state '{name}': expected {repr code} but got {repr hl.toString}"; errors := true
-          let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
-          if state != goalString then
-            IO.eprintln s!"Proof state '{name}': expected {repr state} but got {repr goalString}"; errors := true
-        else
-          IO.eprintln "Not found: proof state '{name}'"; errors := true
-      if errors then return 1
-  IO.println "Proof states for induction/cases alts OK"
+  let oldest := ["4.0.0", "4.1.0", "4.2.0"]
+  let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
+  let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
+  if oldest.contains myToolchain.trim then
+    IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {myToolchain.trim}"
+  else
+    IO.println "Checking proof states for induction/cases alts"
+    IO.println "Setting up small-tests directory"
+
+    cleanupDemo (demo := "small-tests")
+
+    IO.println s!"Loading content from small-tests directory using Lean toolchain {myToolchain}"
+    let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := some myToolchain)
+    let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+    match content.anchored with
+      | .error e =>
+        IO.eprintln s!"Error loading anchored content: {e}"
+        return 1
+      | .ok {code:=_, anchors:=_, proofStates} =>
+        let mut errors := 0
+        IO.println s!"There are {proofStates.size} proof states to check"
+        for (name, code, state) in desiredAltProofs do
+          if let some hl := proofStates.get? name then
+            let .tactics goals _ _ hl := hl
+              | IO.eprintln s!"Proof state '{name}' not a proof state: {repr hl}"; errors := errors + 1
+            if hl.toString != code then
+              IO.eprintln s!"Proof state '{name}': expected {repr code} but got {repr hl.toString}"; errors := errors + 1
+            let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
+            if state != goalString then
+              IO.eprintln s!"Proof state '{name}': expected {repr state} but got {repr goalString}"; errors := errors + 1
+          else
+            IO.eprintln "Not found: proof state '{name}'"; errors := errors + 1
+        if errors > 0 then
+          IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
+          return 1
+    IO.println "Proof states for induction/cases alts OK"
 
   pure 0

@@ -4,7 +4,7 @@ on:
       - main
   pull_request:
 
-name: CI
+name: CI (without module system)
 
 jobs:
   build:
@@ -39,7 +39,6 @@ jobs:
           - "4.23.0"
           - "4.24.0-rc1"
           - "nightly-2025-09-26"
-          - "nightly-2025-10-05"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
@@ -64,50 +63,10 @@ jobs:
               installer: |
                 brew install elan-init
     name: Build and test (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
-    runs-on: ${{ matrix.platform.os }}
-    steps:
-      - name: Install elan
-        run: |
-          set -o pipefail
-          ${{ matrix.platform.installer }}
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
-
-      - name: Which lake?
-        run: |
-          which lake
-
-      - uses: actions/checkout@v3
-
-      - name: List all files
-        run: |
-          find . -name "*.lean" -type f
-
-      - name: Select Lean version
-        run: |
-          echo "leanprover/lean4:${{ matrix.toolchain }}" > lean-toolchain
-
-      - name: Lean version
-        run: |
-          lean --version
-
-      - name: Cache .lake
-        uses: actions/cache@v4
-        with:
-          path: .lake
-          key: ${{ runner.os }}-${{ hashFiles('lake-manifest.json') }}-${{ hashFiles('lean-toolchain') }}
-          
-      - name: Build the project
-        run: |
-          lake build
-
-      - name: Configure demo/test subproject
-        run: |
-          pushd demo
-          lake update
-          lake build :examples
-          lake build :highlighted
-          popd
-
-      - name: Run tests
-        run: |
-          lake exe subverso-tests
+    uses: "./.github/workflows/run-ci.yml"
+    with:
+      toolchain: ${{ matrix.toolchain }}
+      os: ${{ matrix.platform.os }}
+      installer: ${{ matrix.platform.installer }}
+      module-system: false
+      

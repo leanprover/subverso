@@ -3,18 +3,25 @@ Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
+module
 import Lean.Environment
-import SubVerso.Highlighting
+public import Lean.Data.Options
+public import Lean.Elab.Term
+public import Lean.Elab.Command
+public import SubVerso.Highlighting
 import SubVerso.Compat
+public meta import SubVerso.Compat
 import SubVerso.Examples.Env
+public meta import SubVerso.Examples.Env
 import SubVerso.Examples.Messages
+public section
 
 
 namespace SubVerso.Examples
 
 open Lean
 
-def getSuppressed [Monad m] [MonadOptions m] : m (List Name) := do
+meta def getSuppressed [Monad m] [MonadOptions m] : m (List Name) := do
   return (← getOptions) |> SubVerso.examples.suppressedNamespaces.get |>.splitOn " " |>.map (·.toName)
 
 open SubVerso Highlighting
@@ -41,7 +48,7 @@ def savingNewTermMessages (act : TermElabM α) : TermElabM (α × MessageLog) :=
   finally
     Core.setMessageLog startMessages
 
-def savingNewCommandMessages (act : CommandElabM α) : CommandElabM (α × MessageLog) := do
+meta def savingNewCommandMessages (act : CommandElabM α) : CommandElabM (α × MessageLog) := do
   let startMessages := (← get).messages
   modify ({· with messages := .empty})
   try
@@ -61,7 +68,7 @@ scoped syntax (name:=exampleSimpleConfig) "%example" exampleItem+ ident command 
 
 example : TermElabM Unit := logError "foo"
 
-partial def extractExamples (stx : Syntax) : StateT (NameMap Syntax) Id Syntax := do
+meta partial def extractExamples (stx : Syntax) : StateT (NameMap Syntax) Id Syntax := do
   if let `(term|%ex { $n:ident }{  $tm:term }%$tk) := stx then
     let next ← extractExamples tm
     -- Save the erased version in case there's nested examples
@@ -85,7 +92,7 @@ where
   augmentTrailing (stx tok : Syntax) : Syntax :=
     stx.updateTrailing (getTrailing stx ++ getTrailing tok).toSubstring
 
-private def contents (message : Message) : IO String := do
+private meta def contents (message : Message) : IO String := do
   let head := if message.caption != "" then message.caption ++ ":\n" else ""
   pure <| withNewline <| head ++ (← message.data.toString)
 where
@@ -116,7 +123,7 @@ instance : Quote ExampleConfig where
     | ⟨error, keep, output, embeddedOnly, kind⟩ =>
       Syntax.mkCApp ``ExampleConfig.mk #[quote error, quote keep, quote output, quote embeddedOnly, quote kind]
 
-def elabExampleConfig (stx : TSyntax `term) : TermElabM ExampleConfig := do
+meta def elabExampleConfig (stx : TSyntax `term) : TermElabM ExampleConfig := do
   match stx with
   | `({}) => pure {}
   | `({ $items:structInstField,* }) => mkConfig items.getElems {}
@@ -149,7 +156,7 @@ where
     pure config
 
 
-def getSimpleExampleConfig (items : TSyntaxArray ``exampleItem) : TermElabM ExampleConfig := do
+meta def getSimpleExampleConfig (items : TSyntaxArray ``exampleItem) : TermElabM ExampleConfig := do
   let mut config : ExampleConfig := {}
   for item in items do
     match item with
@@ -169,10 +176,7 @@ macro_rules (kind := exampleClassicConfig)
   | `(%example $name:ident $cmd $cmds* %end) =>
     `(%example (config := {}) $name $cmd $cmds* %end)
 
-
-deriving instance Repr for MessageSeverity
-
-private def saveExample
+private meta def saveExample
     [Monad m] [MonadEnv m] [MonadQuotation m] [MonadLog m] [AddMessageContext m] [MonadOptions m]
     (name : Ident) (hl : Array Highlighted)
     (original : String) (start stop : Position)
@@ -197,7 +201,7 @@ Transfers some of the trailing whitespace of stx1 to the leading whitespace of s
 This is used to ensure that all the whitespace in the example is included in the example, as Lean's
 own heuristic isn't quite the right thing here.
 -/
-partial def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
+meta partial def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
   -- This needs to work in macros that expand to uses of `%example`, so it's not sufficient to
   -- require that stx1 be original (stx2 must be, or highlighting will fail). Instead, the start of
   -- `stx1`'s trailing whitespace is taken to be its end position, including in canonical synthetic
@@ -240,7 +244,7 @@ where
     | .original leading pos trailing tailPos => .original (f leading) pos trailing tailPos
     | other => other
 
-def elabExample
+meta def elabExample
     (tok : Syntax) (config : ExampleConfig) (name : Ident) (allCommands : Array (TSyntax `command)) :
     CommandElabM Unit := Compat.commandWithoutAsync do
   let allCommands := allCommands.modify 0 (fun ⟨stx⟩ => ⟨transferLines name.raw stx⟩)
@@ -320,18 +324,22 @@ scoped syntax "%dump " ident &" into " ident: command
 scoped syntax "%dumpE " ident &" into " ident: command
 
 open Syntax in
-private scoped instance : Quote Int where
+private meta scoped instance : Quote Int where
   quote
     | .ofNat n => mkCApp ``Int.ofNat #[quote n]
     | .negSucc n => mkCApp ``Int.negSucc #[quote n]
 
 open Syntax in
-instance : Quote JsonNumber where
-  quote
+private meta def quoteJsonNumber : JsonNumber → Term
     | ⟨mantissa, exponent⟩ => mkCApp ``JsonNumber.mk #[quote mantissa, quote exponent]
 
+
+meta instance : Quote JsonNumber where
+  quote := private quoteJsonNumber
+
+
 open Syntax in
-partial instance : Quote Json where
+meta partial instance : Quote Json where
   quote := q
 where
   -- This funny quoting is because the RBMap quotes to an application of Json.mkObj, which is
@@ -362,33 +370,6 @@ elab_rules : command
       elabCommand <| ← `(def $x : Json := $(quote json))
     else
       throwErrorAt name "No highlighting found for '{name}'"
-
-open Syntax in
-instance : Quote MessageSeverity where
-  quote s :=
-    let n :=
-      match s with
-      | .error => ``MessageSeverity.error
-      | .information => ``MessageSeverity.information
-      | .warning => ``MessageSeverity.warning
-    mkCApp n #[]
-
-open Syntax in
-instance : Quote Lean.Position where
-  quote s :=
-    mkCApp ``Lean.Position.mk #[quote s.line, quote s.column]
-
-instance : Quote Example where
-  quote
-    | ⟨highlighted, messages, original, start, stop, kind⟩ =>
-      Syntax.mkCApp ``Example.mk #[
-        quote highlighted,
-        quote messages,
-        quote original,
-        quote start,
-        quote stop,
-        quote kind
-      ]
 
 elab_rules : command
   | `(%dumpE $name:ident into $x) => do
@@ -461,14 +442,14 @@ elab_rules : command
       let str := text.source.extract leading.startPos trailing.stopPos
       saveExample (mkIdentFrom term (x.getId ++ tmName)) #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner))
 
-private def biDesc : BinderInfo → String
+private meta def biDesc : BinderInfo → String
   | .default => "explicit"
   | .implicit => "implicit"
   | .instImplicit => "instance"
   | .strictImplicit => "strict implicit"
 
 
-private partial def compare (blame : Syntax): Expr → Expr → MetaM Unit
+private meta partial def compare (blame : Syntax): Expr → Expr → MetaM Unit
   | .forallE x t1 b1 bi1, .forallE y t2 b2 bi2 => do
     if x.eraseMacroScopes != y.eraseMacroScopes then
       logErrorAt blame m!"Mismatched parameter name: expected '{x.eraseMacroScopes}' but got '{y.eraseMacroScopes}'"
@@ -487,10 +468,10 @@ scoped syntax (name := signature) "%signature" ident declId declSig : command
 /--
 Check the signature by elaborating and comparing.
 -/
-def checkSignature
+meta def checkSignature
     (sigName : TSyntax `Lean.Parser.Command.declId)
     (sig : TSyntax `Lean.Parser.Command.declSig) :
-    CommandElabM (Array Highlighted × String × Compat.String.Pos × Compat.String.Pos) := do
+    CommandElabM (Array Highlighting.Highlighted × String × Compat.String.Pos × Compat.String.Pos) := do
   let (sig, termExamples) := extractExamples sig .empty
   let sig : TSyntax `Lean.Parser.Command.declSig := ⟨sig⟩
 
@@ -576,7 +557,7 @@ elab_rules : command
     saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none
 
 open System in
-partial def loadExamples
+meta partial def loadExamples
     (leanProject : FilePath)
     (overrideToolchain : Option String := none) : IO (NameMap (NameMap Example)) := do
   let projectDir := ((← IO.currentDir) / leanProject).normalize

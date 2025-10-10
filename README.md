@@ -17,6 +17,22 @@ versions of SubVerso, however - the specifics of its data formats is
 an implementation detail, not a public API. Please use SubVerso itself
 to read and write the data.
 
+## Module System
+
+The code in `main` uses the Lean module system. For compatibility with
+older Lean versions, a "demodulized" version of the code is generated
+on each commit to `main`. This is force-pushed to the `no-modules`
+branch. The "demodulized" version has been rewritten by the script
+`demodulize.py`.
+
+Versions of Lean prior to `4.25.0` or `nightly-2025-10-07` should use
+the `no-modules` branch.
+
+Projects which coordinate two Lean versions across the "module gap"
+can still check that the SubVerso versions are the same in CI. The
+file `.source-commit` in the `no-modules` branch contains the commit
+hash of `main` that it was generated from.
+
 ## Features
 
 ### Code Examples

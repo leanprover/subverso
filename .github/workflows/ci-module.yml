@@ -1,0 +1,30 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+name: CI (with module system)
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - "nightly-2025-10-05"
+          - "nightly-2025-10-07"
+
+        platform:
+          - os: nscloud-ubuntu-22.04-amd64-8x16
+            installer: |
+              curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+
+    name: Build and test (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
+    uses: "./.github/workflows/run-ci.yml"
+    with:
+      toolchain: ${{ matrix.toolchain }}
+      os: ${{ matrix.platform.os }}
+      installer: ${{ matrix.platform.installer }}
+      module-system: true
+      

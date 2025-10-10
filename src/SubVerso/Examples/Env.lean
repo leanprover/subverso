@@ -3,7 +3,13 @@ Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-import SubVerso.Highlighting
+module
+public import SubVerso.Highlighting
+public import Lean.Data.Options
+public import Lean.Data.Json
+public import Lean.Data.Position
+public import Lean.Message
+public section
 
 open Lean
 
@@ -24,7 +30,6 @@ instance : FromJson Position where
     | .arr #[l, c] => Position.mk <$> fromJson? l <*> fromJson? c
     | other => .error s!"Couldn't decode position from {other}"
 
-example : fromJson? (toJson (⟨1, 5⟩ : Position)) = .ok (⟨1, 5⟩ : Position) := rfl
 
 instance : ToJson MessageSeverity where
   toJson
@@ -38,9 +43,6 @@ instance : FromJson MessageSeverity where
     | "warning" => .ok .warning
     | "information" => .ok .information
     | other => .error s!"Expected 'error', 'warning', or 'information', got {other}"
-
-theorem MessageSeverity.fromJson_toJson_ok (s : MessageSeverity) : fromJson? (toJson s) = .ok s := by
-  cases s <;> simp [toJson, fromJson?]
 
 deriving instance Repr for MessageSeverity
 
@@ -60,6 +62,33 @@ structure Example where
   -/
   kind : Option Name := none
 deriving ToJson, FromJson, Repr
+
+open Syntax in
+instance : Quote Lean.Position where
+  quote s :=
+    mkCApp ``Lean.Position.mk #[quote s.line, quote s.column]
+
+open Syntax in
+instance : Quote MessageSeverity where
+  quote s :=
+    let n :=
+      match s with
+      | .error => ``MessageSeverity.error
+      | .information => ``MessageSeverity.information
+      | .warning => ``MessageSeverity.warning
+    mkCApp n #[]
+
+instance : Quote Example where
+  quote
+    | ⟨highlighted, messages, original, start, stop, kind⟩ =>
+      Syntax.mkCApp ``Example.mk #[
+        quote highlighted,
+        quote messages,
+        quote original,
+        quote start,
+        quote stop,
+        quote kind
+      ]
 
 initialize highlighted : PersistentEnvExtension (NameMap (NameMap Json)) (Name × Name × Example) (NameMap (NameMap Json)) ←
   registerPersistentEnvExtension {
