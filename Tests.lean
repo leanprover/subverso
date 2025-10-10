@@ -446,6 +446,23 @@ def main : IO UInt32 := do
   IO.println "Setting up small-tests directory"
   let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
   cleanupDemo (demo := "small-tests")
+  let oldest := ["4.0.0", "4.1.0", "4.2.0"]
+  if oldest.contains (myToolchain.trim.dropWhile (· == 'v')) then
+    -- Must run `lake update` for oldest Lean versions
+    let out ←
+      IO.Process.run {
+        cmd := "elan",
+        args := #["run", "--install", myToolchain, "lake", "update"],
+        cwd := "small-tests",
+        env := lakeVars.map (·, none)
+      }
+    IO.println s!"Output from `elan run --install {myToolchain.quote} lake update`:\n{out}"
+    let out ← IO.Process.run {
+      cmd := "elan", args := #["run", "--install", myToolchain, "lake", "build", "subverso-extract-mod"],
+      cwd := "small-tests",
+      env := lakeVars.map (·, none)
+    }
+    IO.println s!"Output from `elan run --install {myToolchain.quote} lake build subverso-extract-mod`:\n{out}"
   IO.println s!"Loading content from small-tests directory using Lean toolchain {myToolchain}"
   let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := some myToolchain)
   let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
