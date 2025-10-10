@@ -445,30 +445,9 @@ def main : IO UInt32 := do
   IO.println "Checking proof states for induction/cases alts"
   IO.println "Setting up small-tests directory"
   let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
-  cleanupDemo "small-tests"
-  let _out ← do
-    try
-      IO.Process.run {
-        cmd := "elan",
-        args := #["run", "--install", myToolchain, "lake", "update", "--keep-toolchain"],
-        cwd := "./small-tests",
-        env := lakeVars.map (·, none)
-      }
-    catch _ =>
-      IO.Process.run {
-        cmd := "elan",
-        args := #["run", "--install", myToolchain, "lake", "update"],
-        cwd := "./small-tests",
-        env := lakeVars.map (·, none)
-      }
-  let _out ← IO.Process.run {
-    cmd := "elan", args := #["run", "--install", myToolchain, "lake", "build", "subverso-extract-mod"],
-    cwd := "./small-tests",
-    env := lakeVars.map (·, none)
-  }
-
-  IO.println "Loading content from small-tests directory"
-  let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := myToolchain)
+  cleanupDemo (demo := "small-tests")
+  IO.println s!"Loading content from small-tests directory using Lean toolchain {myToolchain}"
+  let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := some myToolchain)
   let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
   match content.anchored with
     | .error e =>
