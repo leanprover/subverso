@@ -14,6 +14,7 @@ jobs:
         toolchain:
           - "nightly-2025-10-05"
           - "nightly-2025-10-07"
+          - "nightly-2025-10-13"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
