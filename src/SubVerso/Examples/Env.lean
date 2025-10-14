@@ -3,13 +3,11 @@ Copyright (c) 2023-2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
-public import SubVerso.Highlighting
-public import Lean.Data.Options
-public import Lean.Data.Json
-public import Lean.Data.Position
-public import Lean.Message
-public section
+import SubVerso.Highlighting
+import Lean.Data.Options
+import Lean.Data.Json
+import Lean.Data.Position
+import Lean.Message
 
 open Lean
 
