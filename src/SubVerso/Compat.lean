@@ -111,6 +111,13 @@ open Lean Elab Command
     let cmd ←
       `(instance : Coe String Std.Internal.Parsec.Error := ⟨Std.Internal.Parsec.Error.other⟩)
     elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Array.flatMap then
+    let cmd ←
+      `(def $(mkIdent `_root_.Array.flatMap) {α} {β} (f : α → Array β) (as : Array α) : Array β :=
+          as.foldl (init := #[]) fun bs a => bs ++ f a)
+    elabCommand cmd
 end
 
 namespace SubVerso.Compat
