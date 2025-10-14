@@ -629,12 +629,19 @@ namespace Frontend
 
 open Lean.Elab.Frontend
 
-structure FrontendResult where
+structure FrontendItem where
   commandSyntax : Syntax
   info : PersistentArray InfoTree
   messages : MessageLog
 
-def processCommand : Frontend.FrontendM (Bool × FrontendResult) := do
+structure FrontendResult where
+  headerSyntax : Syntax
+  items : Array FrontendItem
+
+def FrontendResult.syntax (res : FrontendResult) : Array Syntax :=
+  #[res.headerSyntax] ++ res.items.map (·.commandSyntax)
+
+def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
   updateCmdPos
   let cmdState ← getCommandState
   let ictx ← getInputContext
@@ -653,13 +660,13 @@ def processCommand : Frontend.FrontendM (Bool × FrontendResult) := do
     let res := { commandSyntax := cmd, messages, info }
     pure (Parser.isTerminalCommand cmd, res)
 
-partial def processCommands : Frontend.FrontendM (Array FrontendResult) := do
+partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM FrontendResult := do
   let mut done := false
   let mut out := #[]
   while !done do
     let (done', res) ← processCommand
     done := done'
     out := out.push res
-  return out
+  return { headerSyntax, items := out }
 
 end Frontend

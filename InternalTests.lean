@@ -212,9 +212,9 @@ def highlightWithPrefixedMessages (input : String) (msgPrefix := "subverso_test"
     env := (← getEnv)
     maxRecDepth := (← get).maxRecDepth
   }
-  let (result, { commandState, commands, .. }) ← Compat.Frontend.processCommands
+  let (result, { commandState, commands, .. }) ← Compat.Frontend.processCommands mkNullNode
     |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
-  let result := result.filter (·.commandSyntax.getKind != ``Lean.Parser.Command.eoi)
+  let result := result.items.filter (·.commandSyntax.getKind != ``Lean.Parser.Command.eoi)
   let mut hls : Highlighting.Highlighted := .empty
   let mut lastPos : Compat.String.Pos := 0
   let allMessages := result.map (·.messages.toArray) |>.flatten
