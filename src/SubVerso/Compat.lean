@@ -118,6 +118,13 @@ open Lean Elab Command
       `(def $(mkIdent `_root_.Array.flatMap) {α} {β} (f : α → Array β) (as : Array α) : Array β :=
           as.foldl (init := #[]) fun bs a => bs ++ f a)
     elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Array.flatten then
+    let cmd ←
+      `(def $(mkIdent `_root_.Array.flatten) {α} (xss : Array (Array α)) : Array α :=
+          xss.foldl (init := #[]) fun acc xs => acc ++ xs)
+    elabCommand cmd
 end
 
 namespace SubVerso.Compat
