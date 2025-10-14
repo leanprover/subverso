@@ -1527,7 +1527,7 @@ partial def highlight'
         for child in children do
           highlight' trees child tactics (lookingAt := pos.map (k, ·))
 
-private def sortSuppress (nss : List Name) : List Name :=
+def sortSuppress (nss : List Name) : List Name :=
   nss.toArray.qsort (fun x y => x.components.length > y.components.length) |>.toList
 
 def highlight (stx : Syntax) (messages : Array Message)
