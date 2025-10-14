@@ -118,7 +118,7 @@ unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.St
     -- command syntax, so we instead match them up by checking explicitly.
     let infos := infos.toArray
     let infos := cmds.map fun stx => do
-      let ⟨s, e⟩ ← stx.getRangeWithTrailing?
+      let ⟨s, e⟩ ← SubVerso.Compat.getRangeWithTrailing? stx
       infos.find? fun tree => Option.isSome <| tree.findInfo? fun i =>
         if let some ⟨s', e'⟩ := i.stx.getRange? then
           !(e < s' || s' < s) -- if neither is before the other then they overlap

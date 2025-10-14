@@ -351,6 +351,9 @@ def getTrailingTailPos? (stx : Syntax) (canonicalOnly := false) : Option String.
 def getLeadingHeadPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
   getInfoLeadingHeadPos? stx.getHeadInfo canonicalOnly
 
+def getRangeWithTrailing? (stx : Syntax) (canonicalOnly := false) : Option String.Range :=
+  return ⟨← stx.getPos? canonicalOnly, ← getTrailingTailPos? stx canonicalOnly⟩
+
 end
 
 /--
