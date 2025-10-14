@@ -3,15 +3,13 @@ Copyright (c) 2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
 import Lean.Data.Json
 import Lean.Data.Position
 import Lean.Syntax
 import Lean.Elab.Command
-public import SubVerso.Compat
-meta import SubVerso.Compat
-public meta import SubVerso.Examples.Slice.Attribute
-public section
+import SubVerso.Compat
+import SubVerso.Compat
+import SubVerso.Examples.Slice.Attribute
 
 open Lean (SourceInfo Syntax Environment FileMap MonadEnv MonadError MonadFileMap getFileMap getEnv nullKind)
 
@@ -21,7 +19,7 @@ namespace SubVerso.Examples.Slice
 
 open Attribute
 
-private meta def takeComments (ws : Substring) : Array (SourceInfo × Substring) := Id.run do
+private def takeComments (ws : Substring) : Array (SourceInfo × Substring) := Id.run do
   let mut iter : String.Iterator := ws.toIterator
   let mut leading := iter
   let mut found := #[]
@@ -61,7 +59,7 @@ private meta def takeComments (ws : Substring) : Array (SourceInfo × Substring)
       iter := iter.next
   found
 
-private meta def commentString (str : Substring) : Substring :=
+private def commentString (str : Substring) : Substring :=
   if str.take 2 == "--".toSubstring then str.drop 2
   else str.drop 2 |>.dropRight 2
 
@@ -71,11 +69,11 @@ private structure SliceCommand where
   commentAt : String.Range
 deriving Repr
 
-private meta def SliceCommand.beginRange := SliceCommand.mk true
-private meta def SliceCommand.endRange := SliceCommand.mk false
+private def SliceCommand.beginRange := SliceCommand.mk true
+private def SliceCommand.endRange := SliceCommand.mk false
 
 open SubVerso.Compat.Parsec String in
-private meta def sliceCommand (range : String.Range) : Parsec SliceCommand := do
+private def sliceCommand (range : String.Range) : Parsec SliceCommand := do
   ws
   skipString "!!"
   ws
@@ -105,7 +103,7 @@ where
     pure <| .endRange name range
 
 
-private meta partial def getComments : Syntax → Array (SourceInfo × Substring × Option SliceCommand)
+private partial def getComments : Syntax → Array (SourceInfo × Substring × Option SliceCommand)
   | .atom si _str => ws si
   | .ident si _str _x _ => ws si
   | .node si _k sub =>
@@ -133,13 +131,13 @@ Returns false in the following circumstances:
  * No range can be found for the syntax
  * A range is found, but it exceeds rng in one or both directions or does not overlap it
 -/
-private meta def syntaxIn (stx : Syntax) (rng : String.Range) : Bool :=
+private def syntaxIn (stx : Syntax) (rng : String.Range) : Bool :=
   if let some sr := stx.getRange? then
     rng.includes sr
   else
     false
 
-private meta partial def removeRanges (env : Environment) (rngs : Array String.Range) (stx : Syntax) : Syntax :=
+private partial def removeRanges (env : Environment) (rngs : Array String.Range) (stx : Syntax) : Syntax :=
   match stx with
   | .atom .. | .ident .. | .missing => stx
   | .node info kind subs => Id.run do
@@ -163,7 +161,7 @@ private meta partial def removeRanges (env : Environment) (rngs : Array String.R
         pure <| .node info kind newSubs
     else pure stx
 
-private meta def getSlices (slices : Array SliceCommand) : Except String (HashMap String (Array String.Range)) := do
+private def getSlices (slices : Array SliceCommand) : Except String (HashMap String (Array String.Range)) := do
   let mut opened : HashMap String (Compat.String.Pos) := {}
   let mut closed : HashMap String (Array String.Range) := {}
   for s in slices do
@@ -178,7 +176,7 @@ private meta def getSlices (slices : Array SliceCommand) : Except String (HashMa
       else .error s!"Slice '{name}' not open"
   pure closed
 
-private meta partial def removeSliceComments (slices : Array SliceCommand) (fileMap : FileMap) : Syntax → Syntax
+private partial def removeSliceComments (slices : Array SliceCommand) (fileMap : FileMap) : Syntax → Syntax
   | .atom si str => .atom (remFromSourceInfo si) str
   | .ident si str n pres => .ident (remFromSourceInfo si) str n pres
   | .missing => .missing
@@ -222,12 +220,12 @@ where
     newStr := newStr ++ fileMap.source.extract start str.stopPos
     if found then newStr.toSubstring else str
 
-meta structure Slices where
+structure Slices where
   original : Syntax
   residual : Syntax
   sliced : HashMap String Syntax
 
-meta def sliceSyntax [Monad m] [MonadEnv m] [MonadError m] [MonadFileMap m] (stx : Syntax) : m Slices := do
+def sliceSyntax [Monad m] [MonadEnv m] [MonadError m] [MonadFileMap m] (stx : Syntax) : m Slices := do
   let commands := getComments stx |>.filterMap (fun (_, _, cmd?) => cmd?)
   let ss ←
     match getSlices commands with
@@ -249,7 +247,7 @@ namespace Syntax
 
 
 @[slicer null]
-meta def null : Slicer := fun go stx rngs => do
+def null : Slicer := fun go stx rngs => do
   let .node si k subs := stx
     | none
   let newSubs := subs.filter (fun s => !rngs.any (syntaxIn s)) |>.map go
@@ -257,7 +255,7 @@ meta def null : Slicer := fun go stx rngs => do
   return .node si k newSubs
 
 @[slicer Lean.Parser.Tactic.tacticSeq1Indented]
-meta def tacticSeq1Indented : Slicer := fun go stx rngs => do
+def tacticSeq1Indented : Slicer := fun go stx rngs => do
   let .node si k #[.node si' k' subs] := stx
     | none
   let mut out : Array Syntax := #[]
