@@ -38,3 +38,7 @@ jobs:
 
           De-modulized version of https://github.com/${{ github.repository }}/commit/${{ github.sha }}" || true
           git push --force origin no-modules
+
+          # Also tag this version for posterity
+          git tag no-modules/${{ github.sha }}
+          git push origin no-modules/${{ github.sha }}

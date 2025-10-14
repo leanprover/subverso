@@ -23,7 +23,8 @@ The code in `main` uses the Lean module system. For compatibility with
 older Lean versions, a "demodulized" version of the code is generated
 on each commit to `main`. This is force-pushed to the `no-modules`
 branch. The "demodulized" version has been rewritten by the script
-`demodulize.py`.
+`demodulize.py`. Additionally, the no-module code generated from commit
+`abc123def456` on `main` is tagged with `no-modules/abc123def456` for posterity.
 
 Versions of Lean prior to `4.25.0` or `nightly-2025-10-07` should use
 the `no-modules` branch.
