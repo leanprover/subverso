@@ -95,36 +95,26 @@ unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.St
     let cmdPos := parserState.pos
     let cmdSt ← IO.mkRef { commandState, parserState, cmdPos }
 
-    processCommands pctx cmdSt
+    let res ← Compat.Frontend.processCommands pctx cmdSt
 
     -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
     -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.
     -- This fixup replaces it with an empty substring that's actually at the end of the input, which
     -- fixes this.
-    let cmdStx := (← cmdSt.get).commands.map fun cmd =>
+    let cmdStx := (res.map (·.commandSyntax)).map fun cmd =>
       if cmd.isOfKind ``Lean.Parser.Command.eoi then
         let s := {contents.toSubstring with startPos := contents.endPos, stopPos := contents.endPos}
         .node .none ``Lean.Parser.Command.eoi #[.atom (.original s contents.endPos s contents.endPos) ""]
       else cmd
 
     let infos := (← cmdSt.get).commandState.infoState.trees
-    let msgs := Compat.messageLogArray (← cmdSt.get).commandState.messages
-
+    let msgs := Array.flatten (res.map (Compat.messageLogArray ·.messages))
 
     let .node _ _ cmds := mkNullNode (#[headerStx] ++ cmdStx) |>.updateLeading |> wholeFile contents
       | panic! "updateLeading created non-node"
 
-    -- After Lean nightly-2025-10-13, there's no longer a 1-to-1 mapping between info trees and
-    -- command syntax, so we instead match them up by checking explicitly.
-    let infos := infos.toArray
-    let infos := cmds.map fun stx => do
-      let ⟨s, e⟩ ← SubVerso.Compat.getRangeWithTrailing? stx
-      infos.find? fun tree => Option.isSome <| tree.findInfo? fun i =>
-        if let some ⟨s', e'⟩ := i.stx.getRange? then
-          !(e < s' || s' < s) -- if neither is before the other then they overlap
-        else false
+    let hls ← (Frontend.runCommandElabM <| liftTermElabM <| Highlighting.highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)) pctx cmdSt
 
-    let hls ← (Frontend.runCommandElabM <| liftTermElabM <| highlightMany cmds msgs infos (suppressNamespaces := suppressedNamespaces.toList)) pctx cmdSt
     let items : Array ModuleItem := hls.zip cmds |>.map fun (hl, stx) => {
       defines := hl.definedNames.toArray,
       kind := stx.getKind,

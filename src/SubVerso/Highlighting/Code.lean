@@ -1598,6 +1598,32 @@ where
     modifyGet fun (st : HighlightState) => (Highlighted.fromOutput st.output, {st with output := []})
 
 
+/--
+Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
+module, where each command has its own corresponding tree.
+
+The work of constructing the alias table is performed once, with all the trees together.
+-/
+def highlightFrontendResult (result : Array Compat.Frontend.FrontendResult)
+    (suppressNamespaces : List Name := []) : TermElabM (Array Highlighted) := do
+  let trees' := result.flatMap (·.info.toArray)
+  let infoTable : InfoTable := .ofInfoTrees trees'
+  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
+  let ids := build modrefs
+
+  let mut hls := #[]
+
+  for cmd in result do
+    let st ← HighlightState.ofMessages cmd.commandSyntax (Compat.messageLogArray cmd.messages)
+    let (hl, _) ← go cmd |>.run ⟨ids, true, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
+    hls := hls.push hl
+
+  return hls
+where
+  go (res : Compat.Frontend.FrontendResult) := do
+    let _ ← highlight' res.info.toArray res.commandSyntax true
+    modifyGet fun (st : HighlightState) => (Highlighted.fromOutput st.output, {st with output := []})
+
 def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := []) : TermElabM (Array (Highlighted.Goal Highlighted)) := do

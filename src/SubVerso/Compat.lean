@@ -5,6 +5,7 @@ Author: David Thrane Christiansen
 -/
 module
 public meta import Lean.Elab
+import Lean.Elab.Frontend
 import Lean.Data.Lsp
 -- This transitively gets us Std.Internal.Parsec.Basic on Lean versions in which it exists
 import Lean.Data.Json.Parser
@@ -608,3 +609,43 @@ elab_rules : command
       elabCommand (← `(open $ns:ident))
     else
       elabCommand (← `(open $ns:ident hiding $xs*))
+
+
+namespace Frontend
+
+open Lean.Elab.Frontend
+
+structure FrontendResult where
+  commandSyntax : Syntax
+  info : PersistentArray InfoTree
+  messages : MessageLog
+
+def processCommand : Frontend.FrontendM (Bool × FrontendResult) := do
+  updateCmdPos
+  let cmdState ← getCommandState
+  let ictx ← getInputContext
+  let pstate ← getParserState
+  let scope := cmdState.scopes.head!
+  let pmctx := { env := cmdState.env, options := scope.opts, currNamespace := scope.currNamespace, openDecls := scope.openDecls }
+  match profileit "parsing" scope.opts fun _ => Parser.parseCommand ictx pmctx pstate cmdState.messages with
+  | (cmd, ps, messages) =>
+    modify fun s => { s with commands := s.commands.push cmd }
+    setParserState ps
+    setMessages {}
+    runCommandElabM <| setInfoState { enabled := true }
+    elabCommandAtFrontend cmd
+    let messages := messages ++ (← getCommandState).messages
+    let info := (← getCommandState).infoState.trees
+    let res := { commandSyntax := cmd, messages, info }
+    pure (Parser.isTerminalCommand cmd, res)
+
+partial def processCommands : Frontend.FrontendM (Array FrontendResult) := do
+  let mut done := false
+  let mut out := #[]
+  while !done do
+    let (done', res) ← processCommand
+    done := done'
+    out := out.push res
+  return out
+
+end Frontend
