@@ -633,13 +633,58 @@ structure FrontendItem where
   commandSyntax : Syntax
   info : PersistentArray InfoTree
   messages : MessageLog
+deriving Inhabited
 
 structure FrontendResult where
   headerSyntax : Syntax
   items : Array FrontendItem
+deriving Inhabited
 
 def FrontendResult.syntax (res : FrontendResult) : Array Syntax :=
   #[res.headerSyntax] ++ res.items.map (·.commandSyntax)
+
+/--
+Updates the leading and trailing tokens of the result. `contents` should be the string that was parsed.
+-/
+partial def FrontendResult.updateLeading (res : FrontendResult) (contents : String) : FrontendResult :=
+  let res := { res with items := res.items.map fun i : FrontendItem => { i with commandSyntax := fixupEnd i.commandSyntax } }
+  if let .node _ _ cmds := mkNullNode res.syntax |>.updateLeading |> wholeFile then
+    let headerSyntax := cmds[0]!
+    { res with
+      headerSyntax,
+      items := res.items.zip (cmds.extract 1 cmds.size) |>.map fun (item, commandSyntax) =>
+        { item with commandSyntax } }
+  else
+    panic! "`updateLeading` created a non-node"
+where
+  /--
+  Extends the last token's trailing whitespace to include the rest of the file.
+  -/
+  wholeFile  (stx : Syntax) : Syntax :=
+    wholeFile' stx |>.getD stx
+  wholeFile' : Syntax → Option Syntax
+  | Syntax.atom info val => pure <| Syntax.atom (wholeFileInfo info) val
+  | Syntax.ident info rawVal val pre => pure <| Syntax.ident (wholeFileInfo info) rawVal val pre
+  | Syntax.node info k args => do
+    for i in [0:args.size - 1] do
+      let j := args.size - (i + 1)
+      if let some s := wholeFile' args[j]! then
+        let args := args.set! j s
+        return Syntax.node info k args
+    none
+  | .missing => none
+  wholeFileInfo : SourceInfo → SourceInfo
+    | .original l l' t _ => .original l l' t contents.endPos
+    | i => i
+  -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
+  -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.
+  -- This fixup replaces it with an empty substring that's actually at the end of the input, which
+  -- fixes this.
+  fixupEnd (cmd : Syntax) :=
+    if cmd.isOfKind ``Lean.Parser.Command.eoi then
+      let s := { contents.toSubstring with startPos := contents.endPos, stopPos := contents.endPos }
+      .node .none ``Lean.Parser.Command.eoi #[.atom (.original s contents.endPos s contents.endPos) ""]
+    else cmd
 
 def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
   updateCmdPos

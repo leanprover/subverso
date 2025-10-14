@@ -97,25 +97,14 @@ unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.St
 
     let res ← Compat.Frontend.processCommands headerStx pctx cmdSt
 
-    -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
-    -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.
-    -- This fixup replaces it with an empty substring that's actually at the end of the input, which
-    -- fixes this.
-    let cmdStx := (res.items.map (·.commandSyntax)).map fun cmd =>
-      if cmd.isOfKind ``Lean.Parser.Command.eoi then
-        let s := {contents.toSubstring with startPos := contents.endPos, stopPos := contents.endPos}
-        .node .none ``Lean.Parser.Command.eoi #[.atom (.original s contents.endPos s contents.endPos) ""]
-      else cmd
-
     let infos := (← cmdSt.get).commandState.infoState.trees
     let msgs := Array.flatten (res.items.map (Compat.messageLogArray ·.messages))
 
-    let .node _ _ cmds := mkNullNode (#[headerStx] ++ cmdStx) |>.updateLeading |> wholeFile contents
-      | panic! "updateLeading created non-node"
+    let res := res.updateLeading contents
 
     let hls ← (Frontend.runCommandElabM <| liftTermElabM <| Highlighting.highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)) pctx cmdSt
 
-    let items : Array ModuleItem := hls.zip cmds |>.map fun (hl, stx) => {
+    let items : Array ModuleItem := hls.zip res.syntax |>.map fun (hl, stx) => {
       defines := hl.definedNames.toArray,
       kind := stx.getKind,
       range := stx.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e),
