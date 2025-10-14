@@ -205,25 +205,27 @@ partial def hlStringWithMessages : Highlighting.Highlighted → String
   | .text s | .token ⟨_, s⟩ | .unparsed s => s
 
 open Lean Elab Command in
-def highlightWithPrefixedMessages (input : String) (msgPrefix := "subverso_test")
-    : CommandElabM Highlighting.Highlighted := do
+def highlightWithPrefixedMessages (input : String) (msgPrefix := "subverso_test") :
+    CommandElabM Highlighting.Highlighted := do
   let inputCtx := Parser.mkInputContext input "<input>"
   let commandState : Command.State := {
     env := (← getEnv)
     maxRecDepth := (← get).maxRecDepth
   }
-  let (_, { commandState, commands, .. }) ← Frontend.processCommands
+  let (result, { commandState, commands, .. }) ← Compat.Frontend.processCommands mkNullNode
     |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let result := result.items.filter (·.commandSyntax.getKind != ``Lean.Parser.Command.eoi)
   let mut hls : Highlighting.Highlighted := .empty
   let mut lastPos : Compat.String.Pos := 0
-  for stx in commands do
+  let allMessages := result.map (·.messages.toArray) |>.flatten
+  for cmd in result do
     let hl ← runTermElabM fun _ =>
       withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
-        let msgs ← commandState.messages.toArray.filterM fun msg =>
+        let msgs ← allMessages.filterM fun msg =>
           return (← msg.toString).startsWith msgPrefix
-        Highlighting.highlightIncludingUnparsed stx (startPos? := lastPos)
-          msgs commandState.infoState.trees
-    lastPos := Compat.getTrailingTailPos? stx |>.getD lastPos
+        Highlighting.highlightIncludingUnparsed cmd.commandSyntax (startPos? := lastPos)
+          msgs cmd.info
+    lastPos := Compat.getTrailingTailPos? cmd.commandSyntax |>.getD lastPos
     hls := hls ++ hl
   return hls
 

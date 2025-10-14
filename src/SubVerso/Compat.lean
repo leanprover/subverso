@@ -5,6 +5,7 @@ Author: David Thrane Christiansen
 -/
 module
 public meta import Lean.Elab
+import Lean.Elab.Frontend
 import Lean.Data.Lsp
 -- This transitively gets us Std.Internal.Parsec.Basic on Lean versions in which it exists
 import Lean.Data.Json.Parser
@@ -109,6 +110,20 @@ open Lean Elab Command
   if (← getEnv).contains `Std.Internal.Parsec.Error.other then
     let cmd ←
       `(instance : Coe String Std.Internal.Parsec.Error := ⟨Std.Internal.Parsec.Error.other⟩)
+    elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Array.flatMap then
+    let cmd ←
+      `(def $(mkIdent `_root_.Array.flatMap) {α} {β} (f : α → Array β) (as : Array α) : Array β :=
+          as.foldl (init := #[]) fun bs a => bs ++ f a)
+    elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Array.flatten then
+    let cmd ←
+      `(def $(mkIdent `_root_.Array.flatten) {α} (xss : Array (Array α)) : Array α :=
+          xss.foldl (init := #[]) fun acc xs => acc ++ xs)
     elabCommand cmd
 end
 
@@ -350,6 +365,9 @@ def getTrailingTailPos? (stx : Syntax) (canonicalOnly := false) : Option String.
 
 def getLeadingHeadPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
   getInfoLeadingHeadPos? stx.getHeadInfo canonicalOnly
+
+def getRangeWithTrailing? (stx : Syntax) (canonicalOnly := false) : Option String.Range :=
+  return ⟨← stx.getPos? canonicalOnly, ← getTrailingTailPos? stx canonicalOnly⟩
 
 end
 
@@ -605,3 +623,95 @@ elab_rules : command
       elabCommand (← `(open $ns:ident))
     else
       elabCommand (← `(open $ns:ident hiding $xs*))
+
+
+namespace Frontend
+
+open Lean.Elab.Frontend
+
+structure FrontendItem where
+  commandSyntax : Syntax
+  info : PersistentArray InfoTree
+  messages : MessageLog
+deriving Inhabited
+
+structure FrontendResult where
+  headerSyntax : Syntax
+  items : Array FrontendItem
+deriving Inhabited
+
+def FrontendResult.syntax (res : FrontendResult) : Array Syntax :=
+  #[res.headerSyntax] ++ res.items.map (·.commandSyntax)
+
+/--
+Updates the leading and trailing tokens of the result. `contents` should be the string that was parsed.
+-/
+partial def FrontendResult.updateLeading (res : FrontendResult) (contents : String) : FrontendResult :=
+  let res := { res with items := res.items.map fun i : FrontendItem => { i with commandSyntax := fixupEnd i.commandSyntax } }
+  if let .node _ _ cmds := mkNullNode res.syntax |>.updateLeading |> wholeFile then
+    let headerSyntax := cmds[0]!
+    { res with
+      headerSyntax,
+      items := res.items.zip (cmds.extract 1 cmds.size) |>.map fun (item, commandSyntax) =>
+        { item with commandSyntax } }
+  else
+    panic! "`updateLeading` created a non-node"
+where
+  /--
+  Extends the last token's trailing whitespace to include the rest of the file.
+  -/
+  wholeFile  (stx : Syntax) : Syntax :=
+    wholeFile' stx |>.getD stx
+  wholeFile' : Syntax → Option Syntax
+  | Syntax.atom info val => pure <| Syntax.atom (wholeFileInfo info) val
+  | Syntax.ident info rawVal val pre => pure <| Syntax.ident (wholeFileInfo info) rawVal val pre
+  | Syntax.node info k args => do
+    for i in [0:args.size - 1] do
+      let j := args.size - (i + 1)
+      if let some s := wholeFile' args[j]! then
+        let args := args.set! j s
+        return Syntax.node info k args
+    none
+  | .missing => none
+  wholeFileInfo : SourceInfo → SourceInfo
+    | .original l l' t _ => .original l l' t contents.endPos
+    | i => i
+  -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
+  -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.
+  -- This fixup replaces it with an empty substring that's actually at the end of the input, which
+  -- fixes this.
+  fixupEnd (cmd : Syntax) :=
+    if cmd.isOfKind ``Lean.Parser.Command.eoi then
+      let s := { contents.toSubstring with startPos := contents.endPos, stopPos := contents.endPos }
+      .node .none ``Lean.Parser.Command.eoi #[.atom (.original s contents.endPos s contents.endPos) ""]
+    else cmd
+
+def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
+  updateCmdPos
+  let cmdState ← getCommandState
+  let ictx ← getInputContext
+  let pstate ← getParserState
+  let scope := cmdState.scopes.head!
+  let pmctx := { env := cmdState.env, options := scope.opts, currNamespace := scope.currNamespace, openDecls := scope.openDecls }
+  match profileit "parsing" scope.opts fun _ => Parser.parseCommand ictx pmctx pstate cmdState.messages with
+  | (cmd, ps, messages) =>
+    modify fun s => { s with commands := s.commands.push cmd }
+    setParserState ps
+    setMessages {}
+    runCommandElabM <| setInfoState { enabled := true }
+    elabCommandAtFrontend cmd
+    let messages := messages ++ (← getCommandState).messages
+    let info := (← getCommandState).infoState.trees
+    let res := { commandSyntax := cmd, messages, info }
+    pure (Parser.isTerminalCommand cmd, res)
+
+partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM FrontendResult := do
+  let mut done := false
+  let mut out := #[]
+  while !done do
+    let (done', res) ← processCommand
+    done := done'
+    out := out.push res
+  return { headerSyntax, items := out }
+
+end Frontend
