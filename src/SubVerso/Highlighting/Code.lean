@@ -738,7 +738,7 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
       renderTagged k? doc'
   | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
 where
-  tokenEnder str := str.isEmpty || !(str.get 0 |>.isAlphanum)
+  tokenEnder str := str.isEmpty || !(Compat.String.Pos.get str 0 |>.isAlphanum)
 
 partial def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
   match code with
@@ -882,7 +882,7 @@ def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
       -- TODO: decide how we want to handle messages with no end location or an end
       -- location equal to the starting position (for now, we go to the next whitespace)
       let nextWhitespace :=
-        let nextPos := text.source.next msgPosUtf8  -- ensure we don't have a 0-length span
+        let nextPos := Compat.String.Pos.next text.source msgPosUtf8  -- ensure we don't have a 0-length span
         let remaining := Substring.mk text.source nextPos text.source.endPos
         remaining.takeWhile (!·.isWhitespace) |>.stopPos
       if startPos ≤ msgPosUtf8 && msgPosUtf8 ≤ endPos then
@@ -937,7 +937,7 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
   let .original leading pos trailing endPos := info
     | match info with
       | .synthetic b e =>
-        let str := text.source.extract b e
+        let str := Compat.String.Pos.extract text.source b e
         throwError "Syntax {blame} not original, can't highlight: '{str}'"
       | _ => throwError "Syntax {blame} not original, can't highlight: {repr info}"
 
@@ -1321,7 +1321,7 @@ def highlightSpecial
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
       hl trees tactics none e
       if let some ⟨pos, endPos⟩ := tk.getRange? then
-        emitToken stx tk.getHeadInfo <| .mk .unknown <| (← getFileMap).source.extract pos endPos
+        emitToken stx tk.getHeadInfo <| .mk .unknown <| Compat.String.Pos.extract (← getFileMap).source pos endPos
       else
         emitString' "."
       hl trees tactics none field
@@ -1418,7 +1418,7 @@ partial def highlight'
               -- Manually bump the last-seen position so we don't double-print the dot.
               -- The source info for `y` has an erroneous trailing tail pos of `0`,
               -- so we use `tailPos?` since it can't have trailing whitespace anyway
-              setLastPos <| (← getFileMap).source.next <$> y.getTailPos?
+              setLastPos <| Compat.String.Pos.next (← getFileMap).source <$> y.getTailPos?
               highlight' trees field tactics
             else
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Not a field.") do
@@ -1446,9 +1446,9 @@ partial def highlight'
         return
       else
         emitToken stx i <| (⟨ ·,  x⟩) <|
-        match x.get? 0 with
+        match Compat.String.Pos.get? x 0 with
         | some '#' =>
-          match x.get? ((0 : Compat.String.Pos) + '#') with
+          match Compat.String.Pos.get? x ((0 : Compat.String.Pos) + '#') with
           | some c =>
             if c.isAlpha then .keyword name occ docs
             else .unknown

@@ -205,21 +205,21 @@ where
         -- delete whole lines; otherwise, delete just the comment's range
         let startPos := fileMap.toPosition s.commentAt.start
         let startLine := fileMap.positions[startPos.line - 1]!
-        let preComment := fileMap.source.extract startLine s.commentAt.start
+        let preComment := Compat.String.Pos.extract fileMap.source startLine s.commentAt.start
 
         let endPos := fileMap.toPosition s.commentAt.stop
         let endLine := fileMap.positions[endPos.line]!
-        let postComment := fileMap.source.extract s.commentAt.stop endLine
+        let postComment := Compat.String.Pos.extract fileMap.source s.commentAt.stop endLine
         let deleteLines := preComment.all Char.isWhitespace && postComment.all Char.isWhitespace
 
         if deleteLines then
-          newStr := fileMap.source.extract start startLine
+          newStr := Compat.String.Pos.extract fileMap.source start startLine
           start := endLine
         else
-          newStr := fileMap.source.extract start s.commentAt.start
+          newStr := Compat.String.Pos.extract fileMap.source start s.commentAt.start
           start := s.commentAt.stop
 
-    newStr := newStr ++ fileMap.source.extract start str.stopPos
+    newStr := newStr ++ Compat.String.Pos.extract fileMap.source start str.stopPos
     if found then newStr.toSubstring else str
 
 meta structure Slices where

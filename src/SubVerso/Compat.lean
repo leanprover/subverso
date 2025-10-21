@@ -303,6 +303,48 @@ abbrev String.Pos := %first_succeeding -warning [
 ]
 end
 
+abbrev String.Pos.next (string : String) (pos : String.Pos) : String.Pos :=
+  %first_succeeding -warning [
+    _root_.String.Pos.Raw.next string pos,
+    string.next pos
+  ]
+
+abbrev String.Pos.get (string : String) (pos : String.Pos) : Char :=
+  %first_succeeding -warning [
+    _root_.String.Pos.Raw.get string pos,
+    string.get pos
+  ]
+
+abbrev String.Pos.get! (string : String) (pos : String.Pos) : Char :=
+  %first_succeeding -warning [
+    _root_.String.Pos.Raw.get! string pos,
+    string.get! pos
+  ]
+
+abbrev String.Pos.get? (string : String) (pos : String.Pos) : Option Char :=
+  %first_succeeding -warning [
+    _root_.String.Pos.Raw.get? string pos,
+    string.get? pos
+  ]
+
+abbrev String.Pos.extract (string : String) (pos1 pos2 : String.Pos) : String :=
+  %first_succeeding -warning [
+    _root_.String.Pos.Raw.extract string pos1 pos2,
+    string.extract pos1 pos2
+  ]
+
+abbrev String.atEnd (string : String) (pos : String.Pos) : Bool :=
+  %first_succeeding -warning [
+    String.Pos.Raw.atEnd string pos,
+    string.atEnd pos
+  ]
+
+abbrev String.splitToList (string : String) (p : Char → Bool) : List String :=
+  %first_succeeding -warning [
+    string.splitToList p, string.split p
+  ]
+
+
 section
 /- Backports of syntax position functions from later Lean versions-/
 

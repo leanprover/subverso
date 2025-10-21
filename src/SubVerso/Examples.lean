@@ -278,7 +278,7 @@ meta def elabExample
     | throwErrorAt (Compat.Array.back! allCommands) "Failed to get ending source position"
 
   let text ← getFileMap
-  let str := text.source.extract b' e'
+  let str := Compat.String.Pos.extract text.source b' e'
   if config.error || !config.keep then set initSt
   saveExample name hl str (text.toPosition b) (text.toPosition e) freshMsgs config.kind
 
@@ -288,7 +288,7 @@ meta def elabExample
       | throwErrorAt term "Failed to get source position"
     let .original _ _ trailing stopPos := term.getTailInfo
       | throwErrorAt term "Failed to get source position"
-    let str := text.source.extract leading.startPos trailing.stopPos
+    let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     saveExample (mkIdentFrom term <| name.getId ++ tmName) #[hl] str
       (text.toPosition startPos) (text.toPosition stopPos)
       freshMsgs (config.kind.map (· ++ `inner))
@@ -407,7 +407,7 @@ elab_rules : command
     let text ← getFileMap
     let .original leading startPos trailing stopPos := x.raw.getHeadInfo
       | throwErrorAt x "Failed to get source position"
-    let str := text.source.extract leading.startPos trailing.stopPos
+    let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     let suppressedNS ← getSuppressed
     let hl ← liftTermElabM <| highlight x #[] trees suppressedNS
     saveExample name #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] none
@@ -426,7 +426,7 @@ elab_rules : command
     let text ← getFileMap
     let .original leading startPos trailing stopPos := x.raw.getHeadInfo
       | throwErrorAt x "Failed to get source position"
-    let str := text.source.extract leading.startPos trailing.stopPos
+    let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     let suppressedNS ← getSuppressed
     let hl ← liftTermElabM <| highlight tm #[] trees suppressedNS
     let kind? := kind?.map (·.getId.eraseMacroScopes)
@@ -439,7 +439,7 @@ elab_rules : command
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
-      let str := text.source.extract leading.startPos trailing.stopPos
+      let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
       saveExample (mkIdentFrom term (x.getId ++ tmName)) #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner))
 
 private meta def biDesc : BinderInfo → String
@@ -534,7 +534,7 @@ meta def checkSignature
     | throwErrorAt sig.raw "Failed to get source position"
   let text ← getFileMap
   let suppressedNS ← getSuppressed
-  let str := text.source.extract leading.startPos trailing.stopPos
+  let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
   let trees := targetTrees ++ trees
   let hl ← liftTermElabM <| withDeclName `x do
     pure <| #[← highlight sigName #[] trees suppressedNS, ← highlight sig #[] trees suppressedNS]
@@ -545,7 +545,7 @@ meta def checkSignature
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
-      let str := text.source.extract leading.startPos trailing.stopPos
+      let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
       saveExample (mkIdentFrom term (declName.getId ++ tmName)) #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] none
 
   return (hl, str, startPos, stopPos)

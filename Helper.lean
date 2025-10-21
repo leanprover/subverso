@@ -91,7 +91,7 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
         let stx? :=
           if s.hasError then
             Except.error (s.toErrorMsg ictx)
-          else if code.atEnd s.pos then
+          else if Compat.String.atEnd code s.pos then
             Except.ok (s.stxStack.back)
           else
             Except.error ((s.mkError "end of input").toErrorMsg ictx)
@@ -169,7 +169,7 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
       let stxs? :=
         if s.hasError then
           Except.error (s.toErrorMsg ictx)
-        else if code.atEnd s.pos then
+        else if Compat.String.atEnd code s.pos then
           Except.ok (s.stxStack.pop.back, s.stxStack.back)
         else
           Except.error ((s.mkError "end of input").toErrorMsg ictx)
