@@ -674,7 +674,7 @@ def Message.toString (expandTraces : List Name := []) (message : Message) : Stri
   message.contents.toString (expandTraces := expandTraces)
 
 private def minIndentString (str : String) : Nat :=
-  let indents := str.split (· == '\n') |>.filterMap fun line =>
+  let indents := Compat.String.splitToList str (· == '\n') |>.filterMap fun line =>
     if line.all (· == ' ') then none
     else some (line.takeWhile (· == ' ') |>.length)
   indents.min?.getD 0

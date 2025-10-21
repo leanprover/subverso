@@ -121,7 +121,7 @@ def checkSignature
     | throwErrorAt sig.raw "Failed to get source position"
   let text ← getFileMap
   let suppressedNS ← getSuppressed
-  let str := text.source.extract leading.startPos trailing.stopPos
+  let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
   let trees := targetTrees ++ trees
   let hl ← liftTermElabM <| withDeclName `x do
     pure <| .seq #[← highlight sigName #[] trees suppressedNS, ← highlight sig #[] trees suppressedNS]
