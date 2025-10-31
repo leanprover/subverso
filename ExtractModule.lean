@@ -62,7 +62,7 @@ where
   | .missing => none
 
   wholeFileInfo : SourceInfo → SourceInfo
-    | .original l l' t _ => .original l l' t contents.endPos
+    | .original l l' t _ => .original l l' t (Compat.String.endPos contents)
     | i => i
 
 

@@ -15,7 +15,7 @@ public section
 
 open Lean (SourceInfo Syntax Environment FileMap MonadEnv MonadError MonadFileMap getFileMap getEnv nullKind)
 
-open SubVerso.Compat (Parsec HashMap String.Pos)
+open SubVerso.Compat (Parsec HashMap String.Pos Syntax.Range)
 
 namespace SubVerso.Examples.Slice
 
@@ -68,14 +68,14 @@ private meta def commentString (str : Substring) : Substring :=
 private structure SliceCommand where
   begin : Bool
   kind : String
-  commentAt : String.Range
+  commentAt : Compat.Syntax.Range
 deriving Repr
 
 private meta def SliceCommand.beginRange := SliceCommand.mk true
 private meta def SliceCommand.endRange := SliceCommand.mk false
 
 open SubVerso.Compat.Parsec String in
-private meta def sliceCommand (range : String.Range) : Parsec SliceCommand := do
+private meta def sliceCommand (range : Compat.Syntax.Range) : Parsec SliceCommand := do
   ws
   skipString "!!"
   ws
@@ -133,13 +133,13 @@ Returns false in the following circumstances:
  * No range can be found for the syntax
  * A range is found, but it exceeds rng in one or both directions or does not overlap it
 -/
-private meta def syntaxIn (stx : Syntax) (rng : String.Range) : Bool :=
+private meta def syntaxIn (stx : Syntax) (rng : Compat.Syntax.Range) : Bool :=
   if let some sr := stx.getRange? then
     rng.includes sr
   else
     false
 
-private meta partial def removeRanges (env : Environment) (rngs : Array String.Range) (stx : Syntax) : Syntax :=
+private meta partial def removeRanges (env : Environment) (rngs : Array Compat.Syntax.Range) (stx : Syntax) : Syntax :=
   match stx with
   | .atom .. | .ident .. | .missing => stx
   | .node info kind subs => Id.run do
@@ -163,9 +163,9 @@ private meta partial def removeRanges (env : Environment) (rngs : Array String.R
         pure <| .node info kind newSubs
     else pure stx
 
-private meta def getSlices (slices : Array SliceCommand) : Except String (HashMap String (Array String.Range)) := do
+private meta def getSlices (slices : Array SliceCommand) : Except String (HashMap String (Array Compat.Syntax.Range)) := do
   let mut opened : HashMap String (Compat.String.Pos) := {}
-  let mut closed : HashMap String (Array String.Range) := {}
+  let mut closed : HashMap String (Array Compat.Syntax.Range) := {}
   for s in slices do
     match s with
     | .beginRange name rng =>
@@ -188,7 +188,7 @@ where
     | .original leading b trailing e =>
       .original (remFromSubstring leading) b (remFromSubstring trailing) e
     | other => other
-  getRange : Substring → String.Range
+  getRange : Substring → Compat.Syntax.Range
     | ⟨_, b, e⟩ => ⟨b, e⟩
   remFromSubstring (str : Substring) : Substring := Id.run do
     -- Not just an optimization - some parsers use empty strings that aren't build as substrings

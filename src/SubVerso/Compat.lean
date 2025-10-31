@@ -339,11 +339,19 @@ abbrev String.atEnd (string : String) (pos : String.Pos) : Bool :=
     string.atEnd pos
   ]
 
+abbrev String.endPos (string : String) : String.Pos :=
+  %first_succeeding -warning [
+    string.endPos,
+    string.rawEndPos
+  ]
+
+
 abbrev String.splitToList (string : String) (p : Char → Bool) : List String :=
   %first_succeeding -warning [
     string.splitToList p, string.split p
   ]
 
+abbrev Syntax.Range := %first_succeeding -warning [ _root_.String.Range, Lean.Syntax.Range]
 
 section
 /- Backports of syntax position functions from later Lean versions-/
@@ -408,7 +416,7 @@ def getTrailingTailPos? (stx : Syntax) (canonicalOnly := false) : Option String.
 def getLeadingHeadPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
   getInfoLeadingHeadPos? stx.getHeadInfo canonicalOnly
 
-def getRangeWithTrailing? (stx : Syntax) (canonicalOnly := false) : Option String.Range :=
+def getRangeWithTrailing? (stx : Syntax) (canonicalOnly := false) : Option Syntax.Range :=
   return ⟨← stx.getPos? canonicalOnly, ← getTrailingTailPos? stx canonicalOnly⟩
 
 end
@@ -716,7 +724,7 @@ where
     none
   | .missing => none
   wholeFileInfo : SourceInfo → SourceInfo
-    | .original l l' t _ => .original l l' t contents.endPos
+    | .original l l' t _ => .original l l' t (String.endPos contents)
     | i => i
   -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
   -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.
@@ -724,8 +732,8 @@ where
   -- fixes this.
   fixupEnd (cmd : Syntax) :=
     if cmd.isOfKind ``Lean.Parser.Command.eoi then
-      let s := { contents.toSubstring with startPos := contents.endPos, stopPos := contents.endPos }
-      .node .none ``Lean.Parser.Command.eoi #[.atom (.original s contents.endPos s contents.endPos) ""]
+      let s := { contents.toSubstring with startPos := String.endPos contents, stopPos := String.endPos contents }
+      .node .none ``Lean.Parser.Command.eoi #[.atom (.original s (String.endPos contents) s (String.endPos contents)) ""]
     else cmd
 
 def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
@@ -757,3 +765,9 @@ partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM Fronten
   return { headerSyntax, items := out }
 
 end Frontend
+
+def Nat.lt_step {n m : Nat} : n < m → n < m.succ :=
+  %first_succeeding -warning [
+    _root_.Nat.lt.step,
+    Nat.lt_succ_of_lt
+  ]

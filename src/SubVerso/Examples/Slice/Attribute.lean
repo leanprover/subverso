@@ -8,6 +8,7 @@ import Lean.Data.Position
 public import Lean.Syntax
 public import Lean.KeyedDeclsAttribute
 public meta import Lean.KeyedDeclsAttribute
+public import SubVerso.Compat
 public section
 
 namespace SubVerso.Examples.Slice.Attribute
@@ -27,7 +28,7 @@ private opaque mkSliceExpanderAttributeSafe (attrName typeName : Name) (desc : S
 private def mkSliceExpanderAttribute (attrName typeName : Name) (desc : String) (attrDeclName : Name := by exact decl_name%) : IO (KeyedDeclsAttribute α) :=
   mkSliceExpanderAttributeSafe attrName typeName desc attrDeclName
 
-abbrev Slicer := (Syntax → Syntax) → Syntax → Array String.Range → Option Syntax
+abbrev Slicer := (Syntax → Syntax) → Syntax → Array Compat.Syntax.Range → Option Syntax
 
 initialize slicerAttr : KeyedDeclsAttribute Slicer ←
   mkSliceExpanderAttribute `slicer ``Slicer "Indicates that this function is used to slice the given syntax kind"
