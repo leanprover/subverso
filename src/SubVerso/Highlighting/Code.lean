@@ -35,7 +35,7 @@ pre-processes it once, saving the info in an easier-to-query form for this use c
 Other info types may be added as needed for performance in the future.
 -/
 structure InfoTable where
-  tacticInfo : Compat.HashMap String.Range (Array (ContextInfo × TacticInfo)) := {}
+  tacticInfo : Compat.HashMap Compat.Syntax.Range (Array (ContextInfo × TacticInfo)) := {}
 
 instance : Inhabited InfoTable := ⟨⟨{}⟩⟩
 
@@ -555,9 +555,11 @@ def bundleMessages (msgs : Array Message) : Array MessageBundle := Id.run do
   if let some b := curr then out := out.push b
   out
 where
+
+
   lt_succ_of_lt {n k : Nat} : n < k → n < k + 1 := by
     intro lt
-    induction lt <;> apply Nat.lt.step
+    induction lt <;> apply Compat.Nat.lt_step
     . constructor
     . assumption
 
@@ -603,9 +605,9 @@ structure HighlightState where
   /-- Last source position added to the output -/
   lastPos? : Option Compat.String.Pos := none
   /-- Memoized results of searching for tactic info (by canonical range) -/
-  hasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
+  hasTacticCache : Compat.HashMap Compat.Syntax.Range (Array (Syntax × Bool)) := {}
   /-- Memoized results of searching for tactic info in children (by canonical range) -/
-  childHasTacticCache : Compat.HashMap String.Range (Array (Syntax × Bool)) := {}
+  childHasTacticCache : Compat.HashMap Compat.Syntax.Range (Array (Syntax × Bool)) := {}
 
 instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}⟩
 
@@ -883,7 +885,7 @@ def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
       -- location equal to the starting position (for now, we go to the next whitespace)
       let nextWhitespace :=
         let nextPos := Compat.String.Pos.next text.source msgPosUtf8  -- ensure we don't have a 0-length span
-        let remaining := Substring.mk text.source nextPos text.source.endPos
+        let remaining := Substring.mk text.source nextPos (Compat.String.endPos text.source)
         remaining.takeWhile (!·.isWhitespace) |>.stopPos
       if startPos ≤ msgPosUtf8 && msgPosUtf8 ≤ endPos then
         boundaries := boundaries.insert msgPosUtf8
