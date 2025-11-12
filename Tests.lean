@@ -1,7 +1,6 @@
 import SubVerso.Highlighting
 import SubVerso.Examples
 import SubVerso.Examples.Env
-import SubVerso.Examples.Slice
 import SubVerso.Module
 import SubVerso.Helper.Netstring
 import Lean.Data.Json
@@ -12,55 +11,6 @@ open SubVerso.Module (ModuleItem)
 open Lean.FromJson (fromJson?)
 
 open SubVerso
-
-section
-open Lean Elab Command
-open SubVerso.Examples.Slice
-
-elab "#test_slicing" s:str out:ident c:command : command => do
-  let {original := _, residual, sliced} ← sliceSyntax c
-
-  let mut log := ""
-
-  log := log ++ s!"Original:\n{Syntax.prettyPrint c}\n"
-  log := log ++ s!"Residual:\n{Syntax.prettyPrint residual}\n"
-  for (s, stx) in sliced.toArray do
-    log := log ++ s!"Slice {s}:\n{Syntax.prettyPrint stx}\n"
-
-  let use := s.getString
-  if let some stx := sliced[use]? then
-    elabCommand stx
-  else
-    logInfo m!"Slice '{use}' not found"
-    elabCommand residual
-  elabCommand <| ← `(def $out := $(quote log))
-
-set_option pp.rawOnError true in
-#test_slicing "foo" sliceLog
-def heya : IO Unit := do
-  IO.print "Hey"
-  -- !! begin foo
-  IO.println " there"
-  /- Bigger comment
-  -/
-  -- !! end foo
-  let x := 33 -- !! begin foo
-  if x > 3 then pure () -- !! end foo
-  if x == 3 /-
-    !! begin foo
-  -/ || true /- !! end foo -/ then pure ()
-  let _ := [1, 2/- !! begin foo-/, 3/- !! end foo-/]
-  pure ()
-
-/-- Lean versions 4.10.0 and earlier had some issues with Syntax.prettyPrint. They were fixed in 4.11, but as that's not really what's being tested, both are OK. -/
-def expectedLogOld :=
-  "Original:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  -- !! begin foo\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  -- !! end foo\n  let x := 33 -- !! begin foo\n  if x > 3 then pure () -- !! end foo\n  if x == 3 /-\n    !! begin foo\n  -/ || true /- !! end foo -/ then pure ()\n  let _ := [1, 2/- !! begin foo-/, 3/- !! end foo-/]\n  pure ( ) \nResidual:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  let x := 33 \n  if x == 3  then pure ()\n  let _ := [1, 2]\n  pure ( ) \nSlice foo:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  let x := 33 \n  if x > 3 then pure () \n  if x == 3  || true  then pure ()\n  let _ := [1, 2, 3]\n  pure ( ) \n"
-
-
-def expectedLog :=
-  "Original:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  -- !! begin foo\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  -- !! end foo\n  let x := 33 -- !! begin foo\n  if x > 3 then pure () -- !! end foo\n  if x == 3 /-\n    !! begin foo\n  -/ || true /- !! end foo -/ then pure ()\n  let _ := [1, 2/- !! begin foo-/, 3/- !! end foo-/]\n  pure ()\nResidual:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  let x := 33 \n  if x == 3  then pure ()\n  let _ := [1, 2]\n  pure ()\nSlice foo:\ndef heya : IO Unit := do\n  IO.print \"Hey\"\n  IO.println \" there\"\n  /- Bigger comment\n  -/\n  let x := 33 \n  if x > 3 then pure () \n  if x == 3  || true  then pure ()\n  let _ := [1, 2, 3]\n  pure ()\n"
-
-end
 
 open Lean in
 def exampleArray (examples : NameMap (NameMap α)) : Array α := Id.run do
@@ -341,15 +291,6 @@ partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool
     IO.FS.writeBinFile tgt data
 
 def main : IO UInt32 := do
-  IO.println "Checking the slice log"
-  -- The pretty-printer used to show the modified syntax had some bug-fixes. We can just check both.
-  if sliceLog != expectedLog && sliceLog != expectedLogOld then
-    IO.println "Mismatch between expected:"
-    IO.println expectedLog
-    IO.println "and actual:"
-    IO.println sliceLog
-    return 1
-
   IO.println "Setting up demodulized SubVerso for test code"
 
   let demoDirs : List System.FilePath := ["demo", "demo-toml", "small-tests"]

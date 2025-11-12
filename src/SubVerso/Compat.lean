@@ -524,19 +524,6 @@ def back! [Inhabited α] (xs : Array α) : α :=
   %first_succeeding [_root_.Array.back! xs, _root_.Array.back xs]
 end Array
 
-abbrev Parsec (α : Type) : Type :=
-  %first_succeeding [
-    (Lean.Parsec α : Type),
-    (Lean.Parsec String.Iterator α : Type),
-    (Std.Internal.Parsec String.Iterator α : Type)
-  ]
-
-namespace Parsec
-export_from_namespaces
-  (Lean.Parsec.String Lean.Parsec Std.Internal.Parsec.String Std.Internal.Parsec)
-  (ws skipString skipChar many1Chars satisfy)
-end Parsec
-
 @[expose]
 def HashMap := %first_succeeding [Std.HashMap, Lean.HashMap]
 @[expose]
