@@ -96,13 +96,6 @@ def supportsPrecompile (version : String) : Bool :=
       "4.22.0-rc4"
     ]
 
-def supportsMod (version : String) : Bool :=
-  if let some (y, m, _d) := nightly? version then
-    y ≥ 2025 && m ≥ 10
-  else if let some (major, _minor, _) := release? version then
-    major > 23
-  else false
-
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let fieldExists := (← getEnv).contains `Lake.Package.leanOptions
@@ -110,11 +103,20 @@ open Lean Elab Command in
 
 -- End compatibility infrastructure
 
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  try
+    _ ← Lean.getOptionDecl `experimental.module
+    elabCommand (← `(def $(mkIdent `supportsModuleSystem) := true))
+  catch
+  | _ =>
+    elabCommand (← `(def $(mkIdent `supportsModuleSystem) := false))
+
 -- Old Lean doesn't have `leanOptions` field
 meta if leanOptionsExists then
   package «subverso» where
     precompileModules := false -- supportsPrecompile Lean.versionString
-    leanOptions := if supportsMod Lean.versionString then #[⟨`experimental.module, true⟩] else #[]
+    leanOptions := if supportsModuleSystem then #[⟨`experimental.module, true⟩] else #[]
 else
   package «subverso» where
     precompileModules := false -- supportsPrecompile Lean.versionString
