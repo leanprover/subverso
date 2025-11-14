@@ -1,12 +1,13 @@
 on:
   push:
   pull_request:
+  merge_group:
 
 name: Formalities
 
 jobs:
   build:
-    name: Build
+    name: check-imports-and-headers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
