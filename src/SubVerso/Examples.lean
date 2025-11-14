@@ -212,7 +212,7 @@ meta partial def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
   let some leading := Compat.getInfoLeading? stx2.getHeadInfo
     | return stx2
 
-  let mut iter : String.Iterator := ⟨leading.str, stopPos⟩
+  let mut iter : Compat.String.Iterator := ⟨leading.str, stopPos⟩
   while iter.pos < leading.startPos && iter.curr != '\n' do
     iter := iter.next
   if iter.pos ≥ leading.startPos then return stx2 -- no newlines found

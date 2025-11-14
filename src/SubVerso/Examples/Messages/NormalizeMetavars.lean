@@ -13,13 +13,13 @@ private inductive NormMetavarState where
   /-- Not looking at a metavar -/
   | none
   /-- Saw the leading '?' -/
-  | «?» (iter : String.Iterator)
+  | «?» (iter : Compat.String.Iterator)
   /-- Saw the '?m' or '?u' -/
-  | «?m/u» (ch : Char) (iter : String.Iterator)
+  | «?m/u» (ch : Char) (iter : Compat.String.Iterator)
   /-- Saw the '?[mu].' -/
-  | «?m/u.» (ch : Char) (iter : String.Iterator)
+  | «?m/u.» (ch : Char) (iter : Compat.String.Iterator)
   /-- Saw one or more digits - '?m.[0-9]+' -/
-  | «?m/u.[0-9]+» (ch : Char) (iter : String.Iterator)
+  | «?m/u.[0-9]+» (ch : Char) (iter : Compat.String.Iterator)
 
 /--
 Consistently rewrite all substrings that look like automatic metavariables (e.g "?m.123") so
@@ -27,7 +27,7 @@ that they're ?m.1, ?m.2, etc.
 -/
 def normalizeMetavars (str : String) : String := Id.run do
   let mut out := ""
-  let mut iter := str.iter
+  let mut iter := str.compatIter
   let mut gensymCounter := 1
   let mut nums : Compat.HashMap String Nat := {}
   let mut state : NormMetavarState := .none

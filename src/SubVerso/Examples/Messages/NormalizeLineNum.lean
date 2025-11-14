@@ -31,7 +31,7 @@ Normalizes the line numbers that occur in recursion issues for less-fragile comp
 def normalizeLineNums (str : String) : String := Id.run do
   let mut assignments : HashMap Nat Nat := {}
   let mut next := 0
-  let mut iter := str.iter
+  let mut iter := str.compatIter
   let mut state : State := .nl
   let mut out : String := ""
   while h : iter.hasNext do
