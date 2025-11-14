@@ -12,10 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         toolchain:
-          - "4.25.0-rc1"
-          - "nightly-2025-10-13"
-          - "nightly-2025-10-20"
-          - "nightly-2025-10-31"
+          - "4.25.0"
           - "nightly-2025-11-12"
 
         platform:
