@@ -3,6 +3,7 @@ on:
     branches:
       - main
   pull_request:
+  merge_group:
 
 name: CI (without module system)
 
@@ -70,3 +71,9 @@ jobs:
       installer: ${{ matrix.platform.installer }}
       module-system: false
       
+
+  no-module-complete:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All tests prior to the module system passed"
