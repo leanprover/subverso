@@ -765,7 +765,7 @@ def Nat.lt_step {n m : Nat} : n < m → n < m.succ :=
     Nat.lt_succ_of_lt
   ]
 
-abbrev String.Iterator := %first_succeeding -warning [String.Legacy.Iterator, String.Iterator]
+abbrev String.Iterator : Type := %first_succeeding -warning [_root_.String.Legacy.Iterator, _root_.String.Iterator]
 
 def _root_.String.compatIter : String → Compat.String.Iterator :=
   %first_succeeding -warning [String.Legacy.iter, String.iter]
