@@ -33,5 +33,9 @@ jobs:
   module-complete:
     needs: build
     runs-on: ubuntu-latest
+    if: always()
     steps:
+      - name: "Check matrix result"
+        if: needs.build.result != 'success'
+        run: exit 1
       - run: echo "All module-system-enabled tests passed"
