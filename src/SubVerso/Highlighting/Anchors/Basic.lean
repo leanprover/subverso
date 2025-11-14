@@ -162,7 +162,7 @@ private instance : HAppend Hl String Hl where
   hAppend hl s := HAppend.hAppend hl (Highlighted.text s)
 
 def Internal.getLines (str : String) : Array String := Id.run do
-  let mut iter := str.iter
+  let mut iter := str.compatIter
   let mut lines := #[]
   let mut here := ""
   while h : iter.hasNext do
@@ -386,9 +386,9 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
   if openAnchors.isEmpty then return ⟨doc.toHighlighted , anchorOut, tacOut⟩
   else throw s!"Unclosed anchors: {", ".intercalate openAnchors.keys}"
 
-private def dropPrefix? (iter : String.Iterator) (s : String) : Option String.Iterator := Id.run do
+private def dropPrefix? (iter : Compat.String.Iterator) (s : String) : Option Compat.String.Iterator := Id.run do
   let mut iter := iter
-  let mut iter' := s.iter
+  let mut iter' := s.compatIter
   while h : iter.hasNext ∧ iter'.hasNext do
     if iter.curr' h.1 ≠ iter'.curr' h.2 then return none
     iter := iter.next
@@ -397,7 +397,7 @@ private def dropPrefix? (iter : String.Iterator) (s : String) : Option String.It
   return (some iter)
 
 def Internal.isAnchorLike (str : String) : Bool := Id.run do
-  let mut iter := str.iter
+  let mut iter := str.compatIter
   while iter.hasNext do
     iter := iter.find fun c => c == 'A' || c == 'P'
     if let some i := dropPrefix? iter "ANCHOR" then
@@ -408,7 +408,7 @@ def Internal.isAnchorLike (str : String) : Bool := Id.run do
   return false
 
 def Internal.isStateLike (str : String) : Bool := Id.run do
-  let mut iter := str.iter
+  let mut iter := str.compatIter
   while iter.hasNext do
     iter := iter.find fun c => c == 'A' || c == 'P'
      if dropPrefix? iter "PROOF_STATE:" |>.isSome then return true

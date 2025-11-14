@@ -53,13 +53,19 @@ open Lean Elab Command
     elabCommand cmd
 
 #eval show CommandElabM Unit from do
-  if !(← getEnv).contains `String.Iterator.curr' then
+  let env ← getEnv
+  -- Generate a definition of String.Iterator.curr' on older Leans that don't have it.
+  -- Nightly 2025-11-14 changed String.Iterator into String.Legacy.Iterator.
+  if !(env.contains `String.Iterator.curr' || env.contains `String.Legacy.Iterator.curr') then
     let cmd ←
       `(def $(mkIdent `String.Iterator.curr') (iter : String.Iterator) (_ : iter.hasNext) : Char := iter.curr)
     elabCommand cmd
 
 #eval show CommandElabM Unit from do
-  if !(← getEnv).contains `String.Iterator.next' then
+  let env ← getEnv
+  -- Generate a definition of String.Iterator.next' on older Leans that don't have it.
+  -- Nightly 2025-11-14 changed String.Iterator into String.Legacy.Iterator.
+  if !(env.contains `String.Iterator.next' || env.contains `String.Legacy.Iterator.next') then
     let cmd ←
       `(def $(mkIdent `String.Iterator.next') (iter : String.Iterator) (_ : iter.hasNext) : String.Iterator := iter.next)
     elabCommand cmd
@@ -758,3 +764,8 @@ def Nat.lt_step {n m : Nat} : n < m → n < m.succ :=
     _root_.Nat.lt.step,
     Nat.lt_succ_of_lt
   ]
+
+abbrev String.Iterator := %first_succeeding -warning [String.Legacy.Iterator, String.Iterator]
+
+def _root_.String.compatIter : String → Compat.String.Iterator :=
+  %first_succeeding -warning [String.Legacy.iter, String.iter]
