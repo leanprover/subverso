@@ -893,7 +893,7 @@ def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
       -- location equal to the starting position (for now, we go to the next whitespace)
       let nextWhitespace :=
         let nextPos := Compat.String.Pos.next text.source msgPosUtf8  -- ensure we don't have a 0-length span
-        let remaining := Substring.mk text.source nextPos (Compat.String.endPos text.source)
+        let remaining := Compat.Substring.mk text.source nextPos (Compat.String.endPos text.source)
         remaining.takeWhile (!·.isWhitespace) |>.stopPos
       if startPos ≤ msgPosUtf8 && msgPosUtf8 ≤ endPos then
         boundaries := boundaries.insert msgPosUtf8
@@ -922,7 +922,7 @@ def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
         let startPos := boundaries[i - 1]!
         let endPos := boundaries[i]!
         openUntil <| text.toPosition startPos
-        let string := Substring.mk text.source startPos endPos |>.toString
+        let string := Compat.Substring.mk text.source startPos endPos |>.toString
         modify fun st => {st with output := Output.addUnparsed st.output string}
         closeUntil endPos
         setLastPos endPos

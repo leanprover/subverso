@@ -220,9 +220,9 @@ meta partial def transferLines (stx1 stx2 : Syntax) : Syntax := Id.run do
 
   adjustLeading ({ · with startPos := iter.pos }) stx2
 where
-  adjustLeading (f : Substring → Substring) (stx : Syntax) : Syntax :=
+  adjustLeading (f : Compat.Substring → Compat.Substring) (stx : Syntax) : Syntax :=
     adjustLeading' f stx |>.getD stx
-  adjustLeading' (f : Substring → Substring) : Syntax → Option Syntax
+  adjustLeading' (f : Compat.Substring → Compat.Substring) : Syntax → Option Syntax
     | .missing => some .missing
     | .ident info rawVal x pre => some <| .ident (adjustInfo f info) rawVal x pre
     | .node info kind nodes => Id.run do
@@ -240,7 +240,7 @@ where
         some <| .node info kind nodes'
       else none
     | .atom info val => some <| .atom (adjustInfo f info) val
-  adjustInfo (f : Substring → Substring) : SourceInfo → SourceInfo
+  adjustInfo (f : Compat.Substring → Compat.Substring) : SourceInfo → SourceInfo
     | .original leading pos trailing tailPos => .original (f leading) pos trailing tailPos
     | other => other
 

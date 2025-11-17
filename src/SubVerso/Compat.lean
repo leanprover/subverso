@@ -83,7 +83,8 @@ open Lean Elab Command
     elabCommand cmd
 
 #eval show CommandElabM Unit from do
-  if !(← getEnv).contains `Substring.dropPrefix? then
+  let env ← getEnv
+  if !(env.contains `Substring.dropPrefix? || env.contains `Substring.Raw.dropPrefix?) then
     let cmd ←
       `(partial def $(mkIdent `Substring.dropPrefix?) (s p : Substring) : Option Substring := loop s.startPos p.startPos
         where
@@ -358,6 +359,10 @@ abbrev String.splitToList (string : String) (p : Char → Bool) : List String :=
   ]
 
 abbrev Syntax.Range := %first_succeeding -warning [ _root_.String.Range, Lean.Syntax.Range]
+
+abbrev Substring := %first_succeeding -warning [_root_.Substring.Raw, _root_.Substring]
+
+abbrev Substring.mk := %first_succeeding -warning [@_root_.Substring.Raw.mk, @_root_.Substring.mk]
 
 section
 /- Backports of syntax position functions from later Lean versions-/
