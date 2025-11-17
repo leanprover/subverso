@@ -16,6 +16,7 @@ jobs:
           - "4.25.0"
           - "nightly-2025-11-12"
           - "nightly-2025-11-14"
+          - "nightly-2025-11-17"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
