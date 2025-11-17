@@ -113,8 +113,8 @@ def infoIncludingSyntax (t : InfoTree) (stx : Syntax) : List (ContextInfo × Inf
 section
 
 private structure State where
-  out    : Array CodeWithInfos := #[]
-  column : Nat    := 0
+  out : Array CodeWithInfos := #[]
+  column : Nat := 0
 
 private instance : Std.Format.MonadPrettyFormat (StateM State) where
   -- We avoid a structure instance update, and write these functions using pattern matching because of issue #316
@@ -608,8 +608,13 @@ structure HighlightState where
   hasTacticCache : Compat.HashMap Compat.Syntax.Range (Array (Syntax × Bool)) := {}
   /-- Memoized results of searching for tactic info in children (by canonical range) -/
   childHasTacticCache : Compat.HashMap Compat.Syntax.Range (Array (Syntax × Bool)) := {}
+  /-- Cached already-rendered terms from hovers and proof states. -/
+  terms : Compat.HashMap Expr Highlighted := {}
+  /-- Cached already-rendered terms from hovers and proof states, in an intermediate state -/
+  ppTerms : Compat.HashMap Expr CodeWithInfos := {}
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}⟩
+
+instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -617,6 +622,9 @@ def HighlightState.empty : HighlightState where
   output := []
   inMessages := []
   inTactic := none
+
+def HighlightState.resetCache (st : HighlightState) : HighlightState :=
+  { st with terms := {}, ppTerms := {} }
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     (stx : Syntax) (messages : Array Message)
@@ -1027,6 +1035,31 @@ partial def _root_.Lean.Widget.TaggedText.indent (doc : TaggedText α) : TaggedT
     | .append docs => .append (docs.map indent')
   .append #[.text "  ", indent' doc]
 
+/--
+Returns the highlighted version of `key`, if it exists in the cache; uses `render` to highlight
+`key` if not and saves it in the cache.
+-/
+def renderOrGet (key : Expr) (render : Expr → HighlightM Highlighted) : HighlightM Highlighted := do
+  if let some hl := (← get).terms.get? key then
+    return hl
+  else
+    let hl ← render key
+    modify fun st => { st with terms := st.terms.insert key hl }
+    return hl
+
+/--
+Returns the pretty-printed version of `key`, if it exists in the cache; uses `render` to
+pretty-print `key` if not and saves it in the cache.
+-/
+def renderOrGetCodeWithInfos (key : Expr) (render : Expr → HighlightM CodeWithInfos) : HighlightM CodeWithInfos := do
+  if let some tm := (← get).ppTerms.get? key then
+    return tm
+  else
+    let tm ← render key
+    modify fun st => { st with ppTerms := st.ppTerms.insert key tm }
+    return tm
+
+
 def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
   let mut goalView := #[]
@@ -1040,7 +1073,10 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     -- Tell the delaborator to tag functions that are being applied. Otherwise,
     -- functions have no tooltips or binding info in tactics.
     -- cf https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/Function.20application.20delaboration/near/265800665
-    let ci' := {ci with options := ci.options.set `pp.tagAppFns true}
+    let maxHeartbeats := (← getOptions).getNat `maxHeartbeats
+    let ci' := { ci with options :=
+        ci.options |>.set `pp.tagAppFns true |>.set `maxHeartbeats maxHeartbeats
+      }
     let runMeta {α} (act : MetaM α) : HighlightM α := ci'.runMetaM lctx act
 
     for c in lctx.decls do
@@ -1050,17 +1086,19 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       match decl with
       | .cdecl _index fvar name type _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
-        let tyStr ← renderTagged none (← runMeta (ppCodeWithInfos type))
+        let tyStr ← renderOrGet type fun e => do
+          renderTagged none (← runMeta (ppCodeWithInfos e))
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr⟩
       | .ldecl _index fvar name type val _ _ =>
         let nk ← exprKind ci lctx none (.fvar fvar)
-        let tyDoc ← ppCodeWithInfos type
-        let valDoc ← ppCodeWithInfos val
+        let tyDoc ← renderOrGetCodeWithInfos type (runMeta <| ppCodeWithInfos ·)
+        let valDoc ← renderOrGetCodeWithInfos val (runMeta <| ppCodeWithInfos ·)
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr⟩
-    let concl ← renderTagged none (← runMeta <| ppCodeWithInfos mvDecl.type)
+    let concl ← renderOrGet mvDecl.type fun e => do
+      renderTagged none (← runMeta <| ppCodeWithInfos e)
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
   pure goalView
 
@@ -1595,9 +1633,11 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
   pure hls
 where
-  go t stx := do
+  go t stx : HighlightM Highlighted := withCurrHeartbeats do
     let _ ← highlight' (Option.map (#[·]) t |>.getD #[]) stx true
-    modifyGet fun (st : HighlightState) => (Highlighted.fromOutput st.output, {st with output := []})
+    modifyGet fun (st : HighlightState) =>
+      let st := st.resetCache
+      (Highlighted.fromOutput st.output, { st with output := [] })
 
 
 /--
