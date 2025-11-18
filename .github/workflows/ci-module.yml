@@ -14,9 +14,9 @@ jobs:
       matrix:
         toolchain:
           - "4.25.0"
-          - "nightly-2025-11-12"
-          - "nightly-2025-11-14"
-          - "nightly-2025-11-17"
+          - "4.25.1"
+          - "4.26.0-rc1"
+          - "nightly-2025-11-18"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
