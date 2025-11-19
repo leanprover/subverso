@@ -246,7 +246,7 @@ partial def stripNamespaces [Monad m] [MonadReaderOf Context m] : FormatWithInfo
       for i in (← read).suppressNamespaces do
         let ns := i.toString ++ "."
         if ns.isPrefixOf str then
-          return .text (str.drop ns.length)
+          return .text (Compat.String.drop str ns.length)
       pure <| .text str -- only rewrite when tagged
     | .tag x fmt' =>
       if let some i := Compat.InfoPerPos.get? infos x then
@@ -712,17 +712,17 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
     let mut todo := txt
     let mut toks : Highlighted := .empty
     while !todo.isEmpty do
-      let ws := todo.takeWhile (·.isWhitespace)
+      let ws := Compat.String.takeWhile todo (·.isWhitespace)
       unless ws.isEmpty do
         toks := toks ++ .text ws
-        todo := todo.drop ws.length
+        todo := Compat.String.drop todo ws.length
 
       let mut foundKw := false
       for kw in ["let", "fun", "do", "match", "with", "if", "then", "else", "break", "continue", "for", "in", "mut"] do
-        if kw.isPrefixOf todo && tokenEnder (todo.drop kw.length) then
+        if kw.isPrefixOf todo && tokenEnder (Compat.String.drop todo kw.length) then
           foundKw := true
           toks := toks ++ .token ⟨.keyword none none none, kw⟩
-          todo := todo.drop kw.length
+          todo := Compat.String.drop todo kw.length
           break
       if foundKw then continue -- for whitespace or subsequent keywords
 
@@ -730,19 +730,19 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
       -- the code that matches Highlighted against strings for extraction. Instead, we need to split
       -- into tokens vs whitespace here. This assumes there's no comments, because it's used for
       -- pretty printer output.
-      let tok := todo.takeWhile (!·.isWhitespace)
+      let tok := Compat.String.takeWhile todo (!·.isWhitespace)
       unless tok.isEmpty do
         toks := toks ++ .token ⟨outer.getD .unknown, tok⟩
-        todo := todo.drop tok.length
+        todo := Compat.String.drop todo tok.length
 
     pure toks
   | .tag t doc' =>
     let {ctx, info, children := _} := t.info.val
     if let .text tok := doc' then
-      let wsPre := tok.takeWhile (·.isWhitespace)
-      let wsPost := tok.takeRightWhile (·.isWhitespace)
+      let wsPre := Compat.String.takeWhile tok (·.isWhitespace)
+      let wsPost := Compat.String.takeRightWhile tok (·.isWhitespace)
       let k := (← infoKind ctx info).getD .unknown
-      pure <| .seq #[.text wsPre, .token ⟨k, tok.trim⟩, .text wsPost]
+      pure <| .seq #[.text wsPre, .token ⟨k, Compat.String.trim tok⟩, .text wsPost]
     else
       let k? ← infoKind ctx info
       renderTagged k? doc'

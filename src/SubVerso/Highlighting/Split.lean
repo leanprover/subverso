@@ -5,6 +5,7 @@ Author: David Thrane Christiansen
 -/
 module
 public import SubVerso.Highlighting.Highlighted
+import SubVerso.Compat
 public section
 
 namespace SubVerso.Highlighting
@@ -139,8 +140,8 @@ def Highlighted.lines (hl : Highlighted) : Array Highlighted := Id.run do
       current := current ++ this
     | some this@(.text str) :: hs | some this@(.unparsed str) :: hs =>
       if str.contains '\n' then
-        let pre := str.takeWhile (· ≠ '\n') ++ "\n"
-        let post := str.drop pre.length
+        let pre := Compat.String.takeWhile str (· ≠ '\n') ++ "\n"
+        let post := Compat.String.drop str pre.length
         todo := some (.text post) :: hs
         current := current ++ .text pre
         let (c, ctx') := ctx.split current

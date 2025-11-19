@@ -18,17 +18,17 @@ An anchor consists of a line comment that contains `ANCHOR:` or `ANCHOR_END:` fo
 of the anchor.
 -/
 def anchor? (line : String) : Except String (String × Bool) := do
-  let mut line := line.trim
+  let mut line := Compat.String.trim line
   unless line.startsWith "--" do throw "Not a comment"
-  line := line.dropWhile (· == '-')
-  line := line.trimLeft
+  line := Compat.String.dropWhile line (· == '-')
+  line := Compat.String.trimLeft line
   if line.startsWith "ANCHOR:" then
-    line := line.stripPrefix "ANCHOR:"
-    line := line.trimLeft
+    line := Compat.String.dropPrefix line "ANCHOR:"
+    line := Compat.String.trimLeft line
     if line.isEmpty then throw "Expected line number after `ANCHOR: `" else return (line, true)
   else if line.startsWith "ANCHOR_END:" then
-    line := line.stripPrefix "ANCHOR_END:"
-    line := line.trimLeft
+    line := Compat.String.dropPrefix line "ANCHOR_END:"
+    line := Compat.String.trimLeft line
     if line.isEmpty then throw "Expected line number after `ANCHOR_END: `" else return (line, false)
   else throw s!"Expected `ANCHOR:` or `ANCHOR_END:`, got {line}"
 
@@ -40,7 +40,7 @@ A proof state indicator consists of a line that contains a position and a name. 
 caret, and the name is `PROOF_STATE:` followed by the state's name.
 -/
 def proofState? (line : String) : Except String (String × Nat) := do
-  let mut line := line.toSubstring
+  let mut line := Compat.String.toSubstring line
   let mut column : Nat := 0
   let mut caret : Option Nat := none
   let mut name : Option String := none
@@ -50,7 +50,7 @@ def proofState? (line : String) : Except String (String × Nat) := do
   line := line.drop ws.length
 
   -- Drop comment marker
-  let some content := line.dropPrefix? "--".toSubstring
+  let some content := line.dropPrefix? (Compat.String.toSubstring "--")
     | throw "Not a line comment"
   column := column + 2
   line := content
@@ -69,7 +69,7 @@ def proofState? (line : String) : Except String (String × Nat) := do
       else caret := some column
       column := column + 1
       line := line.drop 1
-    else if let some afterState := line.dropPrefix? "PROOF_STATE:".toSubstring then
+    else if let some afterState := line.dropPrefix? (Compat.String.toSubstring "PROOF_STATE:") then
       column := column + "PROOF_STATE:".length
       line := afterState
       while !line.isEmpty && line.get 0 == ' ' do

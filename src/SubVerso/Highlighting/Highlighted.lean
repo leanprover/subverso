@@ -449,7 +449,7 @@ def takeStringRightWhile (hl : Highlighted) (p : Char → Bool) : String := Id.r
       | .tactics _ _ _ x | .span _ x => todo := todo.push x
       | .seq xs  => todo := todo ++ xs
       | .text s | .token ⟨_, s⟩ | .unparsed s =>
-        let s' := s.takeRightWhile p
+        let s' := Compat.String.takeRightWhile s p
         str := s' ++ str
         if s' != s then return str
   return str
@@ -475,7 +475,7 @@ def dropText (n : Nat) (hl : Highlighted) : Highlighted := Id.run do
       todo := more
       if n ≤ s.length then
         if n < s.length then
-          out := out ++ .text (s.drop n)
+          out := out ++ .text (Compat.String.drop s n)
         for hl' in more do out := out ++ hl'
         return out
       else
@@ -501,7 +501,7 @@ def dropTextRight (n : Nat) (hl : Highlighted) : Highlighted := Id.run do
       | .text s =>
         todo := todo.pop
         if n < s.length then
-          return .seq todo ++ .text (s.dropRight n)
+          return .seq todo ++ .text (Compat.String.dropRight s n)
         else if n = s.length then
           return .seq todo
         else
@@ -584,7 +584,7 @@ partial def MessageContents.startAt (pattern : String) (txt : MessageContents ex
         if s.startsWith (pat.take s.length) then
           let s' := s.drop pat.length
           if s'.isEmpty then
-            pat := pat.drop s.length
+            pat := Compat.String.drop pat s.length
             todo := todo'
           else
             return .append (.text (pattern ++ s') :: todo').toArray
@@ -606,10 +606,10 @@ where
     let mut haystack := haystack
 
     while !haystack.isEmpty do
-      let pat := needle.take haystack.length
+      let pat := Compat.String.take needle haystack.length
       if haystack.startsWith pat then
-        return (needle.drop pat.length, haystack.drop pat.length)
-      haystack := haystack.drop 1
+        return (Compat.String.drop needle pat.length, Compat.String.drop haystack pat.length)
+      haystack := Compat.String.drop haystack 1
     failure
 
 /--
@@ -626,10 +626,10 @@ partial def MessageContents.stopAt (pattern : String) (txt : MessageContents exp
     | .trace .. :: todo' | .goal .. :: todo' | .term .. :: todo' => todo := todo'
     | .text s :: todo' =>
       if strict then
-        if s.endsWith (pat.takeRight s.length) then
-          let s' := s.dropRight pat.length
+        if s.endsWith (Compat.String.takeRight pat s.length) then
+          let s' := Compat.String.dropRight s pat.length
           if s'.isEmpty then
-            pat := pat.dropRight s.length
+            pat := Compat.String.dropRight pat s.length
             todo := todo'
           else
             return .append (.text (s' ++ pattern) :: todo').toArray.reverse
@@ -651,10 +651,10 @@ where
     let mut haystack := haystack
 
     while !haystack.isEmpty do
-      let pat := needle.takeRight haystack.length
+      let pat := Compat.String.takeRight needle haystack.length
       if haystack.endsWith pat then
-        return (needle.dropRight pat.length, haystack.dropRight pat.length)
-      haystack := haystack.dropRight 1
+        return (Compat.String.dropRight needle pat.length, Compat.String.dropRight haystack pat.length)
+      haystack := Compat.String.dropRight haystack 1
     failure
 
 /--
@@ -676,7 +676,7 @@ def Message.toString (expandTraces : List Name := []) (message : Message) : Stri
 private def minIndentString (str : String) : Nat :=
   let indents := Compat.String.splitToList str (· == '\n') |>.filterMap fun line =>
     if line.all (· == ' ') then none
-    else some (line.takeWhile (· == ' ') |>.length)
+    else some (Compat.String.takeWhile line (· == ' ') |>.length)
   indents.min?.getD 0
 
 /--

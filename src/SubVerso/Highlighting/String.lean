@@ -5,6 +5,7 @@ Author: David Thrane Christiansen
 -/
 module
 public import SubVerso.Highlighting.Highlighted
+import SubVerso.Compat
 public section
 
 namespace SubVerso.Highlighting.Highlighted
@@ -50,13 +51,13 @@ Returns the prefix of `hl` that matches the string `term`. The returned code has
 -/
 def matchingExprPrefix? (hl : Highlighted) (term : String) : Option Highlighted := do
   let mut out : Highlighted := .empty
-  let mut term := term
+  let mut term : String := term
   let mut hl := hl
 
   while !term.isEmpty do
-    let ws := term.takeWhile (·.isWhitespace)
+    let ws := Compat.String.takeWhile term (·.isWhitespace)
     out := out ++ .text ws
-    term := term.trimLeft
+    term := Compat.String.trimLeft term
     let (first, rest) ← firstToken hl
     hl := rest
     let firstStr := first.toString
