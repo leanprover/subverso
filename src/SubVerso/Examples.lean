@@ -90,7 +90,7 @@ where
     | .original _ _ t _ => t.toString
     | _ => ""
   augmentTrailing (stx tok : Syntax) : Syntax :=
-    stx.updateTrailing (getTrailing stx ++ getTrailing tok).toSubstring
+    stx.updateTrailing <| Compat.String.toSubstring (getTrailing stx ++ getTrailing tok)
 
 private meta def contents (message : Message) : IO String := do
   let head := if message.caption != "" then message.caption ++ ":\n" else ""
@@ -571,7 +571,7 @@ meta partial def loadExamples
       let toolchainfile := projectDir / "lean-toolchain"
       if !(← toolchainfile.pathExists) then
         throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
-      pure (← IO.FS.readFile toolchainfile).trim
+      pure <| Compat.String.trim (← IO.FS.readFile toolchainfile)
     | some override => pure override
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
@@ -620,7 +620,7 @@ where
         let sub ← collectExamples (.str modName f.fileName) f.path
         out := Compat.NameMap.mergeBy (fun _ j1 j2 => Compat.NameMap.mergeBy (fun _ _ x => x) j1 j2) out sub
       | .file =>
-        if f.path.extension == some "json" && f.path.fileStem.map (·.takeRight 4) != some ".log" then
+        if f.path.extension == some "json" && f.path.fileStem.map (Compat.String.takeRight · 4) != some ".log" then
           if let some mod := f.path.fileStem then
             let name' : Name := .str modName mod
             let contents := Json.parse (← IO.FS.readFile f.path)

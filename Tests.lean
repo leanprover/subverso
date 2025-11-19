@@ -26,7 +26,9 @@ def findVersionString (examples : NameMap (NameMap Example)) : Option String := 
   let version ← demo.find? `version
   let [(.information, str)] := version.messages
     | none
-  str.trim |>.drop 1 |>.dropRight 1
+  Compat.String.trim str |>
+  (Compat.String.drop · 1) |>
+  (Compat.String.dropRight · 1)
 
 namespace SubVerso
 
@@ -147,7 +149,7 @@ def loadModuleContent
       let toolchain ← do
           if !(← toolchainfile.pathExists) then
             throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
-          pure (← IO.FS.readFile toolchainfile).trim
+          pure <| Compat.String.trim (← IO.FS.readFile toolchainfile)
     | some override => pure override
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
@@ -386,9 +388,9 @@ def main : IO UInt32 := do
 
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
   let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
-  let myToolchain := (← IO.FS.readFile "lean-toolchain").trim
-  if oldest.contains myToolchain.trim then
-    IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {myToolchain.trim}"
+  let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
+  if oldest.contains (Compat.String.trim myToolchain) then
+    IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {Compat.String.trim myToolchain}"
   else
     IO.println "Checking proof states for induction/cases alts"
     IO.println "Setting up small-tests directory"

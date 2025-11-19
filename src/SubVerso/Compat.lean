@@ -364,6 +364,77 @@ abbrev Substring := %first_succeeding -warning [_root_.Substring.Raw, _root_.Sub
 
 abbrev Substring.mk := %first_succeeding -warning [@_root_.Substring.Raw.mk, @_root_.Substring.mk]
 
+abbrev String.toSubstring := %first_succeeding -warning [@_root_.String.toSubstring, @_root_.String.toRawSubstring]
+
+abbrev String.trim : String → String := %first_succeeding -warning [
+  String.Slice.copy ∘ _root_.String.trimAscii,
+  @_root_.String.trim
+]
+
+abbrev String.trimLeft : String → String := %first_succeeding -warning [
+  String.Slice.copy ∘ _root_.String.trimAsciiStart,
+  @_root_.String.trimLeft
+]
+
+abbrev String.trimRight : String → String := %first_succeeding -warning [
+  String.Slice.copy ∘ _root_.String.trimAsciiEnd,
+  @_root_.String.trimRight
+]
+
+abbrev String.take : String → Nat → String :=
+  %first_succeeding -warning [
+    fun s n => (_root_.String.take s n).copy,
+    _root_.String.take
+  ]
+
+abbrev String.takeWhile : String → (Char → Bool) → String :=
+  %first_succeeding -warning [
+    fun s f => (_root_.String.takeWhile s f).copy,
+    _root_.String.takeWhile
+  ]
+
+abbrev String.takeRight : String → Nat → String :=
+  %first_succeeding -warning [
+    fun s n => (_root_.String.takeEnd s n).copy,
+    _root_.String.takeRight
+  ]
+
+abbrev String.takeRightWhile : String → (Char → Bool) → String :=
+  %first_succeeding -warning [
+    fun s f => (_root_.String.takeEndWhile s f).copy,
+    _root_.String.takeRightWhile
+  ]
+
+abbrev String.drop : String → Nat → String :=
+  %first_succeeding -warning [
+    fun s n => (_root_.String.drop s n).copy,
+    _root_.String.drop
+  ]
+
+abbrev String.dropWhile : String → (Char → Bool) → String :=
+  %first_succeeding -warning [
+    fun s f => (_root_.String.dropWhile s f).copy,
+    _root_.String.dropWhile
+  ]
+
+abbrev String.dropRight : String → Nat → String :=
+  %first_succeeding -warning [
+    fun s n => (_root_.String.dropEnd s n).copy,
+    _root_.String.dropRight
+  ]
+
+abbrev String.dropRightWhile : String → (Char → Bool) → String :=
+  %first_succeeding -warning [
+    fun s f => (_root_.String.dropEndWhile s f).copy,
+    _root_.String.dropRightWhile
+  ]
+
+abbrev String.dropPrefix : String → String → String :=
+  %first_succeeding -warning [
+    fun s n => (_root_.String.dropPrefix s n).copy,
+    _root_.String.stripPrefix
+  ]
+
 section
 /- Backports of syntax position functions from later Lean versions-/
 
@@ -730,7 +801,7 @@ where
   -- fixes this.
   fixupEnd (cmd : Syntax) :=
     if cmd.isOfKind ``Lean.Parser.Command.eoi then
-      let s := { contents.toSubstring with startPos := String.endPos contents, stopPos := String.endPos contents }
+      let s := { Compat.String.toSubstring contents with startPos := String.endPos contents, stopPos := String.endPos contents }
       .node .none ``Lean.Parser.Command.eoi #[.atom (.original s (String.endPos contents) s (String.endPos contents)) ""]
     else cmd
 

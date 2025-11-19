@@ -21,18 +21,18 @@ elab "#validate_anchors" : command => do
   let mut report : Array (Nat × String) := #[]
   for line in lines do
     l := l + 1
-    let isComment := line.dropWhile (·.isWhitespace) |>.startsWith "--"
+    let isComment := Compat.String.dropWhile line (·.isWhitespace) |>.startsWith "--"
     if isComment then
       if Internal.isAnchorLike line then
         match anchor? line with
         | .error e =>
-          logError m!"Line {l} didn't parse as anchor command:{indentD <| line.dropRightWhile (· == '\n')}\nError: {e}"
+          logError m!"Line {l} didn't parse as anchor command:{indentD <| Compat.String.dropRightWhile line (· == '\n')}\nError: {e}"
         | .ok (name, status) =>
           report := report.push (l, s!"Anchor {name} {if status then "start" else "end"}")
       if Internal.isStateLike line then
         match proofState? line with
         | .error e =>
-          logError m!"Line {l} didn't parse as anchor command:{indentD <| line.dropRightWhile (· == '\n')}\nError: {e}"
+          logError m!"Line {l} didn't parse as anchor command:{indentD <| Compat.String.dropRightWhile line (· == '\n')}\nError: {e}"
         | .ok (name, col) =>
           report := report.push (l, s!"Proof state {name} @ {col}")
   if report.isEmpty then
