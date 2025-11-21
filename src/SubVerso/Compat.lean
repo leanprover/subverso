@@ -245,21 +245,6 @@ def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (tr
   ]
 
 
-/--
-Elaborates the given header syntax into an environment.
-
-If `mainModule` is not given, `Environment.setMainModule` should be called manually. This is a
-backwards compatibility measure not compatible with the module system.
--/
-@[inline] def processHeader
-    (header : HeaderSyntax)
-    (opts : Options) (messages : MessageLog) (inputCtx : Parser.InputContext)
-    (trustLevel : UInt32 := 0) (plugins : Array System.FilePath := #[]) (leakEnv := false)
-    (mainModule := Name.anonymous)
-    : IO (Environment × MessageLog) := do
-  processHeaderCore header.startPos header.imports header.isModule
-    opts messages inputCtx trustLevel plugins leakEnv mainModule
-
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [
     .fvar (← getEnv).mainModule.toString id.name.toString,
