@@ -234,8 +234,8 @@ def mkImport (module : Name) : Import :=
   ]
 
 set_option linter.unusedVariables false in
-def isModule (stx : TSyntax ``Parser.Module.header) : Bool :=
-  %first_succeeding [HeaderSyntax.isModule stx, false]
+def isModule (stx : Syntax) : Bool :=
+  %first_succeeding [HeaderSyntax.isModule ⟨stx⟩, HeaderSyntax.isModule stx, false]
 
 open CanBeArrayOrList in
 def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) : IO Environment :=
