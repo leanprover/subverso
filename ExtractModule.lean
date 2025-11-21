@@ -84,7 +84,8 @@ unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.St
     let (headerStx, parserState, msgs) ← Parser.parseHeader ictx
     let imports := headerToImports headerStx
     enableInitializersExecution
-    let env ← Compat.importModules imports {}
+    let isModule := Compat.isModule headerStx
+    let env ← Compat.importModules imports {} (isModule := isModule)
     let pctx : Context := {inputCtx := ictx}
 
     let commandState : Command.State := { env, maxRecDepth := defaultMaxRecDepth, messages := msgs }
@@ -139,13 +140,13 @@ where
         go (nss ++ nss') more
       else
         throw <| .userError "No namespace file given after --suppress-namespaces"
-    | [mod] => pure {suppressedNamespaces := nss, mod}
-    | [mod, outFile] => pure {suppressedNamespaces := nss, mod, outFile := some outFile}
+    | [mod] => pure { suppressedNamespaces := nss, mod }
+    | [mod, outFile] => pure { suppressedNamespaces := nss, mod, outFile := some outFile }
     | other => throw <| .userError s!"Didn't understand remaining arguments: {other}"
 
 unsafe def main (args : List String) : IO UInt32 := do
   try
-    let {suppressedNamespaces, mod, outFile} ← Config.fromArgs args
+    let { suppressedNamespaces, mod, outFile } ← Config.fromArgs args
     match outFile with
     | none =>
       go suppressedNamespaces mod (← IO.getStdout)

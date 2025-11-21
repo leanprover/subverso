@@ -233,12 +233,32 @@ def mkImport (module : Name) : Import :=
     {module}, {module, runtimeOnly := false}
   ]
 
+set_option linter.unusedVariables false in
+def isModule (stx : TSyntax ``Parser.Module.header) : Bool :=
+  %first_succeeding [HeaderSyntax.isModule stx, false]
+
 open CanBeArrayOrList in
-def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) : IO Environment :=
+def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) : IO Environment :=
   %first_succeeding [
-    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true),
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then .server else .private),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
+
+
+/--
+Elaborates the given header syntax into an environment.
+
+If `mainModule` is not given, `Environment.setMainModule` should be called manually. This is a
+backwards compatibility measure not compatible with the module system.
+-/
+@[inline] def processHeader
+    (header : HeaderSyntax)
+    (opts : Options) (messages : MessageLog) (inputCtx : Parser.InputContext)
+    (trustLevel : UInt32 := 0) (plugins : Array System.FilePath := #[]) (leakEnv := false)
+    (mainModule := Name.anonymous)
+    : IO (Environment × MessageLog) := do
+  processHeaderCore header.startPos header.imports header.isModule
+    opts messages inputCtx trustLevel plugins leakEnv mainModule
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [
@@ -299,6 +319,7 @@ def msgEmbedCase (embed : MsgEmbed)
   ]
 
 section
+set_option linter.unusedVariables false
 /- Compatibility layer for the big String refactor -/
 
 /--
