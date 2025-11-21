@@ -233,12 +233,19 @@ def mkImport (module : Name) : Import :=
     {module}, {module, runtimeOnly := false}
   ]
 
+set_option linter.unusedVariables false in
+def isModule (stx : Syntax) : Bool :=
+  %first_succeeding [HeaderSyntax.isModule ⟨stx⟩, HeaderSyntax.isModule stx, false]
+
+set_option linter.unusedVariables false in
 open CanBeArrayOrList in
-def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) : IO Environment :=
+def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) : IO Environment :=
   %first_succeeding [
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then .server else .private),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
+
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [
@@ -299,6 +306,7 @@ def msgEmbedCase (embed : MsgEmbed)
   ]
 
 section
+set_option linter.unusedVariables false
 /- Compatibility layer for the big String refactor -/
 
 /--
@@ -392,6 +400,8 @@ abbrev String.takeWhile : String → (Char → Bool) → String :=
     fun s f => (_root_.String.takeWhile s f).copy,
     _root_.String.takeWhile
   ]
+
+set_option linter.unusedVariables false
 
 abbrev String.takeRight : String → Nat → String :=
   %first_succeeding -warning [
