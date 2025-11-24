@@ -27,6 +27,10 @@ OPTS may be:
   --suppress-namespaces FILE
     Suppress the showing of the whitespace-delimited list of namespaces in FILE
 
+  --not-server
+    When elaborating a module, import only the public parts. This emulates the
+    behavior of the command-line compiler instead of the language server.
+
 Each command in the module is represented as a JSON object with the following
 fields:
 
@@ -66,7 +70,7 @@ where
     | i => i
 
 
-unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
+unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
     initSearchPath (← findSysroot)
     let modName := mod.toName
@@ -85,7 +89,7 @@ unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.St
     let imports := headerToImports headerStx
     enableInitializersExecution
     let isModule := Compat.isModule headerStx
-    let env ← Compat.importModules imports {} (isModule := isModule)
+    let env ← Compat.importModules imports {} (isModule := isModule) (asServer := asServer)
     let pctx : Context := {inputCtx := ictx}
 
     let commandState : Command.State := { env, maxRecDepth := defaultMaxRecDepth, messages := msgs }
@@ -121,40 +125,43 @@ unsafe def go (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.St
     return 2
 
 structure Config where
+  asServer : Bool
   suppressedNamespaces : Array Name := #[]
   mod : String
   outFile : Option String := none
 
-def Config.fromArgs (args : List String) : IO Config := go #[] args
+def Config.fromArgs (args : List String) : IO Config := go true #[] args
 where
-  go (nss : Array Name) : List String → IO Config
+  go (asServer : Bool) (nss : Array Name) : List String → IO Config
     | "--suppress-namespace" :: more =>
       if let ns :: more := more then
-        go (nss.push ns.toName) more
+        go asServer (nss.push ns.toName) more
       else
         throw <| .userError "No namespace given after --suppress-namespace"
     | "--suppress-namespaces" :: more => do
       if let file :: more := more then
         let contents ← IO.FS.readFile file
         let nss' := Compat.String.splitToList contents (·.isWhitespace) |>.filter (!·.isEmpty) |>.map (·.toName)
-        go (nss ++ nss') more
+        go asServer (nss ++ nss') more
       else
         throw <| .userError "No namespace file given after --suppress-namespaces"
-    | [mod] => pure { suppressedNamespaces := nss, mod }
-    | [mod, outFile] => pure { suppressedNamespaces := nss, mod, outFile := some outFile }
+    | "--not-server" :: more => do
+      go false nss more
+    | [mod] => pure { asServer, suppressedNamespaces := nss, mod }
+    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, mod, outFile := some outFile }
     | other => throw <| .userError s!"Didn't understand remaining arguments: {other}"
 
 unsafe def main (args : List String) : IO UInt32 := do
   try
-    let { suppressedNamespaces, mod, outFile } ← Config.fromArgs args
+    let { asServer, suppressedNamespaces, mod, outFile } ← Config.fromArgs args
     match outFile with
     | none =>
-      go suppressedNamespaces mod (← IO.getStdout)
+      go asServer suppressedNamespaces mod (← IO.getStdout)
     | some outFile =>
       if let some p := (outFile : System.FilePath).parent then
         IO.FS.createDirAll p
       IO.FS.withFile outFile .write fun h =>
-        go suppressedNamespaces mod (.ofHandle h)
+        go asServer suppressedNamespaces mod (.ofHandle h)
   catch e =>
     IO.eprintln e
     IO.println helpText
