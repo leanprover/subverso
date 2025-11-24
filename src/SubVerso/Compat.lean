@@ -239,9 +239,9 @@ def isModule (stx : Syntax) : Bool :=
 
 set_option linter.unusedVariables false in
 open CanBeArrayOrList in
-def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) : IO Environment :=
+def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) (asServer : Bool := false) : IO Environment :=
   %first_succeeding [
-    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then .server else .private),
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then if asServer then .server else .exported else .private),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
