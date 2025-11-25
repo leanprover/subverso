@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
 module
+import SubVerso.Compat
 public import SubVerso.Highlighting
 public import Lean.Data.Options
 public import Lean.Data.Json
@@ -13,11 +14,11 @@ public section
 
 open Lean
 
-register_option SubVerso.examples.suppressedNamespaces : String := {
-  defValue := "",
-  group := "SubVerso",
-  descr := "A space-separated list of namespaces to suppress in highlighted example code"
-}
+register_option SubVerso.examples.suppressedNamespaces : String :=
+  SubVerso.Compat.Option.Decl.mk
+    (defValue := "")
+    (group := "SubVerso")
+    (descr := "A space-separated list of namespaces to suppress in highlighted example code")
 
 namespace SubVerso.Examples
 open SubVerso.Highlighting

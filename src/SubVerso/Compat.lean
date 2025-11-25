@@ -312,7 +312,7 @@ set_option linter.unusedVariables false
 /--
 A byte position in a `String`, according to its UTF-8 encoding.
 -/
-abbrev String.Pos := %first_succeeding -warning [
+abbrev String.Pos : Type := %first_succeeding -warning [
   _root_.String.Pos,
   _root_.String.Pos.Raw
 ]
@@ -855,3 +855,9 @@ abbrev String.Iterator : Type := %first_succeeding -warning [_root_.String.Legac
 
 def _root_.String.compatIter : String → Compat.String.Iterator :=
   %first_succeeding -warning [String.Legacy.iter, String.iter]
+
+def Option.Decl.mk (defValue : α) (group : String) (descr : String) : Option.Decl α :=
+  %first_succeeding [
+    { defValue, group, descr},
+    { defValue, descr}
+  ]
