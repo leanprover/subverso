@@ -565,7 +565,7 @@ partial def MessageContents.toString (expandTraces : List Name := []) : MessageC
   | .text s => s
 where
   indentString (s : String) : String :=
-    "\n".intercalate <| s.splitOn "\n" |>.map (fun l => if l.any (!·.isWhitespace) then "  " ++ l else l)
+    "\n".intercalate <| s.splitOn "\n" |>.map (fun l => if l.any (!·.isWhitespace : Char → Bool) then "  " ++ l else l)
 
 /--
 Truncates a message to textual content at the beginning, inclusive.
