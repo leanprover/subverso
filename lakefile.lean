@@ -182,10 +182,8 @@ meta if Compat.useOldBind then
 else
   module_facet highlighted mod : FilePath := do
     let ws ← getWorkspace
-    let some extract ← findLeanExe? `«subverso-extract-mod»
-      | error "The subverso-extract-mod executable was not found"
 
-    let exeJob ← extract.exe.fetch
+    let exeJob ← «subverso-extract-mod».fetch
     let modJob ← mod.olean.fetch
     let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
@@ -203,6 +201,7 @@ else
         -- Rebuild if either the SubVerso executable changes, or if the module changes
         addTrace (← fetchFileTrace exeFile)
         addTrace (← fetchFileTrace oleanFile)
+        addTrace (← fetchFileTrace nsFile)
 
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
@@ -220,9 +219,11 @@ meta if Compat.useOldBind then
 
     let exeJob ← extract.exe.fetch
     let modJob ← mod.olean.fetch
+    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
     let buildDir := ws.root.buildDir
     let hlFile := mod.filePath (buildDir / "examples") "json"
+    let nsFile := buildDir / "examples" / s!"ns-{hash suppNS}"
 
     exeJob.bindAsync fun exeFile exeTrace =>
       modJob.bindSync fun _oleanPath modTrace => do
@@ -239,17 +240,24 @@ meta if Compat.useOldBind then
 else
   module_facet examples mod : FilePath := do
     let ws ← getWorkspace
-    let some extract ← findLeanExe? `«subverso-extract»
-      | error "The subverso-extract executable was not found"
 
-    let exeJob ← extract.exe.fetch
+    let exeJob ← «subverso-extract».fetch
     let modJob ← mod.olean.fetch
+    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
     let buildDir := ws.root.buildDir
     let hlFile := mod.filePath (buildDir / "examples") "json"
+    let nsFile := buildDir / "examples" / s!"ns-{hash suppNS}"
 
-    exeJob.bindM fun exeFile =>
-      modJob.mapM fun _oleanPath => do
+    exeJob.bindM fun exeFile => do
+      modJob.mapM fun oleanPath => do
+        addPureTrace suppNS
+        buildFileUnlessUpToDate' (text := true) nsFile do
+          IO.FS.createDirAll (buildDir / "highlighted")
+          IO.FS.writeFile nsFile suppNS
+        addTrace (← fetchFileTrace exeFile)
+        addTrace (← fetchFileTrace oleanPath)
+        Compat.logStep s!"Exporting highlighted example JSON for '{mod.name}'"
         buildFileUnlessUpToDate' (text := true) hlFile do
           proc {
             cmd := exeFile.toString

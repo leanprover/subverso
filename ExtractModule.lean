@@ -163,6 +163,10 @@ unsafe def main (args : List String) : IO UInt32 := do
       IO.FS.withFile outFile .write fun h =>
         go asServer suppressedNamespaces mod (.ofHandle h)
   catch e =>
+    if args.isEmpty then
+      IO.eprintln s!"No arguments provided."
+    else
+      IO.eprintln s!"Error with arguments\n\t{" ".intercalate args}"
     IO.eprintln e
     IO.println helpText
     pure 1
