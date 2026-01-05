@@ -15,12 +15,9 @@ jobs:
         toolchain:
           - "4.25.0"
           - "4.25.1"
-          - "4.26.0-rc1"
-          - "nightly-2025-11-18"
-          - "nightly-2025-11-19"
-          - "nightly-2025-11-25"
-          - "nightly-2025-11-30"
-          - "nightly-2025-12-07"
+          - "4.26.0"
+          - "4.27.0-rc1"
+          - "nightly-2026-01-04"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
