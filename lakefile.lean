@@ -253,7 +253,7 @@ else
       modJob.mapM fun oleanPath => do
         addPureTrace suppNS
         buildFileUnlessUpToDate' (text := true) nsFile do
-          IO.FS.createDirAll (buildDir / "highlighted")
+          IO.FS.createDirAll (buildDir / "examples")
           IO.FS.writeFile nsFile suppNS
         addTrace (← fetchFileTrace exeFile)
         addTrace (← fetchFileTrace oleanPath)
