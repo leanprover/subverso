@@ -69,6 +69,11 @@ where
     | .original l l' t _ => .original l l' t (Compat.String.endPos contents)
     | i => i
 
+/-- Returns the node kind of the command, skipping outer `in` nodes. -/
+partial def commandKind (cmd : Syntax) : SyntaxNodeKind :=
+  match cmd with
+  | `(command|$_cmd1 in $cmd2) => commandKind cmd2
+  | _ => cmd.getKind
 
 unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
@@ -111,7 +116,7 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
 
     let items : Array ModuleItem := hls.zip res.syntax |>.map fun (hl, stx) => {
       defines := hl.definedNames.toArray,
-      kind := stx.getKind,
+      kind := commandKind stx,
       range := stx.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e),
       code := hl
     }
