@@ -54,33 +54,32 @@ Lakefile:
 require subverso from git "git@github.com:leanprover/subverso.git"
 ```
 
-Then, in the modules that contain code examples to be used in
-documentation, add the following to the imports list:
+Examples are named in _anchors_, which are created using
+specially-formatted comments. An anchor `A` is delimeted by:
+```lean
+-- ANCHOR: A
 ```
-import SubVerso.Examples
-```
-and open the namespace within which the new (scoped) operators are defined:
-```
-open SubVerso.Examples
+and:
+```lean
+-- ANCHOR_END: A
 ```
 
-This library defines two new pieces of syntax. Wrapping a sequence of
-commands in `%example NAME` and `%end` causes their data to be saved
-under the key `NAME`. Any `%ex{NAME2}{T}` expressions within the
-command are additionally saved under the key `NAME2`, with the `%ex`
-annotation removed from the highlighted code.
+Within a Lean source file, anchor names should be unique. Anchors may
+overlap arbitrarily.
 
-For instance, if the module to be highlighted contains:
-```
-%example F
-def f (n : Nat) : Nat := %ex{plus23}{$ex{N}{n} + 23}
+Within an anchor, a proof state may be named `X` using the
+`PROOF_STATE X` comment, which points at the source position of the
+state using a `^`. Here, the proof state `after_intro` is the one
+active around the `r`:
 
-#eval f 5
-%end
+```lean
+example : ∀n, n * (2 + 2) = n * 4 := by
+  -- ANCHOR: proof
+  intro n
+  -- ^ PROOF_STATE: after_intro
+  grind
+  -- ANCHOR_END: proof
 ```
-then three pieces of highlighted code are saved, named `F` (the whole
-block), `plus23` (which contains `n + 23`), and `N` (which contains
-`n`).
 
 ### Module Extraction
 
@@ -101,6 +100,8 @@ objects have the following keys:
    code, including proof states, which is intended to be deserialized
    using the `FromJson Highlighted` instance from SubVerso.
    
+The `highlighted` facet for a package, library, or module builds
+highlighted sources.
 
 ### Helper Process
 
