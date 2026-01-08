@@ -39,7 +39,7 @@ jobs:
         run: |
           which lake
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
 
       - name: Demodulize if needed
         if: ${{ !inputs.module-system }}
@@ -59,7 +59,7 @@ jobs:
           lean --version
 
       - name: Cache .lake
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .lake
           key: ${{ runner.os }}-${{ hashFiles('lakefile.lean') }}-${{ hashFiles('lean-toolchain') }}

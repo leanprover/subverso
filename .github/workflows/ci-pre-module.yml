@@ -38,8 +38,7 @@ jobs:
           - "4.21.0"
           - "4.22.0"
           - "4.23.0"
-          - "4.24.0-rc1"
-          - "nightly-2025-09-26"
+          - "4.24.0"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
@@ -48,6 +47,11 @@ jobs:
         # Mac runners are rare and expensive, so spot-check that the
         # subprocess support seems OK but be less thorough
         include:
+          - toolchain: "4.24.0"
+            platform:
+              os: macos-latest
+              installer: |
+                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
           - toolchain: "4.9.1"
             platform:
               os: macos-latest

@@ -15,17 +15,22 @@ jobs:
         toolchain:
           - "4.25.0"
           - "4.25.1"
-          - "4.26.0-rc1"
-          - "nightly-2025-11-18"
-          - "nightly-2025-11-19"
-          - "nightly-2025-11-25"
-          - "nightly-2025-11-30"
-          - "nightly-2025-12-07"
+          - "4.26.0"
+          - "4.27.0-rc1"
+          - "nightly-2026-01-08"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
             installer: |
               curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+        # Mac runners are rare and expensive, so spot-check that the
+        # subprocess support seems OK but be less thorough
+        include:
+          - toolchain: "4.27.0-rc1"
+            platform:
+              os: macos-latest
+              installer: |
+                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
 
     name: Build and test (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
     uses: "./.github/workflows/run-ci.yml"
