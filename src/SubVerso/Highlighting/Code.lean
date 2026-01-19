@@ -1073,7 +1073,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     -- Tell the delaborator to tag functions that are being applied. Otherwise,
     -- functions have no tooltips or binding info in tactics.
     -- cf https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/Function.20application.20delaboration/near/265800665
-    let maxHeartbeats := (← getOptions).getNat `maxHeartbeats
+    let maxHeartbeats : Nat := (← getNatOption `maxHeartbeats)
     let ci' := { ci with options :=
         ci.options |>.set `pp.tagAppFns true |>.set `maxHeartbeats maxHeartbeats
       }
