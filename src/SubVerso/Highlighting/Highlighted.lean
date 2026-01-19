@@ -3,15 +3,13 @@ Copyright (c) 2023-2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
-public import Lean.Data.Json
-public import Lean.Expr
-public import Lean.Exception
+import Lean.Data.Json
+import Lean.Expr
+import Lean.Exception
 import Lean.Expr
 import Lean.SubExpr -- for the To/FromJSON FVarId instances
 import SubVerso.Compat
 
-public section
 
 open Lean
 
@@ -100,7 +98,7 @@ private partial def quoteLevel : Level → Term
   | .mvar mv => mkCApp ``Level.mvar #[quote mv]
 
 instance : Quote Level where
-  quote := private quoteLevel
+  quote := quoteLevel
 
 open Token.Kind in
 open Syntax (mkCApp) in
