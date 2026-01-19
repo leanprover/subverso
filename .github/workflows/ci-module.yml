@@ -18,6 +18,7 @@ jobs:
           - "4.26.0"
           - "4.27.0-rc1"
           - "nightly-2026-01-08"
+          - "nightly-2026-01-19"
 
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
