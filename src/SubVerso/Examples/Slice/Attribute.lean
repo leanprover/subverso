@@ -3,13 +3,11 @@ Copyright (c) 2024 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
 import Lean.Data.Position
-public import Lean.Syntax
-public import Lean.KeyedDeclsAttribute
-public meta import Lean.KeyedDeclsAttribute
-public import SubVerso.Compat
-public section
+import Lean.Syntax
+import Lean.KeyedDeclsAttribute
+import Lean.KeyedDeclsAttribute
+import SubVerso.Compat
 
 namespace SubVerso.Examples.Slice.Attribute
 
