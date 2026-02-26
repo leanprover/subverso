@@ -265,7 +265,6 @@ partial def stripNamespaces [Monad m] [MonadReaderOf Context m] : FormatWithInfo
     | .align b => pure (.align b)
     | .nil => pure .nil
 
--- exprKind, termInfoKind, infoKind, anonCtorKind are defined after HighlightM (below)
 
 /-- Checks whether an occurrence of a name is in fact the definition of the name -/
 def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name : Name) (stx : Syntax) : m Bool := do
