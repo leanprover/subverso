@@ -198,8 +198,10 @@ partial def formatToJson : Std.Format → Json
   | .group f .fill => .arr #[6, formatToJson f]
   | .tag n f => .arr #[7, n, formatToJson f]
 
-/-- Serialize format data (format tree + annotation table) to a JSON string
-    suitable for embedding in HTML as a `data-rich-format` attribute. -/
+/--
+Serialize format data (format tree + annotation table) to a JSON string suitable for embedding in
+HTML as a `data-rich-format` attribute.
+-/
 def formatDataToJson (fmt : Std.Format) (annotations : Array (Nat × TokenAnnotation)) : String :=
   let fmtJson := formatToJson fmt
   let annotJson := Json.mkObj (annotations.toList.map fun (k, v) => (toString k, Lean.toJson v))
