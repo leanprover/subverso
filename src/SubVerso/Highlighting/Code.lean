@@ -265,78 +265,6 @@ partial def stripNamespaces [Monad m] [MonadReaderOf Context m] : FormatWithInfo
     | .align b => pure (.align b)
     | .nil => pure .nil
 
-/--
-Finds the appropriate token kind for a token whose meaning is the expression `expr`.
--/
-def exprKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [Alternative m]
-    (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
-    (allowUnknownTyped : Bool := false) :
-    ReaderT Context m (Option Token.Kind) := do
-  let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := {ci with env := env}.runMetaM lctx act
-  -- Print the signature in an empty local context to avoid local auxiliary definitions from
-  -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
-  -- qualifiers
-  let ppSig (x : Name) (env := ci.env) : ReaderT Context m String := do
-    let sig ← runMeta (env := env) (lctx := {}) (PrettyPrinter.ppSignature x)
-    return toString (← stripNamespaces sig)
-
-  let rec findKind e := do
-    match e with
-    | Expr.fvar id =>
-      if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
-        Compat.refIdentCase y
-          (onFVar := fun x => do
-            let tyStr ← runMeta do
-              try -- Needed for robustness in the face of tactics that create strange contexts
-                let ty ← instantiateMVars (← Meta.inferType expr)
-                toString <$> Meta.ppExpr ty
-              catch | _ => pure ""
-            if let some localDecl := lctx.find? x then
-              if localDecl.isAuxDecl then
-                let e ← runMeta <| Meta.ppExpr expr
-                -- FIXME the mkSimple is a bit of a kludge
-                return some <| .const (.mkSimple (toString e)) tyStr none false
-            return some <| .var x tyStr)
-          (onConst := fun x => do
-            -- This is a bit of a hack. The environment in the ContextInfo may not have some
-            -- helper constants from where blocks yet, so we retry in the final environment if the
-            -- first one fails.
-            let sig ← ppSig x <|> ppSig (env := (← getEnv)) x
-            let docs ← findDocString? (← getEnv) x
-            return some <| .const x sig docs false)
-      else
-        let tyStr ← runMeta do
-          try -- Needed for robustness in the face of tactics that create strange contexts
-            let ty ← instantiateMVars (← Meta.inferType expr)
-            toString <$> Meta.ppExpr ty
-          catch | _ => pure ""
-        return some <| .var id tyStr
-    | Expr.const name _ =>
-      let docs ← findDocString? (← getEnv) name
-      let sig ← ppSig name
-      return some <| .const name sig docs false
-    | Expr.sort _ =>
-      if let some stx := stx? then
-        let k := stx.getKind
-        let docs? ← findDocString? (← getEnv) k
-        return some (.sort docs?)
-      else return some (.sort none)
-    | Expr.lit (.strVal s) => return some <| .str s
-    | Expr.mdata _ e =>
-      findKind e
-    | other =>
-      if allowUnknownTyped then
-        runMeta do
-          try
-            let t ← Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
-            return some <| .withType <| toString t
-          catch _ =>
-            return none
-      else
-        return none
-
-  findKind (← instantiateMVars expr)
-
 
 /-- Checks whether an occurrence of a name is in fact the definition of the name -/
 def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name : Name) (stx : Syntax) : m Bool := do
@@ -350,17 +278,6 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
     let some range ← Compat.getDeclarationRange? stx | return false
     return range == declRanges.range || range == declRanges.selectionRange
   return false
-
-def termInfoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
-    (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
-    ReaderT Context m (Option Token.Kind) := do
-  let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
-  if (← read).definitionsPossible then
-    if let some (.const name sig docs _isDef) := k then
-      let isDef ← fun _ => isDefinition name termInfo.stx
-
-      return some <| .const name sig docs isDef
-  return k
 
 def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
     (ci : ContextInfo) (fieldInfo : FieldInfo) :
@@ -377,50 +294,7 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
         catch _ => pure <| .nil
   let tyStr := toString ty
   let docs ← findDocString? (← getEnv) fieldInfo.projName
-  return .const fieldInfo.projName tyStr docs false
-
-def infoKind [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
-    (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
-    ReaderT Context m (Option Token.Kind) := do
-  match info with
-    | .ofTermInfo termInfo => termInfoKind ci termInfo (allowUnknownTyped := allowUnknownTyped)
-    | .ofFieldInfo fieldInfo => some <$> fieldInfoKind ci fieldInfo
-    | .ofOptionInfo oi =>
-      let doc := (← getOptionDecls).find? oi.optionName |>.map (·.descr)
-      pure <| some <| .option oi.optionName oi.declName doc
-    | .ofCompletionInfo _ => pure none
-    | .ofTacticInfo _ => pure none
-    | .ofCommandInfo _ => pure none
-    | .ofMacroExpansionInfo _ => pure none
-    | .ofUserWidgetInfo _ => pure none
-    | _ =>
-      pure none
-
-def identKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
-    (trees : Array InfoTree) (stx : TSyntax `ident)
-    (allowUnknownTyped : Bool := false) :
-    ReaderT Context m Token.Kind := do
-  let mut kind : Token.Kind := .unknown
-  for t in trees do
-    for (ci, info) in infoForSyntax t stx do
-      if let some seen ← infoKind ci info (allowUnknownTyped := allowUnknownTyped) then
-        if seen.priority > kind.priority then kind := seen
-      else continue
-  pure kind
-
-def anonCtorKind [Monad m] [MonadLiftT IO m] [MonadFileMap m] [MonadEnv m] [MonadMCtx m] [Alternative m]
-    (trees : Array InfoTree) (stx : Syntax) :
-    ReaderT Context m (Option Token.Kind) := do
-  let mut kind : Token.Kind := .unknown
-  for t in trees do
-    for (ci, info) in infoForSyntax t stx do
-      if let some seen ← infoKind ci info then
-        if seen.priority > kind.priority then kind := seen
-      else continue
-  return match kind with
-  | .const n sig doc? _ => some <| .anonCtor n sig doc?
-  | .anonCtor .. => some kind
-  | _ => none
+  return .const fieldInfo.projName tyStr docs false none
 
 def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Syntax) : m Bool := do
   for t in trees do
@@ -612,9 +486,13 @@ structure HighlightState where
   terms : Compat.HashMap Expr Highlighted := {}
   /-- Cached already-rendered terms from hovers and proof states, in an intermediate state -/
   ppTerms : Compat.HashMap Expr CodeWithInfos := {}
+  /-- Whether to collect `Std.Format` data for reflowable rendering. -/
+  collectFormat : Bool := false
+  /-- Cached format data for terms (when `collectFormat` is true). -/
+  fmtTerms : Compat.HashMap Expr String := {}
 
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}, {}, {}, default, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -624,7 +502,7 @@ def HighlightState.empty : HighlightState where
   inTactic := none
 
 def HighlightState.resetCache (st : HighlightState) : HighlightState :=
-  { st with terms := {}, ppTerms := {} }
+  { st with terms := {}, ppTerms := {}, fmtTerms := {} }
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     (stx : Syntax) (messages : Array Message)
@@ -702,10 +580,141 @@ def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
 private def leanPosToUtf8Pos (text : FileMap) : Position → Compat.String.Pos :=
   text.lspPosToUtf8Pos ∘ text.leanPosToLspPos
 
+/-- A token kind paired with optional pretty-printer output. -/
+abbrev KindWithPPSig := Token.Kind × Option (FormatWithInfos × ContextInfo)
 
-partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] [MonadFileMap m] [Alternative m]
+/--
+Finds the appropriate token kind for a token whose meaning is the expression `expr`. When
+`collectFormat` is true, also returns the `FormatWithInfos` to be saved as a reflowable type or
+signature.
+-/
+def exprKind
+    (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
+    (allowUnknownTyped : Bool := false) :
+    HighlightM (Option KindWithPPSig) := do
+  let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : HighlightM α := {ci with env := env}.runMetaM lctx act
+  let doCollect := (← get).collectFormat
+  -- Print the signature in an empty local context to avoid local auxiliary definitions from
+  -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
+  -- qualifiers. Returns (sigString, sigOrType?) — the second projection is a pretty-printed
+  -- signature for later resolution by identKind.
+  let ppSig (x : Name) (env := ci.env) : HighlightM (String × Option (FormatWithInfos × ContextInfo)) := do
+    let sig ← runMeta (env := env) (lctx := {}) <|
+      if doCollect then withOptions (·.set `pp.tagAppFns true) (PrettyPrinter.ppSignature x)
+      else PrettyPrinter.ppSignature x
+    let sigStr := toString (← stripNamespaces sig)
+    let sigOrType? := if doCollect then some (sig, { ci with env := env }) else none
+    pure (sigStr, sigOrType?)
+
+  -- Pretty-print a variable's type. Returns (tyString, sigOrType?) — the second projection is a
+  -- pretty printed type for later use by identKind
+  let ppVarType : HighlightM (String × Option (FormatWithInfos × ContextInfo)) := do
+    try
+      if doCollect then
+        let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
+          let ty ← instantiateMVars (← Meta.inferType expr)
+          PrettyPrinter.ppExprWithInfos ty
+        pure (toString fi.fmt, some (fi, ci))
+      else
+        let fmt ← runMeta do
+          let ty ← instantiateMVars (← Meta.inferType expr)
+          Meta.ppExpr ty
+        pure (toString fmt, none)
+    catch _ => pure ("", none)
+
+  let rec findKind e := do
+    match e with
+    | Expr.fvar id =>
+      if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
+        Compat.refIdentCase y
+          (onFVar := fun x => do
+            let (tyStr, prettySig) ← ppVarType
+            if let some localDecl := lctx.find? x then
+              if localDecl.isAuxDecl then
+                let e ← runMeta <| Meta.ppExpr expr
+                -- FIXME the mkSimple is a bit of a kludge
+                return some (.const (.mkSimple (toString e)) tyStr none false none, none)
+            return some (.var x tyStr none, prettySig))
+          (onConst := fun x => do
+            -- This is a bit of a hack. The environment in the ContextInfo may not have some
+            -- helper constants from where blocks yet, so we retry in the final environment if the
+            -- first one fails.
+            let (sig, prettySig) ← ppSig x <|> ppSig (env := (← getEnv)) x
+            let docs ← findDocString? (← getEnv) x
+            return some (.const x sig docs false none, prettySig))
+      else
+        let (tyStr, prettySig) ← ppVarType
+        return some (.var id tyStr none, prettySig)
+    | Expr.const name _ =>
+      let docs ← findDocString? (← getEnv) name
+      let (sig, prettySig) ← ppSig name
+      return some (.const name sig docs false none, prettySig)
+    | Expr.sort _ =>
+      if let some stx := stx? then
+        let k := stx.getKind
+        let docs? ← findDocString? (← getEnv) k
+        return some (.sort docs?, none)
+      else return some (.sort none, none)
+    | Expr.lit (.strVal s) => return some (.str s, none)
+    | Expr.mdata _ e =>
+      findKind e
+    | other =>
+      if allowUnknownTyped then
+        runMeta do
+          try
+            let t ← Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
+            return some (.withType <| toString t, none)
+          catch _ =>
+            return none
+      else
+        return none
+
+  findKind (← instantiateMVars expr)
+
+def termInfoKind
+    (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
+    HighlightM (Option KindWithPPSig) := do
+  let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
+  if (← read).definitionsPossible then
+    if let some (.const name sig docs _isDef pp?, prettySig) := k then
+      let isDef ← isDefinition name termInfo.stx
+      return some (.const name sig docs isDef pp?, prettySig)
+  return k
+
+def infoKind
+    (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
+    HighlightM (Option KindWithPPSig) := do
+  match info with
+    | .ofTermInfo termInfo => termInfoKind ci termInfo (allowUnknownTyped := allowUnknownTyped)
+    | .ofFieldInfo fieldInfo => return some (← fieldInfoKind ci fieldInfo, none)
+    | .ofOptionInfo oi =>
+      let doc := (← getOptionDecls).find? oi.optionName |>.map (·.descr)
+      pure <| some (.option oi.optionName oi.declName doc, none)
+    | .ofCompletionInfo _ => pure none
+    | .ofTacticInfo _ => pure none
+    | .ofCommandInfo _ => pure none
+    | .ofMacroExpansionInfo _ => pure none
+    | .ofUserWidgetInfo _ => pure none
+    | _ =>
+      pure none
+
+def anonCtorKind
+    (trees : Array InfoTree) (stx : Syntax) :
+    HighlightM (Option Token.Kind) := do
+  let mut kind : Token.Kind := .unknown
+  for t in trees do
+    for (ci, info) in infoForSyntax t stx do
+      if let some (seen, _) ← infoKind ci info then
+        if seen.priority > kind.priority then kind := seen
+      else continue
+  return match kind with
+  | .const n sig doc? _ ppSig? => some <| .anonCtor n sig doc? ppSig?
+  | .anonCtor .. => some kind
+  | _ => none
+
+partial def renderTagged
     (outer : Option Token.Kind) (doc : CodeWithInfos) :
-    ReaderT Context m Highlighted := do
+    HighlightM Highlighted := do
   match doc with
   | .text txt => do
     -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
@@ -741,10 +750,10 @@ partial def renderTagged [Monad m] [MonadLiftT IO m] [MonadMCtx m] [MonadEnv m] 
     if let .text tok := doc' then
       let wsPre := Compat.String.takeWhile tok (·.isWhitespace)
       let wsPost := Compat.String.takeRightWhile tok (·.isWhitespace)
-      let k := (← infoKind ctx info).getD .unknown
+      let k := ((← infoKind ctx info).map (·.1)).getD .unknown
       pure <| .seq #[.text wsPre, .token ⟨k, Compat.String.trim tok⟩, .text wsPost]
     else
-      let k? ← infoKind ctx info
+      let k? := (← infoKind ctx info).map (·.1)
       renderTagged k? doc'
   | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
 where
@@ -793,9 +802,9 @@ where
             let v? ← h.val?.mapM render
             let v := v?.map (.text " := " ++ ·.indent 2) |>.getD .empty
             for x in h.names, fv in h.fvarIds do
-              let nk := .var fv t.toString
+              let nk := .var fv t.toString none
               names := names.push ⟨nk, Compat.nameString x⟩
-            hypotheses := hypotheses.push ⟨names, t ++ v⟩
+            hypotheses := hypotheses.push ⟨names, t ++ v, none⟩
           let conclusion ← render g.type
           let g := {
             name := g.userName?.map Compat.nameString
@@ -1060,9 +1069,108 @@ def renderOrGetCodeWithInfos (key : Expr) (render : Expr → HighlightM CodeWith
     return tm
 
 
+/--
+Trims leading/trailing whitespace from a tagged text node, lifting the
+whitespace outside the tag.
+
+This works around Lean's pretty printer tagging the spaces around operators.
+-/
+private def liftTagWhitespace (n : Nat) (s : String) : Std.Format :=
+  let trimmed := Compat.String.trim s
+  if trimmed.isEmpty then .text s
+  else
+    let pre := Compat.String.takeWhile s (·.isWhitespace)
+    let post := Compat.String.takeRightWhile s (·.isWhitespace)
+    let core := Std.Format.tag n (.text trimmed)
+    if pre.isEmpty then
+      if post.isEmpty then core
+      else core.append (.text post)
+    else
+      if post.isEmpty then (Std.Format.text pre).append core
+      else ((Std.Format.text pre).append core).append (.text post)
+
+/--
+Cleans up the tags in a `Std.Format`, at the same time saving the the ones that are relevant for
+SubVerso output. The contents of tags are simplified for export, tags that aren't directly on tokens are discarded, and whitespace is normalize.
+-/
+private partial def cleanFormatTags
+    (infos : InfoPerPos) (ci : ContextInfo)
+    (f : Std.Format) :
+    StateT (Array (Nat × TokenAnnotation)) HighlightM Std.Format := do
+  match f with
+  | .tag n (.text s) =>
+    if let some info := Compat.InfoPerPos.get? infos n then
+      if let some (kind, _) ← infoKind ci info then
+        modify (·.push (n, Token.Kind.toAnnotation kind))
+    return liftTagWhitespace n s
+  | .tag _ sub =>
+    cleanFormatTags infos ci sub
+  | .append f1 f2 =>
+    .append <$> cleanFormatTags infos ci f1 <*> cleanFormatTags infos ci f2
+  | .nest n sub =>
+    .nest n <$> cleanFormatTags infos ci sub
+  | .group sub b =>
+    return .group (← cleanFormatTags infos ci sub) b
+  | other => return other
+
+@[inherit_doc cleanFormatTags]
+def resolveFormatAnnotations
+    (fmt : Std.Format) (infos : InfoPerPos) (ci : ContextInfo) :
+    HighlightM (Std.Format × Array (Nat × TokenAnnotation)) :=
+  cleanFormatTags infos ci fmt #[]
+
+/-- Simplifies a complete `FormatWithInfos` into a format data JSON string. -/
+private def resolveFormatWithInfos (prettySig : Option (FormatWithInfos × ContextInfo)) : HighlightM (Option String) := do
+  let some (fi, ci) := prettySig | return none
+  try
+    let (fmt', annots) ← resolveFormatAnnotations fi.fmt fi.infos ci
+    return some (formatDataToJson fmt' annots)
+  catch _ => return none
+
+def identKind
+    (trees : Array InfoTree) (stx : TSyntax `ident)
+    (allowUnknownTyped : Bool := false) :
+    HighlightM Token.Kind := do
+  let mut kind : Token.Kind := .unknown
+  -- Formatted signature or type from the winning exprKind call, to be resolved after the loop.
+  let mut kindSig : Option (FormatWithInfos × ContextInfo) := none
+  for t in trees do
+    for (ci, info) in infoForSyntax t stx do
+      if let some (seen, prettySig) ← infoKind ci info (allowUnknownTyped := allowUnknownTyped) then
+        if seen.priority > kind.priority then
+          kind := seen
+          kindSig := prettySig
+      else continue
+  match kind with
+  | .const name sig docs isDef none =>
+    return .const name sig docs isDef (← resolveFormatWithInfos kindSig)
+  | .var id tyStr none =>
+    return .var id tyStr (← resolveFormatWithInfos kindSig)
+  | _ => pure kind
+
+/-- Returns the format data JSON for `key` from the cache, or computes and caches it. -/
+def renderOrGetFormat (key : Expr) (render : Expr → HighlightM String) : HighlightM (Option String) := do
+  if !(← get).collectFormat then return none
+  if let some fmtStr := (← get).fmtTerms.get? key then
+    return some fmtStr
+  else
+    let fmtStr ← render key
+    modify fun st => { st with fmtTerms := st.fmtTerms.insert key fmtStr }
+    return some fmtStr
+
+/-- Pretty-print an expression and return the format data JSON string (format tree + annotations). -/
+def ppFormatData (e : Expr) (ci : ContextInfo) (runMeta : MetaM FormatWithInfos → HighlightM FormatWithInfos)
+    : HighlightM String := do
+  let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
+    let e ← instantiateMVars e
+    PrettyPrinter.ppExprWithInfos e
+  let (fmt', annots) ← resolveFormatAnnotations fi.fmt fi.infos ci
+  pure (formatDataToJson fmt' annots)
+
 def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
   let mut goalView := #[]
+  let doCollectFormat := (← get).collectFormat
   for g in goals do
     let mut hyps := #[]
     let some mvDecl := ci.mctx.findDecl? g
@@ -1085,21 +1193,28 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       if decl.isAuxDecl || decl.isImplementationDetail then continue
       match decl with
       | .cdecl _index fvar name type _ _ =>
-        let nk ← exprKind ci lctx none (.fvar fvar)
+        let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
         let tyStr ← renderOrGet type fun e => do
           renderTagged none (← runMeta (ppCodeWithInfos e))
-        hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr⟩
+        let ppType ← if doCollectFormat then
+          renderOrGetFormat type (ppFormatData · ci' runMeta)
+        else pure none
+        hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩
       | .ldecl _index fvar name type val _ _ =>
-        let nk ← exprKind ci lctx none (.fvar fvar)
+        let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
         let tyDoc ← renderOrGetCodeWithInfos type (runMeta <| ppCodeWithInfos ·)
         let valDoc ← renderOrGetCodeWithInfos val (runMeta <| ppCodeWithInfos ·)
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
-        hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr⟩
+        -- For let-bindings, skip format data (would need combined type+val format)
+        hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr, none⟩
     let concl ← renderOrGet mvDecl.type fun e => do
       renderTagged none (← runMeta <| ppCodeWithInfos e)
-    goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl⟩
+    let ppConcl ← if doCollectFormat then
+      renderOrGetFormat mvDecl.type (ppFormatData · ci' runMeta)
+    else pure none
+    goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl, ppConcl⟩
   pure goalView
 
 def tacticInfoGoals
@@ -1572,12 +1687,14 @@ def sortSuppress (nss : List Name) : List Name :=
 
 def highlight (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
-    (suppressNamespaces : List Name := []) : TermElabM Highlighted := do
+    (suppressNamespaces : List Name := [])
+    (collectFormat : Bool := false) : TermElabM Highlighted := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
 
   let st ← HighlightState.ofMessages stx messages
+  let st := { st with collectFormat }
   let infoTable : InfoTable := .ofInfoTrees trees
 
   let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
@@ -1595,7 +1712,8 @@ override these.
 def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := [])
-    (startPos? endPos? : Option Compat.String.Pos := none) : TermElabM Highlighted := do
+    (startPos? endPos? : Option Compat.String.Pos := none)
+    (collectFormat : Bool := false) : TermElabM Highlighted := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
@@ -1604,6 +1722,7 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
   let endPos? := endPos? <|> Internal.getTrailingOrTailPos? stx
 
   let st ← HighlightState.ofMessages stx messages startPos? endPos?
+  let st := { st with collectFormat }
   let infoTable : InfoTable := .ofInfoTrees trees
 
   let doHighlight : HighlightM Unit := do

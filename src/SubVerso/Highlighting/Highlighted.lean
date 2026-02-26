@@ -70,8 +70,10 @@ inductive Token.Kind where
   | /-- `occurrence` is a unique identifier that unites the various keyword tokens from a given production -/
     keyword (name : Option Name) (occurrence : Option String) (docs : Option String)
   | const (name : Name) (signature : String) (docs : Option String) (isDef : Bool)
+      (signatureFormat : Option String)
   | anonCtor (name : Name) (signature : String) (docs : Option String)
-  | var (name : FVarId) (type : String)
+      (signatureFormat : Option String)
+  | var (name : FVarId) (type : String) (typeFormat : Option String)
   | str (string : String)
   | option (name : Name) (declName : Name) (docs : Option String)
   | docComment
@@ -107,10 +109,10 @@ open Syntax (mkCApp) in
 instance : Quote Token.Kind where
   quote
     | .keyword n occ docs => mkCApp ``keyword #[quote n, quote occ, quote docs]
-    | .const n sig docs isDef => mkCApp ``const #[quote n, quote sig, quote docs, quote isDef]
-    | .anonCtor n sig docs => mkCApp ``anonCtor #[quote n, quote sig, quote docs]
+    | .const n sig docs isDef sigFmt => mkCApp ``const #[quote n, quote sig, quote docs, quote isDef, quote sigFmt]
+    | .anonCtor n sig docs sigFmt => mkCApp ``anonCtor #[quote n, quote sig, quote docs, quote sigFmt]
     | .option n d docs => mkCApp ``option #[quote n, quote d, quote docs]
-    | .var (.mk n) type => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type]
+    | .var (.mk n) type tyFmt => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type, quote tyFmt]
     | .str s => mkCApp ``str #[quote s]
     | .docComment => mkCApp ``docComment #[]
     | .sort doc? => mkCApp ``sort #[quote doc?]
@@ -132,9 +134,84 @@ instance : Quote Token where
     | (.mk kind content) =>
       mkCApp ``Token.mk #[quote kind, quote content]
 
+/--
+The canonical CSS class for a token kind.
+-/
+def Token.Kind.cssClass : Token.Kind → String
+  | .var .. => "var"
+  | .str .. => "literal string"
+  | .sort .. => "sort"
+  | .const .. => "const"
+  | .option .. => "option"
+  | .docComment => "doc-comment"
+  | .keyword .. => "keyword"
+  | .anonCtor .. => "unknown"
+  | .unknown => "unknown"
+  | .withType .. => "typed"
+  | .levelConst .. => "level-const"
+  | .levelVar .. => "level-var"
+  | .levelOp .. => "level-op"
+  | .moduleName .. => "module-name"
+
+/--
+A canonical string identifier for the binding represented by a token kind.
+-/
+def Token.Kind.binding : Token.Kind → String
+  | .const n .. | .anonCtor n .. => "const-" ++ toString n
+  | .var ⟨v⟩ .. => "var-" ++ toString v
+  | .option n _ _ => "option-" ++ toString n
+  | .keyword _ (some occ) _ => "kw-occ-" ++ toString occ
+  | .sort (some d) => s!"sort-{hash d}"
+  | .levelVar x => s!"level-var-{x}"
+  | .levelConst i => s!"level-const-{i}"
+  | .levelOp op => s!"level-op-{op}"
+  | .moduleName m => s!"module-name-{m}"
+  | _ => ""
+
+/-- Reduced annotation for a token, suitable for JS rendering of reflowed format data. -/
+structure TokenAnnotation where
+  cssClass : String
+  binding : Option String := none
+deriving ToJson, FromJson, BEq, Hashable, Repr, Inhabited
+
+/-- Converts a `Token.Kind` to a `TokenAnnotation` for the JS pretty printer. -/
+def Token.Kind.toAnnotation (k : Token.Kind) : TokenAnnotation :=
+  let b := k.binding
+  ⟨k.cssClass, if b.isEmpty then none else some b⟩
+
+/--
+Serializes a `Std.Format` tree to a compact JSON representation:
+ * Text nodes are plain strings
+ * `nil` is `null`
+ * `line` is `1`
+ * Other nodes are arrays tagged by number:
+    2=align, 3=nest, 4=append, 5=group(allOrNone), 6=group(fill), 7=tag.
+-/
+partial def formatToJson : Std.Format → Json
+  | .nil => .null
+  | .line => 1
+  | .align force => .arr #[2, Json.bool force]
+  | .text s => .str s
+  | .nest indent f => .arr #[3, indent, formatToJson f]
+  | .append f1 f2 => .arr #[4, formatToJson f1, formatToJson f2]
+  | .group f .allOrNone => .arr #[5, formatToJson f]
+  | .group f .fill => .arr #[6, formatToJson f]
+  | .tag n f => .arr #[7, n, formatToJson f]
+
+/--
+Serialize format data (format tree + annotation table) to a JSON string suitable for embedding in
+HTML as a `data-rich-format` attribute.
+-/
+def formatDataToJson (fmt : Std.Format) (annotations : Array (Nat × TokenAnnotation)) : String :=
+  let fmtJson := formatToJson fmt
+  let annotJson := Json.mkObj (annotations.toList.map fun (k, v) => (toString k, Lean.toJson v))
+  Json.compress (Json.mkObj [("fmt", fmtJson), ("annotations", annotJson)])
+
 structure Highlighted.Hypothesis (expr : Type) where
   names : Array Token
   typeAndVal : expr
+  /-- Optional JSON-encoded format data for reflowable rendering of the type. -/
+  ppType : Option String := none
 deriving Repr, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.Hypothesis.map (f : α → β) (h : Hypothesis α) : Hypothesis β :=
@@ -145,6 +222,8 @@ structure Highlighted.Goal (expr : Type) where
   goalPrefix : String
   hypotheses : Array (Hypothesis expr)
   conclusion : expr
+  /-- Optional JSON-encoded format data for reflowable rendering of the conclusion. -/
+  ppConclusion : Option String := none
 deriving Repr, BEq, Hashable, ToJson, FromJson
 
 def Highlighted.Goal.map (f : α → β) (g : Goal α) : Goal β :=
@@ -154,13 +233,13 @@ def Highlighted.Goal.map (f : α → β) (g : Goal α) : Goal β :=
 
 instance [Quote expr] : Quote (Highlighted.Hypothesis expr) where
   quote
-    | {names, typeAndVal} =>
-      Syntax.mkCApp ``Highlighted.Hypothesis.mk #[quote names, quote typeAndVal]
+    | {names, typeAndVal, ppType} =>
+      Syntax.mkCApp ``Highlighted.Hypothesis.mk #[quote names, quote typeAndVal, quote ppType]
 
 instance [Quote expr] : Quote (Highlighted.Goal expr) where
   quote
-    | {name, goalPrefix, hypotheses, conclusion} =>
-      Syntax.mkCApp ``Highlighted.Goal.mk #[quote name, quote goalPrefix, quote hypotheses, quote conclusion]
+    | {name, goalPrefix, hypotheses, conclusion, ppConclusion} =>
+      Syntax.mkCApp ``Highlighted.Goal.mk #[quote name, quote goalPrefix, quote hypotheses, quote conclusion, quote ppConclusion]
 
 inductive Highlighted.Span.Kind where
   | error
@@ -307,7 +386,7 @@ Extracts all names that are marked as definition sites.
 partial def Highlighted.definedNames : Highlighted → NameSet
   | .token ⟨tok, _⟩ =>
     match tok with
-    | .const n _ _ true => NameSet.empty.insert n
+    | .const n _ _ true .. => NameSet.empty.insert n
     | _ => {}
   | .span _ hl | .tactics _ _ _ hl => hl.definedNames
   | .seq hls => hls.map (·.definedNames) |>.foldr Compat.NameSet.union {}
@@ -541,13 +620,13 @@ No pretty-printing is performed, so this is mostly useful for internal tests and
 rather than display to readers.
 -/
 partial def Goal.toString : Highlighted.Goal Highlighted → String
-  | {name, goalPrefix, hypotheses, conclusion} =>
+  | {name, goalPrefix, hypotheses, conclusion, ..} =>
     (name.map ("case " ++ · ++ "\n") |>.getD "") ++
     ((hypotheses.map hString) |>.toList |> String.join) ++
     goalPrefix ++
     conclusion.toString
 where hString
-  | ⟨xs, t⟩ =>
+  | ⟨xs, t, _⟩ =>
     let names := xs.map (fun tok => Highlighted.token tok |>.toString) |>.toList
     let names := " ".intercalate names
     s!"{names} : {t.toString}\n"
