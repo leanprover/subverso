@@ -73,6 +73,8 @@ structure Context where
   definitionsPossible : Bool
   includeUnparsed : Bool
   suppressNamespaces : List Name
+  /-- Whether to collect `Std.Format` data for reflowable rendering. -/
+  collectFormat : Bool := false
 
 def Context.noDefinitions (ctxt : Context) : Context := {ctxt with definitionsPossible := false}
 
@@ -486,13 +488,11 @@ structure HighlightState where
   terms : Compat.HashMap Expr Highlighted := {}
   /-- Cached already-rendered terms from hovers and proof states, in an intermediate state -/
   ppTerms : Compat.HashMap Expr CodeWithInfos := {}
-  /-- Whether to collect `Std.Format` data for reflowable rendering. -/
-  collectFormat : Bool := false
   /-- Cached format data for terms (when `collectFormat` is true). -/
   fmtTerms : Compat.HashMap Expr String := {}
 
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}, {}, {}, default, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}, {}, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -588,17 +588,17 @@ Finds the appropriate token kind for a token whose meaning is the expression `ex
 `collectFormat` is true, also returns the `FormatWithInfos` to be saved as a reflowable type or
 signature.
 -/
-def exprKind
+def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
-    HighlightM (Option KindWithPPSig) := do
-  let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : HighlightM α := {ci with env := env}.runMetaM lctx act
-  let doCollect := (← get).collectFormat
+    m (Option KindWithPPSig) := do
+  let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := {ci with env := env}.runMetaM lctx act
+  let doCollect := (← readThe Context).collectFormat
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
   -- qualifiers. Returns (sigString, sigOrType?) — the second projection is a pretty-printed
   -- signature for later resolution by identKind.
-  let ppSig (x : Name) (env := ci.env) : HighlightM (String × Option (FormatWithInfos × ContextInfo)) := do
+  let ppSig (x : Name) (env := ci.env) : m (String × Option (FormatWithInfos × ContextInfo)) := do
     let sig ← runMeta (env := env) (lctx := {}) <|
       if doCollect then withOptions (·.set `pp.tagAppFns true) (PrettyPrinter.ppSignature x)
       else PrettyPrinter.ppSignature x
@@ -608,7 +608,7 @@ def exprKind
 
   -- Pretty-print a variable's type. Returns (tyString, sigOrType?) — the second projection is a
   -- pretty printed type for later use by identKind
-  let ppVarType : HighlightM (String × Option (FormatWithInfos × ContextInfo)) := do
+  let ppVarType : m (String × Option (FormatWithInfos × ContextInfo)) := do
     try
       if doCollect then
         let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
@@ -672,8 +672,10 @@ def exprKind
   findKind (← instantiateMVars expr)
 
 def termInfoKind
+    [Monad m] [MonadReaderOf Context m]
+    [MonadFileMap m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
-    HighlightM (Option KindWithPPSig) := do
+    m (Option KindWithPPSig) := do
   let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
     if let some (.const name sig docs _isDef pp?, prettySig) := k then
@@ -681,9 +683,10 @@ def termInfoKind
       return some (.const name sig docs isDef pp?, prettySig)
   return k
 
-def infoKind
+def infoKind [Monad m] [MonadReaderOf Context m]
+    [MonadFileMap m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
-    HighlightM (Option KindWithPPSig) := do
+    m (Option KindWithPPSig) := do
   match info with
     | .ofTermInfo termInfo => termInfoKind ci termInfo (allowUnknownTyped := allowUnknownTyped)
     | .ofFieldInfo fieldInfo => return some (← fieldInfoKind ci fieldInfo, none)
@@ -712,9 +715,10 @@ def anonCtorKind
   | .anonCtor .. => some kind
   | _ => none
 
-partial def renderTagged
+partial def renderTagged [Monad m] [MonadReaderOf Context m]
+    [MonadFileMap m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (outer : Option Token.Kind) (doc : CodeWithInfos) :
-    HighlightM Highlighted := do
+    m Highlighted := do
   match doc with
   | .text txt => do
     -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
@@ -1150,7 +1154,7 @@ def identKind
 
 /-- Returns the format data JSON for `key` from the cache, or computes and caches it. -/
 def renderOrGetFormat (key : Expr) (render : Expr → HighlightM String) : HighlightM (Option String) := do
-  if !(← get).collectFormat then return none
+  if !(← read).collectFormat then return none
   if let some fmtStr := (← get).fmtTerms.get? key then
     return some fmtStr
   else
@@ -1170,7 +1174,7 @@ def ppFormatData (e : Expr) (ci : ContextInfo) (runMeta : MetaM FormatWithInfos 
 def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
   let mut goalView := #[]
-  let doCollectFormat := (← get).collectFormat
+  let doCollectFormat := (← read).collectFormat
   for g in goals do
     let mut hyps := #[]
     let some mvDecl := ci.mctx.findDecl? g
@@ -1694,10 +1698,16 @@ def highlight (stx : Syntax) (messages : Array Message)
   let ids := build modrefs
 
   let st ← HighlightState.ofMessages stx messages
-  let st := { st with collectFormat }
-  let infoTable : InfoTable := .ofInfoTrees trees
 
-  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ⟨ids, true, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
+  let infoTable : InfoTable := .ofInfoTrees trees
+  let ctxt := {
+    ids,
+    definitionsPossible := true,
+    includeUnparsed := false,
+    suppressNamespaces := sortSuppress suppressNamespaces,
+    collectFormat
+  }
+  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ctxt |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
@@ -1722,7 +1732,7 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
   let endPos? := endPos? <|> Internal.getTrailingOrTailPos? stx
 
   let st ← HighlightState.ofMessages stx messages startPos? endPos?
-  let st := { st with collectFormat }
+
   let infoTable : InfoTable := .ofInfoTrees trees
 
   let doHighlight : HighlightM Unit := do
@@ -1730,7 +1740,14 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     if let some endPos := endPos? then
       fillMissingSourceUpTo endPos
 
-  let ((), {output := output, ..}) ← doHighlight.run ⟨ids, true, true, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
+  let ctxt := {
+    ids,
+    definitionsPossible := true,
+    includeUnparsed := true,
+    suppressNamespaces := sortSuppress suppressNamespaces,
+    collectFormat
+  }
+  let ((), {output := output, ..}) ← doHighlight.run ctxt |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
@@ -1741,7 +1758,8 @@ The work of constructing the alias table is performed once, with all the trees t
 -/
 def highlightMany (stxs : Array Syntax) (messages : Array Message)
     (trees : Array (Option Lean.Elab.InfoTree))
-    (suppressNamespaces : List Name := []) : TermElabM (Array Highlighted) := do
+    (suppressNamespaces : List Name := [])
+    (collectFormat := false) : TermElabM (Array Highlighted) := do
   let trees' := trees.filterMap id
   let infoTable : InfoTable := .ofInfoTrees trees'
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
@@ -1749,7 +1767,14 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages (mkNullNode stxs) messages
 
   if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
-  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ⟨ids, true, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run st
+  let ctxt := {
+    ids,
+    definitionsPossible := true,
+    includeUnparsed := false,
+    suppressNamespaces := sortSuppress suppressNamespaces,
+    collectFormat
+  }
+  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ctxt |>.run infoTable |>.run st
   pure hls
 where
   go t stx : HighlightM Highlighted := withCurrHeartbeats do
@@ -1766,22 +1791,29 @@ module, where each command has its own corresponding tree.
 The work of constructing the alias table is performed once, with all the trees together.
 -/
 def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
-    (suppressNamespaces : List Name := []) : TermElabM (Array Highlighted) := do
+    (suppressNamespaces : List Name := []) (collectFormat := false) :
+    TermElabM (Array Highlighted) := do
   let trees' := result.items.flatMap (·.info.toArray)
   let infoTable : InfoTable := .ofInfoTrees trees'
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
   let ids := build modrefs
 
-  let ctx := ⟨ids, true, false, sortSuppress suppressNamespaces⟩
+  let ctxt := {
+    ids,
+    definitionsPossible := true,
+    includeUnparsed := false,
+    suppressNamespaces := sortSuppress suppressNamespaces,
+    collectFormat
+  }
 
   let mut hls := #[]
 
-  let ((), headerSt) ← highlight' #[] result.headerSyntax true |>.run ctx |>.run infoTable |>.run (← HighlightState.ofMessages result.headerSyntax #[])
+  let ((), headerSt) ← highlight' #[] result.headerSyntax true |>.run ctxt |>.run infoTable |>.run (← HighlightState.ofMessages result.headerSyntax #[])
   hls := hls.push (Highlighted.fromOutput headerSt.output)
 
   for cmd in result.items do
     let st ← HighlightState.ofMessages cmd.commandSyntax (Compat.messageLogArray cmd.messages)
-    let (hl, _) ← go cmd |>.run ctx |>.run infoTable |>.run st
+    let (hl, _) ← go cmd |>.run ctxt |>.run infoTable |>.run st
     hls := hls.push hl
 
   return hls
@@ -1792,20 +1824,37 @@ where
 
 def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     (trees : PersistentArray Lean.Elab.InfoTree)
-    (suppressNamespaces : List Name := []) : TermElabM (Array (Highlighted.Goal Highlighted)) := do
+    (suppressNamespaces : List Name := []) (collectFormat := false) :
+    TermElabM (Array (Highlighted.Goal Highlighted)) := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
   let infoTable : InfoTable := .ofInfoTrees trees
-  let (hlGoals, _) ← highlightGoals ci goals |>.run ⟨ids, false, false, sortSuppress suppressNamespaces⟩ |>.run infoTable |>.run .empty
+  let ctxt := {
+    ids,
+    definitionsPossible := false,
+    includeUnparsed := false,
+    suppressNamespaces := sortSuppress suppressNamespaces,
+    collectFormat
+  }
+  let (hlGoals, _) ← highlightGoals ci goals |>.run ctxt |>.run infoTable |>.run .empty
   pure hlGoals
 
 
-def highlightMessage (message : Message) (suppressNamespaces : List Name := []) : TermElabM Highlighted.Message := do
-  let (contents, _) ← messageContents message |>.run ⟨{}, false, false, sortSuppress suppressNamespaces⟩ |>.run {} |>.run .empty
+def highlightMessage (message : Message)
+    (suppressNamespaces : List Name := []) (collectFormat := false) :
+    TermElabM Highlighted.Message := do
+  let ctxt := {
+    ids := {},
+    definitionsPossible := false,
+    includeUnparsed := false,
+    suppressNamespaces := sortSuppress suppressNamespaces,
+    collectFormat
+  }
+  let (contents, _) ← messageContents message |>.run ctxt |>.run {} |>.run .empty
   let severity : Highlighted.Span.Kind :=
     match message.severity with
     | .error => .error
     | .warning => .warning
     | .information => .info
-  return {severity, contents}
+  return { severity, contents }
