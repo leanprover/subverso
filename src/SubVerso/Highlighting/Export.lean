@@ -24,6 +24,7 @@ abbrev Key := Nat
 structure Hypothesis where
   names : Array Key
   typeAndVal : Key
+  ppType : Option String := none
 deriving Repr, BEq, Hashable, ToJson, FromJson, Inhabited
 
 structure Goal where
@@ -31,6 +32,7 @@ structure Goal where
   goalPrefix : String
   hypotheses : Array Hypothesis
   conclusion : Key
+  ppConclusion : Option String := none
 deriving Repr, BEq, Hashable, ToJson, FromJson, Inhabited
 
 inductive MessageContents where
@@ -171,12 +173,13 @@ mutual
             codeKeys := e.codeKeys.insert hl k })
 
   partial def Highlighted.Hypothesis.export (hyp : Highlighted.Hypothesis Highlighted) : ExportM Export.Hypothesis := do
-    return { names := (← hyp.names.mapM (·.export)), typeAndVal := (← hyp.typeAndVal.export) }
+    return { names := (← hyp.names.mapM (·.export)), typeAndVal := (← hyp.typeAndVal.export), ppType := hyp.ppType }
 
   partial def Highlighted.Goal.export (goal : Highlighted.Goal Highlighted) : ExportM Export.Key := do
     let goal : Export.Goal := { goal with
       hypotheses := (← goal.hypotheses.mapM (·.export)),
-      conclusion := (← goal.conclusion.export)
+      conclusion := (← goal.conclusion.export),
+      ppConclusion := goal.ppConclusion
     }
     if let some k := (← get).goalKeys.get? goal then
       return k
@@ -211,10 +214,10 @@ mutual
   partial def Export.toGoal (data : Export) (key : Key) : Except String (Highlighted.Goal Highlighting.Highlighted) := do
     let some g := data.goals.get? key
       | throw s!"Not found: goal at key {key}"
-    let hypotheses : Array (Highlighted.Hypothesis Highlighting.Highlighted) ← g.hypotheses.mapM fun {names, typeAndVal} => do
-      return {names := (← names.mapM data.toToken), typeAndVal := (← data.toHighlighted typeAndVal)}
+    let hypotheses : Array (Highlighted.Hypothesis Highlighting.Highlighted) ← g.hypotheses.mapM fun h => do
+      return {names := (← h.names.mapM data.toToken), typeAndVal := (← data.toHighlighted h.typeAndVal), ppType := h.ppType}
     let conclusion ← data.toHighlighted g.conclusion
-    return {g with hypotheses, conclusion}
+    return { g with hypotheses, conclusion }
 
   partial def Export.toHighlighted (data : Export) (key : Key) : Except String Highlighting.Highlighted := do
     let some hl := data.code.get? key
