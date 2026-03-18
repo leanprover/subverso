@@ -607,7 +607,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
   -- signature for later resolution by identKind.
   let ppSig (x : Name) (env := ci.env) :  m (String × Option (FormatWithInfos × ContextInfo)) := do
     let (sigStr, sig, ci) ←
-      if let some sigDoc := (← (cache.get : IO _)).signatures.get? x then
+      if let some sigDoc := Compat.NameMap.get? (← (cache.get : IO _)).signatures x then
         pure sigDoc
       else
         let (sig, ci) ← do
