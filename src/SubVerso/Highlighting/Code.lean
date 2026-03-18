@@ -68,6 +68,11 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
   let rng ← stx.getRange? (canonicalOnly := true)
   Compat.HashMap.get? table.tacticInfo rng |>.map (·.filter (·.2.stx == stx))
 
+structure SigCache where
+  signatures : (NameMap (String × FormatWithInfos × ContextInfo))
+
+instance : EmptyCollection SigCache := ⟨⟨{}⟩⟩
+
 structure Context where
   ids : HashMap Lsp.RefIdent Lsp.RefIdent
   definitionsPossible : Bool
@@ -75,6 +80,7 @@ structure Context where
   suppressNamespaces : List Name
   /-- Whether to collect `Std.Format` data for reflowable rendering. -/
   collectFormat : Bool := false
+  sigCache : IO.Ref SigCache
 
 def Context.noDefinitions (ctxt : Context) : Context := {ctxt with definitionsPossible := false}
 
@@ -592,19 +598,27 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
+  let cache : IO.Ref _ := (← read).sigCache
   let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := {ci with env := env}.runMetaM lctx act
   let doCollect := (← readThe Context).collectFormat
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
   -- qualifiers. Returns (sigString, sigOrType?) — the second projection is a pretty-printed
   -- signature for later resolution by identKind.
-  let ppSig (x : Name) (env := ci.env) : m (String × Option (FormatWithInfos × ContextInfo)) := do
-    let sig ← runMeta (env := env) (lctx := {}) <|
-      if doCollect then withOptions (·.set `pp.tagAppFns true) (PrettyPrinter.ppSignature x)
-      else PrettyPrinter.ppSignature x
-    let sigStr := toString (← stripNamespaces sig)
-    let sigOrType? := if doCollect then some (sig, { ci with env := env }) else none
-    pure (sigStr, sigOrType?)
+  let ppSig (x : Name) (env := ci.env) :  m (String × Option (FormatWithInfos × ContextInfo)) := do
+    let (sigStr, sig, ci) ←
+      if let some sigDoc := (← (cache.get : IO _)).signatures.get? x then
+        pure sigDoc
+      else
+        let (sig, ci) ← do
+          let sig ← runMeta (env := env) (lctx := {}) <|
+            withOptions (·.set `pp.tagAppFns true) (PrettyPrinter.ppSignature x)
+          pure (sig, { ci with env := env })
+
+        let sigStr := toString (← stripNamespaces sig)
+        (cache.modify (fun ⟨s⟩ => ⟨s.insert x (sigStr, sig, ci)⟩) : IO _)
+        pure (sigStr, sig, ci)
+    if doCollect then return (sigStr, some (sig, ci)) else return (sigStr, none)
 
   -- Pretty-print a variable's type. Returns (tyString, sigOrType?) — the second projection is a
   -- pretty printed type for later use by identKind
@@ -1700,12 +1714,14 @@ def highlight (stx : Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages stx messages
 
   let infoTable : InfoTable := .ofInfoTrees trees
+  let sigCache ← IO.mkRef {}
   let ctxt := {
     ids,
     definitionsPossible := true,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
-    collectFormat
+    collectFormat,
+    sigCache
   }
   let ((), {output := output, ..}) ← highlight' trees stx true |>.run ctxt |>.run infoTable |>.run st
   pure <| .fromOutput output
@@ -1740,12 +1756,14 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     if let some endPos := endPos? then
       fillMissingSourceUpTo endPos
 
+  let sigCache ← IO.mkRef {}
   let ctxt := {
     ids,
     definitionsPossible := true,
     includeUnparsed := true,
     suppressNamespaces := sortSuppress suppressNamespaces,
-    collectFormat
+    collectFormat,
+    sigCache
   }
   let ((), {output := output, ..}) ← doHighlight.run ctxt |>.run infoTable |>.run st
   pure <| .fromOutput output
@@ -1767,12 +1785,14 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   let st ← HighlightState.ofMessages (mkNullNode stxs) messages
 
   if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
+  let sigCache ← IO.mkRef {}
   let ctxt := {
     ids,
     definitionsPossible := true,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
-    collectFormat
+    collectFormat,
+    sigCache
   }
   let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ctxt |>.run infoTable |>.run st
   pure hls
@@ -1797,13 +1817,15 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
   let infoTable : InfoTable := .ofInfoTrees trees'
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
   let ids := build modrefs
+  let sigCache := ← IO.mkRef {}
 
   let ctxt := {
     ids,
     definitionsPossible := true,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
-    collectFormat
+    collectFormat,
+    sigCache
   }
 
   let mut hls := #[]
@@ -1830,12 +1852,14 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
   let infoTable : InfoTable := .ofInfoTrees trees
+  let sigCache ← IO.mkRef {}
   let ctxt := {
     ids,
     definitionsPossible := false,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
-    collectFormat
+    collectFormat,
+    sigCache
   }
   let (hlGoals, _) ← highlightGoals ci goals |>.run ctxt |>.run infoTable |>.run .empty
   pure hlGoals
@@ -1844,12 +1868,14 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
 def highlightMessage (message : Message)
     (suppressNamespaces : List Name := []) (collectFormat := false) :
     TermElabM Highlighted.Message := do
+  let sigCache ← IO.mkRef {}
   let ctxt := {
     ids := {},
     definitionsPossible := false,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
-    collectFormat
+    collectFormat,
+    sigCache
   }
   let (contents, _) ← messageContents message |>.run ctxt |>.run {} |>.run .empty
   let severity : Highlighted.Span.Kind :=
