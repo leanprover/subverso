@@ -423,7 +423,7 @@ partial def Highlighted.simplifyInternals : (hl : Highlighted) → Highlighted
 instance : ToJson Highlighted where
   toJson hl :=
     -- Get the derived instance, and call it on the simplified data
-    let ⟨toJson'⟩ := inferInstanceAs (ToJson Highlighted)
+    let ⟨toJson'⟩ := (inferInstance : ToJson Highlighted)
     toJson' hl.simplifyInternals
 
 open Lean Syntax in
