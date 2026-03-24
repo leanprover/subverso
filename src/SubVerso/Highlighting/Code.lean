@@ -1224,7 +1224,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
         let tyDoc ← renderOrGetCodeWithInfos type (runMeta <| ppCodeWithInfos ·)
         let valDoc ←
-          if !ppProofs && (← Meta.isProp type) then
+          if !ppProofs && (← runMeta <| Meta.isProp type) then
             pure (.text "···")
           else renderOrGetCodeWithInfos val (runMeta <| ppCodeWithInfos ·)
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
