@@ -1209,6 +1209,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       let some decl := c
         | continue
       if decl.isAuxDecl || decl.isImplementationDetail then continue
+      let ppProofs := pp.proofs.get? (← getOptions) |>.getD false
       match decl with
       | .cdecl _index fvar name type _ _
       | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
@@ -1222,7 +1223,10 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       | .ldecl _index fvar name type val _ _ =>
         let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
         let tyDoc ← renderOrGetCodeWithInfos type (runMeta <| ppCodeWithInfos ·)
-        let valDoc ← renderOrGetCodeWithInfos val (runMeta <| ppCodeWithInfos ·)
+        let valDoc ←
+          if !ppProofs && (← Meta.isProp type) then
+            pure (.text "···")
+          else renderOrGetCodeWithInfos val (runMeta <| ppCodeWithInfos ·)
         let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
           if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
           else #[.text " := \n", valDoc.indent]
