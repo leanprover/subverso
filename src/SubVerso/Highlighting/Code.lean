@@ -1210,7 +1210,8 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         | continue
       if decl.isAuxDecl || decl.isImplementationDetail then continue
       match decl with
-      | .cdecl _index fvar name type _ _ =>
+      | .cdecl _index fvar name type _ _
+      | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
         let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
         let tyStr ← renderOrGet type fun e => do
           renderTagged none (← runMeta (ppCodeWithInfos e))
