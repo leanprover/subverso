@@ -1214,6 +1214,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       | .cdecl _index fvar name type _ _
       | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
         let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
+        let type ← runMeta <| instantiateMVars type
         let tyStr ← renderOrGet type fun e => do
           renderTagged none (← runMeta (ppCodeWithInfos e))
         let ppType ← if doCollectFormat then
@@ -1222,6 +1223,8 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩
       | .ldecl _index fvar name type val _ _ =>
         let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
+        let type ← runMeta <| instantiateMVars type
+        let val ← runMeta <| instantiateMVars val
         let tyDoc ← renderOrGetCodeWithInfos type (runMeta <| ppCodeWithInfos ·)
         let valDoc ←
           if !ppProofs && (← runMeta <| Meta.isProp type) then
@@ -1232,10 +1235,11 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
           else #[.text " := \n", valDoc.indent]
         -- For let-bindings, skip format data (would need combined type+val format)
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr, none⟩
-    let concl ← renderOrGet mvDecl.type fun e => do
+    let conclType ← runMeta <| instantiateMVars mvDecl.type
+    let concl ← renderOrGet conclType fun e => do
       renderTagged none (← runMeta <| ppCodeWithInfos e)
     let ppConcl ← if doCollectFormat then
-      renderOrGetFormat mvDecl.type (ppFormatData · ci' runMeta)
+      renderOrGetFormat conclType (ppFormatData · ci' runMeta)
     else pure none
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl, ppConcl⟩
   pure goalView
