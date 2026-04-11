@@ -1135,7 +1135,13 @@ private partial def cleanFormatTags
 def resolveFormatAnnotations
     (fmt : Std.Format) (infos : InfoPerPos) (ci : ContextInfo) :
     HighlightM (Std.Format × Array (Nat × TokenAnnotation)) :=
-  cleanFormatTags infos ci fmt #[]
+  -- Positions in pretty-printer output are indices into the format data structure, not real source
+  -- positions. Setting `definitionsPossible` to false prevents `isDefinition` from calling
+  -- `getDeclarationRange?` on syntax with these fake positions, which would cause
+  -- `codepointPosToUtf16PosFrom` to loop when the FileMap's string is shorter. These synthetic
+  -- positions are often very large numbers (91620430928 was observed in practice), and
+  -- `codepointPosToUtf16PosFromAux` loops that many times.
+  withReader (·.noDefinitions) <| cleanFormatTags infos ci fmt #[]
 
 /-- Simplifies a complete `FormatWithInfos` into a format data JSON string. -/
 private def resolveFormatWithInfos (prettySig : Option (FormatWithInfos × ContextInfo)) : HighlightM (Option String) := do
