@@ -411,9 +411,9 @@ elab "#assertAnchor" inp:str name:str expected:str : command => do
     match Compat.HashMap.get? ex.anchors name.getString with
     | none => throwError m!"No anchor named {repr name.getString}"
     | some a =>
-      let got := Compat.String.trim a.toString
-      if got != expected.getString then
-        throwError m!"Anchor {repr name.getString} = {repr got}, expected {repr expected.getString}"
+      -- Compare the exact (untrimmed) anchor code, so a stray leading/trailing newline is caught.
+      if a.toString != expected.getString then
+        throwError m!"Anchor {repr name.getString} = {repr a.toString}, expected {repr expected.getString}"
 
 open Lean Elab Command in
 /--
@@ -484,11 +484,13 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 #assertKind "def z :=\n  /- a /- b -/ c -/ 3" " a /- b -/ c " "blockComment"
 #evalHighlight' "def z :=\n  /- a /- b -/ c -/ 3" "def z :=\n  /- a /- b -/ c -/ 3"
 
--- `-- ANCHOR:` / `-- ANCHOR_END:` directives are still recognized after comment tokenization: the
--- anchor scanner reconstructs the comment line from its tokens.
-#assertAnchor "def pre := 0\n-- ANCHOR: foo\ndef x := 1\n-- ANCHOR_END: foo\ndef post := 2" "foo" "def x := 1"
--- Indented directive comments are recognized too.
-#assertAnchor "def pre := 0\nsection\n  -- ANCHOR: bar\n  def x := 1\n  -- ANCHOR_END: bar\nend" "bar" "def x := 1"
+-- `-- ANCHOR:` / `-- ANCHOR_END:` directives are still recognized after comment tokenization, and
+-- the whole directive line (with its newline) is consumed — no extra blank lines, and the anchor
+-- has no stray leading/trailing newline (checked untrimmed).
+#assertAnchor "def pre := 0\n-- ANCHOR: foo\ndef x := 1\n-- ANCHOR_END: foo\ndef post := 2" "foo" "def x := 1\n"
+-- Indented directive comments are recognized too, and their indentation is consumed with the line;
+-- the kept code retains its own indentation.
+#assertAnchor "def pre := 0\nsection\n  -- ANCHOR: bar\n  def x := 1\n  -- ANCHOR_END: bar\nend" "bar" "  def x := 1\n"
 
 -- Operators are `.operator`, including multi-character symbols (classified per character) and
 -- Unicode math symbols like the function arrow.

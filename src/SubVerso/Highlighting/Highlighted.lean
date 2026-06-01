@@ -17,16 +17,8 @@ open Lean
 
 namespace SubVerso.Highlighting
 
--- `Char` has no `ToJson`/`FromJson` in core, so provide one (as a single-character string) for the
--- derived `Token.Kind` instances, which carry a decoded `Char` for character literals.
-private instance : ToJson Char where
-  toJson c := toJson c.toString
-
-private instance : FromJson Char where
-  fromJson? j := do
-    let s := (← fromJson? (α := String) j)
-    if s.length = 1 then return Compat.String.Pos.get s 0
-    else .error "expected a single-character string for Char"
+-- The `Char` instances required by `Token.Kind`'s derived `ToJson`/`FromJson`/`Hashable` and `Quote`
+-- (for the decoded `Char` of character literals) are provided, where core lacks them, by `Compat`.
 
 deriving instance Repr for Std.Format.FlattenBehavior
 deriving instance Repr for Std.Format

@@ -317,6 +317,33 @@ private def applyDirective
       | throw s!"Anchor not open: {a}"
     return some (openAnchors.erase a, anchorOut.insert a hl.toHighlighted, tacOut)
 
+/-- Whether `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` directive comment. -/
+private def isDirectiveLine (textAnchors proofStates : Bool) (line : String) : Bool :=
+  (textAnchors && (anchor? line |>.toOption).isSome) ||
+    (proofStates && (proofState? line |>.toOption).isSome)
+
+/--
+Replaces *directive* comments — tokenized as a `commentDelim` (`--`) followed by a `lineComment` —
+with a single `.text` node holding the reconstructed comment text. After `normHl` merges that text
+with the surrounding whitespace, the line-based directive handling in `anchored` consumes the whole
+directive line (indentation and trailing newline included) exactly as it did before comments were
+tokenized. Non-directive comments are left as highlighted tokens so they keep their styling.
+-/
+private partial def inlineDirectiveComments (textAnchors proofStates : Bool) : Highlighted → Highlighted
+  | .seq xs => .seq (goSeq xs.toList).toArray
+  | .span info x => .span info (inlineDirectiveComments textAnchors proofStates x)
+  | .tactics info s e x => .tactics info s e (inlineDirectiveComments textAnchors proofStates x)
+  | hl => hl
+where
+  goSeq : List Highlighted → List Highlighted
+    | .token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: rest =>
+      if isDirectiveLine textAnchors proofStates (delim ++ body) then
+        .text (delim ++ body) :: goSeq rest
+      else
+        .token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: goSeq rest
+    | x :: rest => inlineDirectiveComments textAnchors proofStates x :: goSeq rest
+    | [] => []
+
 /--
 Extracts code from rendered examples based on comment directives.
 
@@ -351,18 +378,12 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
   let mut tacOut : HashMap String Highlighted := {}
   let mut openAnchors : HashMap String Hl := {}
   let mut doc : Hl := .empty
-  let mut todo := [some (normHl hl)]
+  -- Directive comments (`-- ANCHOR: …`, `-- PROOF_STATE: …`) are tokenized as
+  -- `commentDelim`/`lineComment` rather than plain `.text`. Turn just those back into a single
+  -- `.text` node so the line-based directive handling below consumes the whole directive line
+  -- (after `normHl` re-merges the surrounding whitespace); non-directive comments stay as tokens.
+  let mut todo := [some (normHl (inlineDirectiveComments textAnchors proofStates (normHl hl)))]
   let mut ctx : Array HlCtx := #[]
-  -- State for reconstructing directives from comment tokens (`-- ANCHOR: …`, `-- PROOF_STATE: …`),
-  -- which are now tokenized as `commentDelim`/`lineComment` rather than appearing as plain `.text`:
-  --  * `docBeforeLine` is a snapshot of `doc` taken at the start of the most recent `.text` node. A
-  --    directive comment is always preceded by the whitespace run holding the newline that ends the
-  --    previous line, so when a comment is reached this is `doc` through the end of that previous
-  --    line: its last line is the one a `PROOF_STATE` caret refers to, which `tacticsAt?` searches.
-  --  * `curLineText` is the current line's text so far (after the last newline) — i.e. the comment's
-  --    indentation — used to rebuild the full comment line so proof-state columns stay absolute.
-  let mut docBeforeLine : Hl := .empty
-  let mut curLineText : String := ""
   repeat
     match todo with
     | [] => break
@@ -376,10 +397,6 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
       -- of comments, in case proof state indicator comments are mixed up with other kinds of
       -- comments.
       let preText := doc
-      -- Snapshot `doc` before this text node for a following comment-token directive: when the next
-      -- node is a directive comment, this text node is the whitespace run starting with the newline
-      -- that ends the previous line, so `docBeforeLine` then holds `doc` through that previous line.
-      docBeforeLine := doc
       todo := hs
       let lines := Internal.getLines s
       for line in lines do
@@ -388,25 +405,6 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
           openAnchors := openAnchors.map fun _ hl => hl ++ line
           doc := doc ++ line
         | some (oa, ao, to) => openAnchors := oa; anchorOut := ao; tacOut := to
-      -- Track the current source line's trailing text (the part after the last newline) so that a
-      -- following comment-token directive can be reconstructed with its original indentation.
-      if lines.size > 1 then curLineText := Compat.Array.back! lines
-      else curLineText := curLineText ++ s
-    | some (.token ⟨.commentDelim, delim⟩) :: some (.token ⟨.lineComment, body⟩) :: hs =>
-      -- A line comment is tokenized as a `--` delimiter plus its body. Reconstruct the original
-      -- comment line (with this line's indentation) so `-- ANCHOR: …` / `-- PROOF_STATE: …`
-      -- directives are still recognized. Non-directive comments are kept as highlighted tokens.
-      -- `docBeforeLine` ends at the previous line, so its last line is the one a `^` would point at.
-      let line := curLineText ++ delim ++ body
-      todo := hs
-      match ← applyDirective line docBeforeLine ctx textAnchors proofStates openAnchors anchorOut tacOut with
-      | none =>
-        let cd : Highlighted := .token ⟨.commentDelim, delim⟩
-        let lc : Highlighted := .token ⟨.lineComment, body⟩
-        openAnchors := openAnchors.map fun _ hl => hl ++ cd ++ lc
-        doc := doc ++ cd ++ lc
-        curLineText := curLineText ++ delim ++ body
-      | some (oa, ao, to) => openAnchors := oa; anchorOut := ao; tacOut := to
     | some h@(.token ..) :: hs | some h@(.point ..) :: hs | some h@(.unparsed ..) :: hs =>
       todo := hs
       openAnchors := openAnchors.map fun _ hl => hl ++ h
