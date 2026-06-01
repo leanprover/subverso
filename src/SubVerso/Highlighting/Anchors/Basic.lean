@@ -291,6 +291,33 @@ structure AnchoredExamples where
   proofStates : HashMap String Highlighted
 
 /--
+If `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` directive, applies it and returns the updated
+anchor and proof-state maps; if it is not a directive, returns `none` (the caller keeps the content).
+`preText` is the document the proof-state caret refers into (its last line is the one pointed at).
+-/
+private def applyDirective
+    (line : String) (preText : Hl) (ctx : Array HlCtx) (textAnchors proofStates : Bool)
+    (openAnchors : HashMap String Hl) (anchorOut tacOut : HashMap String Highlighted) :
+    Except String (Option (HashMap String Hl × HashMap String Highlighted × HashMap String Highlighted)) := do
+  match guard textAnchors *> (anchor? line |>.toOption) with
+  | none =>
+    match guard proofStates *> (proofState? line |>.toOption) with
+    | none => return none
+    | some (p, c) =>
+      let some t := preText.tacticsAt? c
+        | throw s!"No proof state at column {c} for '{p}'"
+      if tacOut.get? p |>.isSome then throw s!"Proof state already found: '{p}'"
+      return some (openAnchors, anchorOut, tacOut.insert p t)
+  | some (a, true) =>
+    if openAnchors.contains a then throw s!"Anchor already opened: {a}"
+    if anchorOut.contains a then throw s!"Anchor already used: {a}"
+    return some (openAnchors.insert a { here := .empty, context := ctx.map (.empty, ·) }, anchorOut, tacOut)
+  | some (a, false) =>
+    let some hl := openAnchors.get? a
+      | throw s!"Anchor not open: {a}"
+    return some (openAnchors.erase a, anchorOut.insert a hl.toHighlighted, tacOut)
+
+/--
 Extracts code from rendered examples based on comment directives.
 
 There are two kinds of extracted code: anchors and named proof states. Anchors name one or more
@@ -326,6 +353,16 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
   let mut doc : Hl := .empty
   let mut todo := [some (normHl hl)]
   let mut ctx : Array HlCtx := #[]
+  -- State for reconstructing directives from comment tokens (`-- ANCHOR: …`, `-- PROOF_STATE: …`),
+  -- which are now tokenized as `commentDelim`/`lineComment` rather than appearing as plain `.text`:
+  --  * `docBeforeLine` is a snapshot of `doc` taken at the start of the most recent `.text` node. A
+  --    directive comment is always preceded by the whitespace run holding the newline that ends the
+  --    previous line, so when a comment is reached this is `doc` through the end of that previous
+  --    line: its last line is the one a `PROOF_STATE` caret refers to, which `tacticsAt?` searches.
+  --  * `curLineText` is the current line's text so far (after the last newline) — i.e. the comment's
+  --    indentation — used to rebuild the full comment line so proof-state columns stay absolute.
+  let mut docBeforeLine : Hl := .empty
+  let mut curLineText : String := ""
   repeat
     match todo with
     | [] => break
@@ -339,33 +376,37 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
       -- of comments, in case proof state indicator comments are mixed up with other kinds of
       -- comments.
       let preText := doc
+      -- Snapshot `doc` before this text node for a following comment-token directive: when the next
+      -- node is a directive comment, this text node is the whitespace run starting with the newline
+      -- that ends the previous line, so `docBeforeLine` then holds `doc` through that previous line.
+      docBeforeLine := doc
       todo := hs
       let lines := Internal.getLines s
       for line in lines do
-        match guard textAnchors *> (anchor? line |>.toOption) with
+        match ← applyDirective line preText ctx textAnchors proofStates openAnchors anchorOut tacOut with
         | none =>
-          match guard proofStates *> (proofState? line |>.toOption) with
-          | none =>
-            openAnchors := openAnchors.map fun _ hl => hl ++ line
-            doc := doc ++ line
-          | some (p, c) =>
-            if let some t := preText.tacticsAt? c then
-              if tacOut.get? p |>.isSome then throw s!"Proof state already found: '{p}'"
-              tacOut := tacOut.insert p t
-            else
-              throw s!"No proof state at column {c} for '{p}'"
-        | some (a, true) =>
-          if openAnchors.contains a then throw s!"Anchor already opened: {a}"
-          if anchorOut.contains a then throw s!"Anchor already used: {a}"
-          openAnchors := openAnchors.insert a {
-            here := .empty
-            context := ctx.map (.empty, ·)
-          }
-        | some (a, false) =>
-          if let some hl := openAnchors.get? a then
-            anchorOut := anchorOut.insert a hl.toHighlighted
-            openAnchors := openAnchors.erase a
-          else throw s!"Anchor not open: {a}"
+          openAnchors := openAnchors.map fun _ hl => hl ++ line
+          doc := doc ++ line
+        | some (oa, ao, to) => openAnchors := oa; anchorOut := ao; tacOut := to
+      -- Track the current source line's trailing text (the part after the last newline) so that a
+      -- following comment-token directive can be reconstructed with its original indentation.
+      if lines.size > 1 then curLineText := Compat.Array.back! lines
+      else curLineText := curLineText ++ s
+    | some (.token ⟨.commentDelim, delim⟩) :: some (.token ⟨.lineComment, body⟩) :: hs =>
+      -- A line comment is tokenized as a `--` delimiter plus its body. Reconstruct the original
+      -- comment line (with this line's indentation) so `-- ANCHOR: …` / `-- PROOF_STATE: …`
+      -- directives are still recognized. Non-directive comments are kept as highlighted tokens.
+      -- `docBeforeLine` ends at the previous line, so its last line is the one a `^` would point at.
+      let line := curLineText ++ delim ++ body
+      todo := hs
+      match ← applyDirective line docBeforeLine ctx textAnchors proofStates openAnchors anchorOut tacOut with
+      | none =>
+        let cd : Highlighted := .token ⟨.commentDelim, delim⟩
+        let lc : Highlighted := .token ⟨.lineComment, body⟩
+        openAnchors := openAnchors.map fun _ hl => hl ++ cd ++ lc
+        doc := doc ++ cd ++ lc
+        curLineText := curLineText ++ delim ++ body
+      | some (oa, ao, to) => openAnchors := oa; anchorOut := ao; tacOut := to
     | some h@(.token ..) :: hs | some h@(.point ..) :: hs | some h@(.unparsed ..) :: hs =>
       todo := hs
       openAnchors := openAnchors.map fun _ hl => hl ++ h

@@ -399,6 +399,24 @@ elab "#assertHasKind" inp:str kind:str : command => do
 
 open Lean Elab Command in
 /--
+`#assertAnchor inp name expected` highlights `inp` (so comments are tokenized), runs the anchor
+extractor, and checks that the anchor `name` exists and its trimmed code equals `expected`. This
+guards that `-- ANCHOR:`/`-- ANCHOR_END:` directives are still recognized after comment tokenization.
+-/
+elab "#assertAnchor" inp:str name:str expected:str : command => do
+  let hl ← highlightFromString inp.getString
+  match hl.anchored with
+  | .error e => throwError m!"anchored failed: {e}"
+  | .ok ex =>
+    match Compat.HashMap.get? ex.anchors name.getString with
+    | none => throwError m!"No anchor named {repr name.getString}"
+    | some a =>
+      let got := Compat.String.trim a.toString
+      if got != expected.getString then
+        throwError m!"Anchor {repr name.getString} = {repr got}, expected {repr expected.getString}"
+
+open Lean Elab Command in
+/--
 Checks that the token(s) with `content` carry an occurrence tag that is not attributed to an
 anonymous `null` grouping node (regression guard for null-node transparency).
 -/
@@ -465,6 +483,12 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 #assertKind "def z :=\n  /- a /- b -/ c -/ 3" "-/" "commentDelim"
 #assertKind "def z :=\n  /- a /- b -/ c -/ 3" " a /- b -/ c " "blockComment"
 #evalHighlight' "def z :=\n  /- a /- b -/ c -/ 3" "def z :=\n  /- a /- b -/ c -/ 3"
+
+-- `-- ANCHOR:` / `-- ANCHOR_END:` directives are still recognized after comment tokenization: the
+-- anchor scanner reconstructs the comment line from its tokens.
+#assertAnchor "def pre := 0\n-- ANCHOR: foo\ndef x := 1\n-- ANCHOR_END: foo\ndef post := 2" "foo" "def x := 1"
+-- Indented directive comments are recognized too.
+#assertAnchor "def pre := 0\nsection\n  -- ANCHOR: bar\n  def x := 1\n  -- ANCHOR_END: bar\nend" "bar" "def x := 1"
 
 -- Operators are `.operator`, including multi-character symbols (classified per character) and
 -- Unicode math symbols like the function arrow.
