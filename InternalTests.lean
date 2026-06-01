@@ -359,6 +359,13 @@ partial def Highlighted.tokenList (hl : Highlighted) : Array Token := Id.run do
   | _ => pure ()
   return out
 
+/-- Whether the highlighted tree contains a `.tactics` (proof-state) wrapper. -/
+partial def Highlighted.hasTactics : Highlighted → Bool
+  | .tactics .. => true
+  | .seq hls => hls.any Highlighted.hasTactics
+  | .span _ hl => hl.hasTactics
+  | _ => false
+
 /-- The occurrence tag of a production-bearing token kind, if any. -/
 def Token.Kind.occurrence? : Token.Kind → Option String
   | .keyword _ occ _ | .operator _ occ _ | .bracket _ occ _ | .separator _ occ _ => occ
@@ -400,8 +407,9 @@ elab "#assertHasKind" inp:str kind:str : command => do
 open Lean Elab Command in
 /--
 `#assertAnchor inp name expected` highlights `inp` (so comments are tokenized), runs the anchor
-extractor, and checks that the anchor `name` exists and its trimmed code equals `expected`. This
-guards that `-- ANCHOR:`/`-- ANCHOR_END:` directives are still recognized after comment tokenization.
+extractor, and checks that the anchor `name` exists and its code equals `expected` exactly
+(untrimmed — the surrounding whitespace is part of what these tests protect). This guards that
+`-- ANCHOR:`/`-- ANCHOR_END:` directives are still recognized after comment tokenization.
 -/
 elab "#assertAnchor" inp:str name:str expected:str : command => do
   let hl ← highlightFromString inp.getString
@@ -616,6 +624,9 @@ open Lean Elab Command in
     | some a =>
       unless (a.toString.splitOn "trivial").length > 1 do
         throwError m!"anchor 'pf' lost its tactic content: {repr a.toString}"
+      -- The `.tactics` wrapper must survive extraction, not just the text content.
+      unless a.hasTactics do
+        throwError m!"anchor 'pf' lost its tactic-state wrapper: {repr a}"
 
 -- Exact newline/indentation behavior: a directive at end-of-input (no trailing newline), blank lines
 -- around a directive, and a tab-indented directive (tabs count as line-leading whitespace).
