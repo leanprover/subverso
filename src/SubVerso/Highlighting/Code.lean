@@ -355,6 +355,24 @@ def Output.add (output : List Output) (hl : Highlighted) : List Output :=
 def Output.addToken (output : List Output) (token : Token) : List Output :=
   Output.add output (.token token)
 
+/--
+Adds a comment token from token *trivia*. Unlike `addToken`, this keeps the token *outside* an
+open tactic region (like `addText` does for whitespace), so a comment in a token's leading trivia
+stays adjacent to its surrounding whitespace rather than being pulled into the tactic content. This
+matters for indented directive comments (`-- ANCHOR:`/`--^ PROOF_STATE:`), whose indentation must
+stay on the same line as the comment for the extractor.
+-/
+def Output.addTriviaToken (output : List Output) (token : Token) : List Output :=
+  match output with
+  | [] => [.seq #[.token token]]
+  | .seq left :: more =>
+    if left.all (·.isEmpty) then
+      Output.addTriviaToken more token
+    else
+      .seq (left.push (.token token)) :: more
+  | .span .. :: _ => .seq #[.token token] :: output
+  | t@(.tactics ..) :: more => t :: Output.addTriviaToken more token
+
 def Output.addUnparsed (output : List Output) (text : String) : List Output :=
   Output.add output (.unparsed text)
 
@@ -947,11 +965,11 @@ private def emitTriviaText (s : String) : HighlightM Unit :=
   unless s.isEmpty do
     modify fun st => { st with output := Output.addText st.output s }
 
-/-- Emits a non-empty trivia token of the given kind. -/
+/-- Emits a non-empty comment token, keeping it outside any open tactic region (see `addTriviaToken`). -/
 private def emitTriviaToken (k : Token.Kind) (s : String) : HighlightM Unit :=
   unless s.isEmpty do
     modify fun st => { st with
-      output := Output.addToken st.output ⟨k, s⟩
+      output := Output.addTriviaToken st.output ⟨k, s⟩
     }
 
 /--

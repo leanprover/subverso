@@ -298,6 +298,26 @@ def highlightFromString (input : String) : CommandElabM Highlighting.Highlighted
     hls := hls ++ hl
   return hls
 
+open Lean Elab Command in
+/--
+Highlights `input` via the module path (`highlightFrontendResult` with `pp.tagAppFns` set), the way
+`subverso-extract-mod` does. This produces the tactic-region structure that per-command highlighting
+doesn't, so it exercises comment trivia inside proof tactics.
+-/
+def highlightModuleStyle (input : String) : CommandElabM Highlighting.Highlighted := do
+  let inputCtx := Parser.mkInputContext input "<input>"
+  let commandState : Command.State := { env := (← getEnv), maxRecDepth := (← get).maxRecDepth }
+  let commandState :=
+    let sc := commandState.scopes[0]!
+    { commandState with scopes := { sc with opts := sc.opts.setBool `pp.tagAppFns true } :: commandState.scopes.tail! }
+  let (result, _) ← Compat.Frontend.processCommands mkNullNode
+    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let result := result.updateLeading input
+  runTermElabM fun _ =>
+    withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
+      let hls ← Highlighting.highlightFrontendResult result
+      return hls.foldl (· ++ ·) .empty
+
 /--
 `#evalHighlight inp exp` highlights `inp` using the including-unparsed
 highlighter and checks that the result matches `exp`, where only messages
@@ -571,6 +591,18 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 -- Proof-state directives are recognized after comment tokenization (the `commentDelim`/`lineComment`
 -- retexting path), with the `^` column resolved against the tactic line above.
 #assertProofState "example : True := by\n  trivial\n--^ PROOF_STATE: st" "st"
+-- An *indented* proof-state directive inside a tactic block: its indentation must stay attached to
+-- the comment (the comment token must not be pulled into the tactic region away from its
+-- whitespace), so the `^` column is computed correctly. Checked through the module path (the way
+-- `demo-toml/Anchors.lean` is highlighted), which is where this separation actually occurs.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle "theorem t : ∀ (n : Nat), n = n := by\n  intro n\n  --^ PROOF_STATE: afterIntro\n  rfl"
+  match hl.anchored with
+  | .error e => throwError m!"module-style proof-state extraction failed: {e}"
+  | .ok ex =>
+    unless (Compat.HashMap.get? ex.proofStates "afterIntro").isSome do
+      throwError "no proof state 'afterIntro' (module-style highlighting)"
 
 -- Comments that look like directives but are not directive *lines* must keep their token styling:
 -- a block comment and an ordinary full-line comment, both containing `ANCHOR:`.
