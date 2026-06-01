@@ -417,6 +417,20 @@ elab "#assertAnchor" inp:str name:str expected:str : command => do
 
 open Lean Elab Command in
 /--
+Checks that, after the anchor pass, `ex.code` still contains a `.lineComment` token with `content`.
+Guards that a comment which merely *looks* like a directive (e.g. trailing one) keeps its token
+styling rather than being flattened to text.
+-/
+elab "#assertAnchorKeepsComment" inp:str content:str : command => do
+  let hl ← highlightFromString inp.getString
+  match hl.anchored with
+  | .error e => throwError m!"anchored failed: {e}"
+  | .ok ex =>
+    unless ex.code.tokenList.any (fun t => t.kind.name == "lineComment" && t.content == content.getString) do
+      throwError m!"anchored code lost the lineComment token {repr content.getString}"
+
+open Lean Elab Command in
+/--
 Checks that the token(s) with `content` carry an occurrence tag that is not attributed to an
 anonymous `null` grouping node (regression guard for null-node transparency).
 -/
@@ -491,6 +505,9 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 -- Indented directive comments are recognized too, and their indentation is consumed with the line;
 -- the kept code retains its own indentation.
 #assertAnchor "def pre := 0\nsection\n  -- ANCHOR: bar\n  def x := 1\n  -- ANCHOR_END: bar\nend" "bar" "  def x := 1\n"
+-- A trailing comment that merely looks like a directive is NOT a directive line (the line doesn't
+-- begin with `--`), so it stays a highlighted comment token rather than being flattened to text.
+#assertAnchorKeepsComment "def x := 1 -- ANCHOR: note" " ANCHOR: note"
 
 -- Operators are `.operator`, including multi-character symbols (classified per character) and
 -- Unicode math symbols like the function arrow.

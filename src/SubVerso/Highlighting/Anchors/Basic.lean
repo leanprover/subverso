@@ -322,27 +322,58 @@ private def isDirectiveLine (textAnchors proofStates : Bool) (line : String) : B
   (textAnchors && (anchor? line |>.toOption).isSome) ||
     (proofStates && (proofState? line |>.toOption).isSome)
 
+/-- Whether, after emitting `s`, we are at the start of a line (only whitespace since a newline). -/
+private def lineStartAfter (atLineStart : Bool) (s : String) : Bool :=
+  s.foldl (init := atLineStart) fun atStart c =>
+    if c == '\n' then true          -- a newline begins a fresh line
+    else if c.isWhitespace then atStart   -- whitespace keeps the current line-start status
+    else false                      -- any other character means content has appeared on the line
+
 /--
 Replaces *directive* comments — tokenized as a `commentDelim` (`--`) followed by a `lineComment` —
 with a single `.text` node holding the reconstructed comment text. After `normHl` merges that text
 with the surrounding whitespace, the line-based directive handling in `anchored` consumes the whole
 directive line (indentation and trailing newline included) exactly as it did before comments were
-tokenized. Non-directive comments are left as highlighted tokens so they keep their styling.
+tokenized.
+
+Only comments that *begin their line* (preceded by whitespace alone) are eligible, so a trailing
+comment such as `def x := 1 -- ANCHOR: foo` — which is not a directive line — is left as highlighted
+tokens, keeping its styling. The boolean threaded through tracks whether we are at the start of a
+line.
 -/
-private partial def inlineDirectiveComments (textAnchors proofStates : Bool) : Highlighted → Highlighted
-  | .seq xs => .seq (goSeq xs.toList).toArray
-  | .span info x => .span info (inlineDirectiveComments textAnchors proofStates x)
-  | .tactics info s e x => .tactics info s e (inlineDirectiveComments textAnchors proofStates x)
-  | hl => hl
+private partial def inlineDirectiveCommentsAux (textAnchors proofStates : Bool) (atLineStart : Bool) :
+    Highlighted → Highlighted × Bool
+  | .text s => (.text s, lineStartAfter atLineStart s)
+  | .unparsed s => (.unparsed s, lineStartAfter atLineStart s)
+  | .point k i => (.point k i, atLineStart)
+  | .token t => (.token t, false)
+  | .seq xs =>
+    let (xs', a) := goSeq atLineStart xs.toList
+    (.seq xs'.toArray, a)
+  | .span info x =>
+    let (x', a) := inlineDirectiveCommentsAux textAnchors proofStates atLineStart x
+    (.span info x', a)
+  | .tactics info s e x =>
+    let (x', a) := inlineDirectiveCommentsAux textAnchors proofStates atLineStart x
+    (.tactics info s e x', a)
 where
-  goSeq : List Highlighted → List Highlighted
+  goSeq (atLineStart : Bool) : List Highlighted → List Highlighted × Bool
     | .token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: rest =>
-      if isDirectiveLine textAnchors proofStates (delim ++ body) then
-        .text (delim ++ body) :: goSeq rest
+      if atLineStart && isDirectiveLine textAnchors proofStates (delim ++ body) then
+        let (rest', a) := goSeq false rest
+        (.text (delim ++ body) :: rest', a)
       else
-        .token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: goSeq rest
-    | x :: rest => inlineDirectiveComments textAnchors proofStates x :: goSeq rest
-    | [] => []
+        let (rest', a) := goSeq false rest
+        (.token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: rest', a)
+    | x :: rest =>
+      let (x', a) := inlineDirectiveCommentsAux textAnchors proofStates atLineStart x
+      let (rest', a') := goSeq a rest
+      (x' :: rest', a')
+    | [] => ([], atLineStart)
+
+/-- Top-level entry: see `inlineDirectiveCommentsAux`. The document starts at the start of a line. -/
+private def inlineDirectiveComments (textAnchors proofStates : Bool) (hl : Highlighted) : Highlighted :=
+  (inlineDirectiveCommentsAux textAnchors proofStates true hl).1
 
 /--
 Extracts code from rendered examples based on comment directives.
