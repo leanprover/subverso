@@ -94,6 +94,9 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .moduleName .. => 4
   | .keyword .. => 3
   | .levelConst .. | .levelVar .. | .levelOp .. => 4
+  | .num .. | .char .. => 3
+  | .operator .. | .bracket .. | .separator .. => 1
+  | .lineComment | .blockComment | .commentDelim => 1
   | .docComment | .withType .. => 1
   | .unknown => 0
 
@@ -937,6 +940,124 @@ def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
             boundaries := boundaries.insert msgEndPosUtf8
   return boundaries
 
+/-- The current character of a string iterator, or `none` at the end. -/
+private def peekChar (iter : Compat.String.Iterator) : Option Char :=
+  if h : iter.hasNext then some (iter.curr' h) else none
+
+/-- Emits an accumulated whitespace run as text, or as unparsed source when `unparsed` is set. -/
+private def emitTriviaText (unparsed : Bool) (s : String) : HighlightM Unit :=
+  unless s.isEmpty do
+    modify fun st => { st with
+      output :=
+        if unparsed then
+          Output.addUnparsed st.output s
+        else Output.addText st.output s
+    }
+
+/-- Emits a non-empty trivia token of the given kind. -/
+private def emitTriviaToken (k : Token.Kind) (s : String) : HighlightM Unit :=
+  unless s.isEmpty do
+    modify fun st => { st with
+      output := Output.addToken st.output ⟨k, s⟩
+    }
+
+/--
+Emits a line comment as a `.commentDelim` opener (`--`) followed by a `.lineComment` body, scanning
+from `iter` (positioned just after the `--`) up to but not including the terminating newline.
+Returns the iterator at the next new line, or end of string, whichever is first.
+-/
+def emitLineComment (start : Compat.String.Iterator) : HighlightM Compat.String.Iterator := do
+  emitTriviaToken .commentDelim "--"
+  let mut iter := start
+  while h : iter.hasNext do
+    if iter.curr' h == '\n' then break
+    iter := iter.next
+  -- `iter` is now at the newline (left for the following whitespace run) or at the end.
+  emitTriviaToken .lineComment (start.extract iter)
+  return iter
+
+/--
+Emits a depth-balanced (nesting) block comment, scanning from `iter` (positioned just after the
+opening `/-`). Each opener `/-` and closer `-/` (including nested ones) is emitted as a
+`.commentDelim` token; the text between delimiters is emitted as `.blockComment`. Returns the
+iterator just past the outermost closing `-/` (or at end if unterminated).
+-/
+def emitBlockComment (start : Compat.String.Iterator) : HighlightM (Option Compat.String.Iterator) := do
+  -- Scan (without emitting) for the depth-balanced closing `-/`, tracking whether the previous
+  -- character was a lone `/` or `-`. An unterminated comment emits nothing and returns `none`, so
+  -- the caller can fall back to plain text.
+  let mut iter := start
+  let mut depth := 1
+  let mut sawSlash := false
+  let mut sawDash := false
+  let mut bodyEnd := start
+  let mut afterClose := start
+  let mut terminated := false
+  while h : iter.hasNext do
+    let c := iter.curr' h
+    let iter' := iter.next' h
+    if c == '/' && sawDash then
+      depth := depth - 1
+      sawSlash := false
+      sawDash := false
+      if depth == 0 then
+        bodyEnd := iter.prev   -- the `-` of the closing `-/`
+        afterClose := iter'
+        terminated := true
+        break
+    else if c == '-' && sawSlash then
+      depth := depth + 1
+      sawSlash := false
+      sawDash := false
+    else
+      sawSlash := c == '/'
+      sawDash := c == '-'
+    iter := iter'
+  if terminated then
+    emitTriviaToken .commentDelim "/-"
+    emitTriviaToken .blockComment (start.extract bodyEnd)
+    emitTriviaToken .commentDelim "-/"
+    return some afterClose
+  else
+    return none
+
+/--
+Splits a whitespace-and-comment trivia string into whitespace runs and comment tokens, emitting
+each to the output in source order. Comment delimiters (`--`, `/-`, `-/`) are emitted as
+`.commentDelim` tokens, distinct from the `.lineComment`/`.blockComment` body text. Doc comments are
+real syntax nodes and thus handled elsewhere.
+-/
+def emitTrivia (s : String) (unparsed : Bool := false) : HighlightM Unit := do
+  -- Fast path: a comment can only contain `-` or `/`, so a string without either is pure
+  -- whitespace and is emitted as a single run (matching the previous behavior exactly).
+  if !s.any (fun c => c == '-' || c == '/') then
+    emitTriviaText unparsed s
+    return
+  -- `runStart` marks the beginning of the current whitespace run; `iter` scans ahead. When a
+  -- comment opener is found, the run `[runStart, iter)` is flushed and the comment is emitted.
+  let mut iter := s.compatIter
+  let mut runStart := iter
+  while h : iter.hasNext do
+    let c := iter.curr' h
+    let next := iter.next' h
+    if c == '-' && peekChar next == some '-' then
+      emitTriviaText unparsed (runStart.extract iter)
+      iter := (← emitLineComment next.next)
+      runStart := iter
+    else if c == '/' && peekChar next == some '-' then
+      emitTriviaText unparsed (runStart.extract iter)
+      match (← emitBlockComment next.next) with
+      | some iter' =>
+        iter := iter'
+        runStart := iter
+      | none =>
+        -- Unterminated block comment: nothing was emitted, so leave the `/-` in the (text) run.
+        runStart := iter
+        iter := next
+    else
+      iter := next
+  emitTriviaText unparsed (runStart.extract iter)
+
 /-- Adds to the output any source (if any exists) lying between the last added position and `pos`. -/
 def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
   if let some lastPos := (← get).lastPos? then
@@ -950,7 +1071,7 @@ def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
         let endPos := boundaries[i]!
         openUntil <| text.toPosition startPos
         let string := Compat.Substring.mk text.source startPos endPos |>.toString
-        modify fun st => {st with output := Output.addUnparsed st.output string}
+        emitTrivia string (unparsed := true)
         closeUntil endPos
         setLastPos endPos
 
@@ -978,11 +1099,11 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
         throwError "Syntax {blame} not original, can't highlight: '{str}'"
       | _ => throwError "Syntax {blame} not original, can't highlight: {repr info}"
 
-  emitString' leading.toString
+  emitTrivia leading.toString
   openUntil <| text.toPosition pos
   modify fun st => {st with output := Output.addToken st.output token}
   closeUntil endPos
-  emitString' trailing.toString
+  emitTrivia trailing.toString
   let trailingPos := Internal.getTrailingOrTailPos? blame
   setLastPos trailingPos
 
@@ -1572,6 +1693,71 @@ def highlightSpecial
     hl trees tactics none rhs
   | _ => hl trees tactics lookingAt stx
 
+/--
+These atoms will not be considered punctuation.
+-/
+def isSymbolicKeyword (s : String) : Bool :=
+  s == ":=" || s == "=>" || s == "↦" || s == "←" || s == "@" || s == ":" ||
+  s == "⊢" || s == "|" || s == ".." || s == "..."
+
+/--
+Whether `c` is a paired-delimiter (bracket) character. Note that `«` `»` are *not* brackets because
+they are name-escaping syntax.
+-/
+def isBracketChar (c : Char) : Bool :=
+  "()[]{}⟨⟩⦃⦄⟦⟧⟪⟫‹›⌊⌋⌈⌉".contains c
+
+/-- Whether `c` is an item-separator character. -/
+def isSeparatorChar (c : Char) : Bool := c == ',' || c == ';'
+
+/--
+Whether `c` is an operator character: an ASCII operator symbol, or a Unicode *mathematical symbol*
+that Lean uses to build operators. This is deliberately a set of operator-like *symbols*, not
+letter-like notation: script/fraktur/blackboard letters (`𝒫`, `ℬ`, …) and Greek letters are not
+operators, so an atom containing them stays `.unknown` rather than being assumed to be an operator.
+
+This is a partial, heuristic characterization.
+-/
+def isOperatorChar (c : Char) : Bool :=
+  -- ASCII operator symbols
+  "!%&*+-/<=>?^|~:.".contains c ||
+    -- arrows: short, long, wavy/squiggly, hooked, tailed, two-headed, up/down, harpoons, and the
+    -- category-theory functor arrows
+    "→←↔↦↤↣↢↪↩↠↞⟶⟵⟷⟸⟹⟺⟼⟻⟽⟾⟿⇒⇐⇔⇉⇇⇈⇊⇛⇚↑↓↕⇑⇓⇕↥↧↟↡⟰⟱⇀↼⇁↽⇌⇋⥤⥥↝↜⇝⇜⤳↭⇿⤇⤆".contains c ||
+    -- logic, relation, set, and algebraic operator symbols, plus superscript/subscript operator
+    -- signs (so e.g. the `⁻` in `⁻¹` is an operator character)
+    "∘∧∨¬±∓×÷∣∥≤≥≠≡≃≅≈∼≪≫∈∉∋⊆⊂⊇⊃∪∩∖⊔⊓⊕⊗⊙⊖⊞⊠⋆∗∙⬝•⋄⋅⁺⁻⁼₊₋₌".contains c
+
+/--
+Whether `c` is a subscript or superscript letter, digit, or sign. These decorate operators (e.g.
+the `ₗ` in `→ₗ`, the `ᵇ` in `→ᵇ`, or the `¹` in `⁻¹`) but are never operators on their own.
+-/
+def isSubOrSuperscript (c : Char) : Bool :=
+  let v := c.toNat
+  v == 0xB2 || v == 0xB3 || v == 0xB9 ||      -- ² ³ ¹
+    (0x2B0 ≤ v && v ≤ 0x2FF) ||               -- spacing modifier letters: ʰ ʲ ˡ ʳ ˢ ˣ ʸ …
+    (0x1D2C ≤ v && v ≤ 0x1DBF) ||             -- phonetic-extension super/subscript letters: ᵃ ᵇ ᶜ ᵢ ᵣ …
+    (0x2070 ≤ v && v ≤ 0x209C) ||             -- superscripts & subscripts block: ⁰ ⁻ ⁿ … ₀ ₋ ₓ …
+    v == 0x2C7C                               -- ⱼ
+
+/--
+Lexically classifies a symbolic atom that `identKind` did not resolve to a constant-like term (e.g.
+`ℕ` in Mathlib), meaning that no elaboration info matches its exact span.
+
+This is a best-effort heuristic based on the characters in the atom. An atom made entirely of
+separator or bracket characters is classified accordingly. An operator must contain at least one
+operator character, with every character being an operator, subscript, or superscript (so a
+decorated operator like `→ₗ` or `→ᵇ` counts, but a bare letter-like symbol such as `𝒫` does not).
+Anything else stays `.unknown` rather than being assumed to be an operator.
+-/
+def atomKind (name : Option Name) (occ : Option String) (docs : Option String) (s : String) : Token.Kind :=
+  if s.isEmpty then .unknown
+  else if s.all isSeparatorChar then .separator name occ docs
+  else if s.all isBracketChar then .bracket name occ docs
+  else if s.any isOperatorChar && s.all (fun c => isOperatorChar c || isSubOrSuperscript c) then
+    .operator name occ docs
+  else .unknown
+
 partial def highlight'
     (trees : Array Lean.Elab.InfoTree)
     (stx : Syntax)
@@ -1628,23 +1814,33 @@ partial def highlight'
         | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
-      if let .sort docs? ← identKind trees ⟨stx⟩ then
+      let k ← identKind trees ⟨stx⟩
+      match k with
+      | .sort docs? =>
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
           emitToken stx i ⟨.sort docs?, x⟩
-        return
-      else
-        emitToken stx i <| (⟨ ·,  x⟩) <|
-        match Compat.String.Pos.get? x 0 with
-        | some '#' =>
-          match Compat.String.Pos.get? x ((0 : Compat.String.Pos) + '#') with
-          | some c =>
-            if c.isAlpha then .keyword name occ docs
-            else .unknown
-          | _ => .unknown
-        | some c =>
-          if c.isAlpha then .keyword name occ docs
-          else .unknown
-        | _ => .unknown
+      | .unknown =>
+        -- `identKind` didn't match this to an identifier, so it's not something akin to Mathlib's
+        -- `ℕ`. No elaboration info matches its exact span. If it reads as a keyword (alphabetic,
+        -- `#`-prefixed, or one of the curated core symbolic keywords) emit `.keyword`; otherwise it
+        -- is punctuation, classified lexically per character (operator/bracket/separator).
+        let isKeyword :=
+          match Compat.String.Pos.get? x 0 with
+          | some '#' =>
+            match Compat.String.Pos.get? x ((0 : Compat.String.Pos) + '#') with
+            | some c => c.isAlpha
+            | _ => false
+          | some c => c.isAlpha || isSymbolicKeyword x
+          | _ => false
+        if isKeyword then
+          emitToken stx i ⟨.keyword name occ docs, x⟩
+        else
+          emitToken stx i ⟨atomKind name occ docs x, x⟩
+      | _ =>
+        -- A nullary notation or symbol constant (e.g. `ℕ`, `ℤ`, `ℝ`) whose canonical span is
+        -- exactly this atom resolved span-exact via `identKind`; keep its semantic kind.
+        withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Resolved atom is {repr k}") do
+          emitToken stx i ⟨k, x⟩
     | stx@(.node _ `Lean.Parser.Command.versoCommentBody _) =>
       if let some endPos := Compat.getTrailingTailPos? stx then
         fillMissingSourceUpTo endPos
@@ -1658,12 +1854,29 @@ partial def highlight'
         emitToken stx i ⟨.str s, string⟩
       else
         emitToken stx i ⟨.unknown, string⟩
-    | .node _ `num #[.atom i n] =>
+    | .node _ `char #[.atom i c] =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Char") do
+      if let some ch := Syntax.decodeCharLit c then
+        emitToken stx i ⟨.char ch, c⟩
+      else
+        emitToken stx i ⟨.unknown, c⟩
+    | .node _ `num #[.atom i n] | .node _ `scientific #[.atom i n] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Numeral") do
+        -- Keep the inferred type (if any) for hover, but emit a dedicated numeric kind.
         let k ← identKind trees ⟨stx⟩ (allowUnknownTyped := true)
-        emitToken stx i ⟨k, n⟩
+        let numKind := match k with
+          | .withType t => .num (some t) none
+          | _ => .num none none
+        emitToken stx i ⟨numKind, n⟩
     | .node _ ``Lean.Parser.Command.docComment #[.atom i1 opener, .atom i2 body] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Doc comment") do
+      if let .original leading pos ws _ := i1 then
+        if let .original ws' _ trailing endPos := i2 then
+          emitToken stx (.original leading pos trailing endPos) ⟨.docComment, opener ++ ws.toString ++ ws'.toString ++ body⟩
+          return
+      emitString' (opener ++ " " ++ body ++ "\n")
+    | .node _ ``Lean.Parser.Command.moduleDoc #[.atom i1 opener, .atom i2 body] =>
+      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Module doc") do
       if let .original leading pos ws _ := i1 then
         if let .original ws' _ trailing endPos := i2 then
           emitToken stx (.original leading pos trailing endPos) ⟨.docComment, opener ++ ws.toString ++ ws'.toString ++ body⟩
@@ -1712,8 +1925,13 @@ partial def highlight'
       else
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Other node, kind {k}, with {children.size} children") do
         let pos := stx.getPos?
+        -- A `null` node is an anonymous grouping (`sepBy`, `optional`, `many`, …) with no production
+        -- identity of its own. Attributing its children to the meaningless `null` kind produces
+        -- useless names/occurrences (e.g. a separator `,` tagged `null-30970`), so let them inherit
+        -- the surrounding `lookingAt` instead.
+        let childLookingAt := if k == nullKind then lookingAt else pos.map (k, ·)
         for child in children do
-          highlight' trees child tactics (lookingAt := pos.map (k, ·))
+          highlight' trees child tactics (lookingAt := childLookingAt)
 
 def sortSuppress (nss : List Name) : List Name :=
   nss.toArray.qsort (fun x y => x.components.length > y.components.length) |>.toList

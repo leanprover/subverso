@@ -317,4 +317,204 @@ elab "#evalHighlight'" inp:str exp:str : command => do
 
 end
 
+/-! # Token kinds -/
+section TokenKinds
+open SubVerso.Highlighting
+
+namespace SubVerso.Highlighting
+
+/-- The name of a token kind's constructor, for use in assertions (payloads are ignored). -/
+def Token.Kind.name : Token.Kind → String
+  | .keyword .. => "keyword"
+  | .const .. => "const"
+  | .anonCtor .. => "anonCtor"
+  | .var .. => "var"
+  | .str .. => "str"
+  | .option .. => "option"
+  | .docComment => "docComment"
+  | .sort .. => "sort"
+  | .levelVar .. => "levelVar"
+  | .levelOp .. => "levelOp"
+  | .levelConst .. => "levelConst"
+  | .moduleName .. => "moduleName"
+  | .withType .. => "withType"
+  | .num .. => "num"
+  | .char .. => "char"
+  | .lineComment => "lineComment"
+  | .blockComment => "blockComment"
+  | .commentDelim => "commentDelim"
+  | .operator .. => "operator"
+  | .bracket .. => "bracket"
+  | .separator .. => "separator"
+  | .unknown => "unknown"
+
+/-- Collects all tokens of a highlighted tree, in source order. -/
+partial def Highlighted.tokenList (hl : Highlighted) : Array Token := Id.run do
+  let mut out := #[]
+  match hl with
+  | .seq hls => for x in hls do out := out ++ x.tokenList
+  | .span _ hl' => out := hl'.tokenList
+  | .tactics _ _ _ hl' => out := hl'.tokenList
+  | .token t => out := #[t]
+  | _ => pure ()
+  return out
+
+/-- The occurrence tag of a production-bearing token kind, if any. -/
+def Token.Kind.occurrence? : Token.Kind → Option String
+  | .keyword _ occ _ | .operator _ occ _ | .bracket _ occ _ | .separator _ occ _ => occ
+  | _ => none
+
+/-- Whether a token survives a `ToJson`/`FromJson` round-trip unchanged. -/
+def Token.jsonRoundtrips (t : Token) : Bool :=
+  match (Lean.fromJson? (Lean.toJson t) : Except String Token) with
+  | .ok t' => t' == t
+  | .error _ => false
+
+end SubVerso.Highlighting
+
+open Lean Elab Command in
+/--
+`#assertKind inp content kind` highlights `inp` and checks that every token whose content equals
+`content` has the given kind constructor name. Errors if no such token exists.
+-/
+elab "#assertKind" inp:str content:str kind:str : command => do
+  let hl ← highlightFromString inp.getString
+  let toks := hl.tokenList
+  let matching := toks.filter (·.content == content.getString)
+  if matching.isEmpty then
+    let all := toks.toList.map fun t => (t.content, t.kind.name)
+    throwError m!"No token with content {repr content.getString}. Tokens: {repr all}"
+  for t in matching do
+    if t.kind.name != kind.getString then
+      throwError m!"Token {repr t.content} has kind {t.kind.name}, expected {kind.getString}"
+
+open Lean Elab Command in
+/-- `#assertHasKind inp kind` highlights `inp` and checks that at least one token has `kind`. -/
+elab "#assertHasKind" inp:str kind:str : command => do
+  let hl ← highlightFromString inp.getString
+  let toks := hl.tokenList
+  unless toks.any (·.kind.name == kind.getString) do
+    let all := toks.toList.map fun t => (t.content, t.kind.name)
+    throwError m!"No token of kind {kind.getString}. Tokens: {repr all}"
+
+open Lean Elab Command in
+/--
+Checks that the token(s) with `content` carry an occurrence tag that is not attributed to an
+anonymous `null` grouping node (regression guard for null-node transparency).
+-/
+elab "#assertOccurrenceNotNull" inp:str content:str : command => do
+  let hl ← highlightFromString inp.getString
+  let matching := hl.tokenList.filter (·.content == content.getString)
+  if matching.isEmpty then throwError m!"no token with content {repr content.getString}"
+  for t in matching do
+    match t.kind.occurrence? with
+    | some occ =>
+      if occ.startsWith "null" then
+        throwError m!"token {repr t.content} ({t.kind.name}) has a null-based occurrence {repr occ}"
+    | none => throwError m!"token {repr t.content} ({t.kind.name}) has no occurrence"
+
+open Lean Elab Command in
+/-- Checks that `inp` highlights to a `.char` token whose decoded character equals `expected`. -/
+elab "#assertCharValue" inp:str expected:str : command => do
+  let hl ← highlightFromString inp.getString
+  let chars := hl.tokenList.filterMap fun t =>
+    match t.kind with | .char c => some c.toString | _ => none
+  unless chars.contains expected.getString do
+    throwError m!"char tokens decoded to {repr chars.toList}, expected to contain {repr expected.getString}"
+
+open Lean Elab Command in
+/--
+Like `#assertKind`, but highlights through the info-recording (Compat-frontend, includes-unparsed)
+path so that semantic info — e.g. an applied constructor in `⟨1, 2⟩` — is available, mirroring real
+extraction (`subverso-extract-mod`).
+-/
+elab "#assertKindRich" inp:str content:str kind:str : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  let toks := hl.tokenList
+  let matching := toks.filter (·.content == content.getString)
+  if matching.isEmpty then
+    let all := toks.toList.map fun t => (t.content, t.kind.name)
+    throwError m!"No token with content {repr content.getString}. Tokens: {repr all}"
+  for t in matching do
+    if t.kind.name != kind.getString then
+      throwError m!"Token {repr t.content} has kind {t.kind.name}, expected {kind.getString}"
+
+-- Numerals (decimal, hex, scientific) are `.num`
+#assertKind "def n := 42" "42" "num"
+#assertKind "def n := 0xff" "0xff" "num"
+#assertKind "def n := 1.5e3" "1.5e3" "num"
+
+-- Character literals are `.char`, carrying the *decoded* character (escapes resolved)
+#assertKind "def c := 'a'" "'a'" "char"
+#assertCharValue "def c := 'a'" "a"
+#assertCharValue "def c := '\\n'" "\n"
+
+-- Comments are split into delimiter tokens (`--`, `/-`, `-/`) and body text, and the surrounding
+-- source still round-trips byte-for-byte. A trailing line comment lives in trailing trivia; a
+-- block comment in leading trivia of an inner token. Both paths are exercised.
+#assertKind "def x := 1 -- note" "--" "commentDelim"
+#assertKind "def x := 1 -- note" " note" "lineComment"
+#evalHighlight' "def x := 1 -- note" "def x := 1 -- note"
+#assertKind "def y :=\n  /- block -/ 2" "/-" "commentDelim"
+#assertKind "def y :=\n  /- block -/ 2" "-/" "commentDelim"
+#assertKind "def y :=\n  /- block -/ 2" " block " "blockComment"
+#evalHighlight' "def y :=\n  /- block -/ 2" "def y :=\n  /- block -/ 2"
+-- Nested block comments are depth-balanced: only the outermost `/-` / `-/` are delimiter tokens,
+-- and the nested delimiters remain part of the single body text. Round-trips byte-for-byte.
+#assertKind "def z :=\n  /- a /- b -/ c -/ 3" "/-" "commentDelim"
+#assertKind "def z :=\n  /- a /- b -/ c -/ 3" "-/" "commentDelim"
+#assertKind "def z :=\n  /- a /- b -/ c -/ 3" " a /- b -/ c " "blockComment"
+#evalHighlight' "def z :=\n  /- a /- b -/ c -/ 3" "def z :=\n  /- a /- b -/ c -/ 3"
+
+-- Operators are `.operator`, including multi-character symbols (classified per character) and
+-- Unicode math symbols like the function arrow.
+#assertKind "def f (a b : Nat) := a + b" "+" "operator"
+#assertKind "def g (a : Option Nat) (b : Nat → Option Nat) := a >>= b" ">>=" "operator"
+#assertKind "def fn : Nat → Nat := id" "→" "operator"
+-- A subscript/superscript-decorated operator (an operator char plus subscript/superscript chars)
+-- is still an operator, including superscript operator signs like `⁻` in `⁻¹`.
+#assertKind "infixl:65 \" +ₙ \" => Nat.add\ndef z := 1 +ₙ 2" "+ₙ" "operator"
+#assertKind "postfix:max \"⁻¹\" => Nat.succ\ndef w := 0⁻¹" "⁻¹" "operator"
+-- But a letter-like notation symbol that doesn't resolve stays `.unknown` rather than being
+-- mislabeled as an operator (it has no operator character).
+#assertKind "prefix:max \"𝒫\" => Nat.succ\ndef y := 𝒫 0" "𝒫" "unknown"
+
+-- List brackets and separators
+#assertKind "def l := [1, 2]" "[" "bracket"
+#assertKind "def l := [1, 2]" "]" "bracket"
+#assertKind "def l := [1, 2]" "," "separator"
+-- The separator sits inside a `sepBy` null grouping; it must inherit the surrounding list
+-- production rather than the meaningless `null` kind.
+#assertOccurrenceNotNull "def l := [1, 2]" ","
+
+-- Anonymous-constructor delimiters keep `.anonCtor` (carrying the constructor's name/signature),
+-- rather than being reclassified as brackets/separators by the new lexical step. Verified through
+-- the info-recording highlight path, where the applied constructor `Prod.mk 1 2` is resolved.
+#assertKindRich "def p : Nat × Nat := ⟨1, 2⟩" "⟨" "anonCtor"
+#assertKindRich "def p : Nat × Nat := ⟨1, 2⟩" "⟩" "anonCtor"
+#assertKindRich "def p : Nat × Nat := ⟨1, 2⟩" "," "anonCtor"
+
+-- Core symbolic keywords/delimiters stay `.keyword`, not `.operator`
+#assertKind "def x := 1" ":=" "keyword"
+#assertKind "def f := fun x => x" "=>" "keyword"
+
+-- Module docs are tagged like doc comments
+#assertHasKind "/-! module doc -/" "docComment"
+
+-- The derived `ToJson`/`FromJson` instances round-trip every new token kind
+#evalString "true\n"
+  (([Token.Kind.num (some "Nat") none, .num none none, .char 'a', .lineComment, .blockComment,
+     .commentDelim, .operator (some `foo) (some "foo-1") (some "d"), .bracket none none none,
+     .separator none none none] : List Token.Kind).all (fun k => Token.jsonRoundtrips ⟨k, "x"⟩))
+
+-- The new `identKind`-first atom step: a nullary notation atom (`ℕ`) resolves span-exact to its
+-- constant (`.const`), while a genuine infix operator (`+`) has no span-exact info and stays
+-- `.operator`. Both require the info-recording highlight path (`#assertKindRich`), as in real
+-- extraction; this needs no Mathlib — a local `notation` suffices.
+#assertKindRich "notation \"ℕ\" => Nat\ndef m : ℕ := 0" "ℕ" "const"
+#assertKindRich "def f (a b : Nat) := a + b" "+" "operator"
+#assertKind "def x := 1" ":=" "keyword"
+
+end TokenKinds
+
 def main : IO Unit := pure ()

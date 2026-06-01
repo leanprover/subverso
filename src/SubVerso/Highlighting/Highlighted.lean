@@ -17,6 +17,17 @@ open Lean
 
 namespace SubVerso.Highlighting
 
+-- `Char` has no `ToJson`/`FromJson` in core, so provide one (as a single-character string) for the
+-- derived `Token.Kind` instances, which carry a decoded `Char` for character literals.
+private instance : ToJson Char where
+  toJson c := toJson c.toString
+
+private instance : FromJson Char where
+  fromJson? j := do
+    let s := (← fromJson? (α := String) j)
+    if s.length = 1 then return Compat.String.Pos.get s 0
+    else .error "expected a single-character string for Char"
+
 deriving instance Repr for Std.Format.FlattenBehavior
 deriving instance Repr for Std.Format
 
@@ -85,6 +96,31 @@ inductive Token.Kind where
   | moduleName (name : Name)
   | /-- The token represents some otherwise-undescribed Expr whose type is known -/
     withType (type : String)
+  | /-- A numeric literal; keeps the optional inferred type (and its format) for hover -/
+    num (type : Option String) (typeFormat : Option String)
+  | /-- A character literal, e.g. `'c'`; carries the decoded character -/
+    char (char : Char)
+  | /-- The body text of a line comment (the part after `--`) -/
+    lineComment
+  | /-- The body text of a block comment (the part between `/-` and `-/`, non-doc) -/
+    blockComment
+  | /-- A comment delimiter: a `--` opener, or a `/-` / `-/` block-comment opener/closer -/
+    commentDelim
+  | /--
+    A symbolic operator atom, such as `+`, `::`, or `>>=`. Like `keyword`, it carries the
+    enclosing notation's name, a per-production occurrence tag, and its docstring.
+    -/
+    operator (name : Option Name) (occurrence : Option String) (docs : Option String)
+  | /--
+    A paired delimiter atom, such as `(` `)` `[` `]` `{` `}` `⟨` or `⟩`. Carries the enclosing
+    notation's name, a per-production occurrence tag, and its docstring.
+    -/
+    bracket (name : Option Name) (occurrence : Option String) (docs : Option String)
+  | /--
+    An item separator atom, such as `,` or `;`. Carries the enclosing notation's name, a
+    per-production occurrence tag, and its docstring.
+    -/
+    separator (name : Option Name) (occurrence : Option String) (docs : Option String)
   | unknown
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
@@ -121,6 +157,14 @@ instance : Quote Token.Kind where
     | .moduleName m => mkCApp ``moduleName #[quote m]
     | .levelOp n => mkCApp ``levelOp #[quote n]
     | .withType t => mkCApp ``withType #[quote t]
+    | .num t tyFmt => mkCApp ``num #[quote t, quote tyFmt]
+    | .char c => mkCApp ``char #[quote c]
+    | .lineComment => mkCApp ``lineComment #[]
+    | .blockComment => mkCApp ``blockComment #[]
+    | .commentDelim => mkCApp ``commentDelim #[]
+    | .operator n occ docs => mkCApp ``operator #[quote n, quote occ, quote docs]
+    | .bracket n occ docs => mkCApp ``bracket #[quote n, quote occ, quote docs]
+    | .separator n occ docs => mkCApp ``separator #[quote n, quote occ, quote docs]
     | .unknown => mkCApp ``unknown #[]
 
 structure Token where
@@ -145,7 +189,15 @@ def Token.Kind.cssClass : Token.Kind → String
   | .option .. => "option"
   | .docComment => "doc-comment"
   | .keyword .. => "keyword"
-  | .anonCtor .. => "unknown"
+  | .anonCtor .. => "const anon-ctor"
+  | .num .. => "literal number"
+  | .char .. => "literal char"
+  | .lineComment => "comment line"
+  | .blockComment => "comment block"
+  | .commentDelim => "comment delimiter"
+  | .operator .. => "punctuation operator"
+  | .bracket .. => "punctuation bracket"
+  | .separator .. => "punctuation separator"
   | .unknown => "unknown"
   | .withType .. => "typed"
   | .levelConst .. => "level-const"
@@ -160,7 +212,10 @@ def Token.Kind.binding : Token.Kind → String
   | .const n .. | .anonCtor n .. => "const-" ++ toString n
   | .var ⟨v⟩ .. => "var-" ++ toString v
   | .option n _ _ => "option-" ++ toString n
-  | .keyword _ (some occ) _ => "kw-occ-" ++ toString occ
+  | .keyword _ (some occ) _
+  | .operator _ (some occ) _
+  | .bracket _ (some occ) _
+  | .separator _ (some occ) _ => "kw-occ-" ++ toString occ
   | .sort (some d) => s!"sort-{hash d}"
   | .levelVar x => s!"level-var-{x}"
   | .levelConst i => s!"level-const-{i}"
