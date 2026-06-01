@@ -411,7 +411,9 @@ open Lean Elab Command in
   if ← needed (← `(Hashable Char)) then
     elabCommand (← `(instance : Hashable Char where hash c := hash c.val))
   if ← needed (← `(Quote Char)) then
-    elabCommand (← `(instance : Quote Char where quote c := ⟨Syntax.mkCharLit c⟩))
+    -- `Syntax.mkCharLit` doesn't exist on the oldest Leans, so quote as `Char.ofNat <code>`, which
+    -- elaborates back to the character. (Used only to quote highlighted code into terms.)
+    elabCommand (← `(instance : Quote Char where quote c := Syntax.mkCApp ``Char.ofNat #[quote c.toNat]))
 
 abbrev String.take : String → Nat → String :=
   %first_succeeding -warning [

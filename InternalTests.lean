@@ -431,6 +431,54 @@ elab "#assertAnchorKeepsComment" inp:str content:str : command => do
 
 open Lean Elab Command in
 /--
+Like `#assertAnchorKeepsComment`, but checks `ex.code` for a token of an arbitrary `kind` (e.g.
+`blockComment`, `docComment`) with `content`. The anchored extractor must leave such comments
+untouched.
+-/
+elab "#assertAnchorCodeHasToken" inp:str kind:str content:str : command => do
+  let hl ← highlightFromString inp.getString
+  match hl.anchored with
+  | .error e => throwError m!"anchored failed: {e}"
+  | .ok ex =>
+    unless ex.code.tokenList.any (fun t => t.kind.name == kind.getString && t.content == content.getString) do
+      throwError m!"anchored code lost the {kind.getString} token {repr content.getString}"
+
+open Lean Elab Command in
+/-- Checks that the numeral with `content` carries the inferred type `expectedType`. -/
+elab "#assertNumType" inp:str content:str expectedType:str : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  let toks := hl.tokenList.filter (·.content == content.getString)
+  if toks.isEmpty then throwError m!"no token with content {repr content.getString}"
+  for t in toks do
+    match t.kind with
+    | .num (some ty) _ =>
+      if ty != expectedType.getString then
+        throwError m!"numeral {repr content.getString} has type {repr ty}, expected {repr expectedType.getString}"
+    | .num none _ => throwError m!"numeral {repr content.getString} has no inferred type"
+    | _ => throwError m!"token {repr content.getString} is not a numeral"
+
+open Lean Elab Command in
+/-- Highlights `inp` with tactic info and checks the anchor pass found a proof state named `name`. -/
+elab "#assertProofState" inp:str name:str : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  match hl.anchored with
+  | .error e => throwError m!"anchored failed: {e}"
+  | .ok ex =>
+    unless (Compat.HashMap.get? ex.proofStates name.getString).isSome do
+      throwError m!"no proof state named {repr name.getString}"
+
+open Lean Elab Command in
+/-- Checks that `anchored` on the highlighting of `inp` fails with a message starting with `expected`. -/
+elab "#assertAnchorError" inp:str expected:str : command => do
+  let hl ← highlightFromString inp.getString
+  match hl.anchored with
+  | .ok _ => throwError m!"expected anchored to fail ({repr expected.getString}), but it succeeded"
+  | .error e =>
+    unless expected.getString.isPrefixOf e do
+      throwError m!"anchored error {repr e} does not start with {repr expected.getString}"
+
+open Lean Elab Command in
+/--
 Checks that the token(s) with `content` carry an occurrence tag that is not attributed to an
 anonymous `null` grouping node (regression guard for null-node transparency).
 -/
@@ -475,6 +523,9 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 #assertKind "def n := 42" "42" "num"
 #assertKind "def n := 0xff" "0xff" "num"
 #assertKind "def n := 1.5e3" "1.5e3" "num"
+-- A numeral carries its inferred type (read from its own info), including non-trivial types.
+#assertNumType "def n := 42" "42" "Nat"
+#assertNumType "def n : Fin 5 := 3" "3" "Fin 5"
 
 -- Character literals are `.char`, carrying the *decoded* character (escapes resolved)
 #assertKind "def c := 'a'" "'a'" "char"
@@ -509,6 +560,70 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 -- begin with `--`), so it stays a highlighted comment token rather than being flattened to text.
 #assertAnchorKeepsComment "def x := 1 -- ANCHOR: note" " ANCHOR: note"
 
+-- Proof-state directives are recognized after comment tokenization (the `commentDelim`/`lineComment`
+-- retexting path), with the `^` column resolved against the tactic line above.
+#assertProofState "example : True := by\n  trivial\n--^ PROOF_STATE: st" "st"
+
+-- Comments that look like directives but are not directive *lines* must keep their token styling:
+-- a block comment and an ordinary full-line comment, both containing `ANCHOR:`.
+#assertAnchorCodeHasToken "def x := 1\n/- ANCHOR: foo -/\ndef y := 2" "blockComment" " ANCHOR: foo "
+#assertAnchorKeepsComment "def x := 1\n-- not ANCHOR: foo\ndef y := 2" " not ANCHOR: foo"
+
+-- Disabling a flag leaves the corresponding directive comments untouched in the extracted code.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let hl ← highlightFromString "def a := 0\n-- ANCHOR: foo\ndef x := 1\n-- ANCHOR_END: foo"
+  match hl.anchored (textAnchors := false) with
+  | .error e => throwError m!"unexpected error with textAnchors := false: {e}"
+  | .ok ex =>
+    unless ex.code.tokenList.any (fun t => t.kind.name == "lineComment" && t.content == " ANCHOR: foo") do
+      throwError "ANCHOR comment was not preserved with textAnchors := false"
+    unless ex.anchors.isEmpty do throwError "anchors found despite textAnchors := false"
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let hl ← highlightWithPrefixedMessages "example : True := by\n  trivial\n--^ PROOF_STATE: st"
+  match hl.anchored (proofStates := false) with
+  | .error e => throwError m!"unexpected error with proofStates := false: {e}"
+  | .ok ex =>
+    unless ex.code.tokenList.any (fun t => t.kind.name == "lineComment" && t.content == "^ PROOF_STATE: st") do
+      throwError "PROOF_STATE comment was not preserved with proofStates := false"
+
+-- Error cases still fire after comment tokenization.
+#assertAnchorError "def x := 1\n-- ANCHOR_END: foo\ndef y := 2" "Anchor not open"
+#assertAnchorError "def a := 0\n-- ANCHOR: foo\ndef x := 1\n-- ANCHOR: foo\ndef y := 2" "Anchor already opened"
+#assertAnchorError "def a := 0\n-- ANCHOR: foo\ndef x := 1" "Unclosed anchors"
+
+-- Duplicate proof-state name (needs tactic info, so via the info-recording harness).
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let hl ← highlightWithPrefixedMessages "example : True := by\n  trivial\n--^ PROOF_STATE: st\n--^ PROOF_STATE: st"
+  match hl.anchored with
+  | .ok _ => throwError "expected a duplicate proof-state error"
+  | .error e =>
+    unless "Proof state already found".isPrefixOf e do throwError m!"unexpected error: {e}"
+
+-- A directive comment inside a tactic block is extracted with its surrounding tactic context
+-- (exercises the `ctx` threading in `anchored`).
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let hl ← highlightWithPrefixedMessages "example : True := by\n  -- ANCHOR: pf\n  trivial\n  -- ANCHOR_END: pf"
+  match hl.anchored with
+  | .error e => throwError m!"anchored failed: {e}"
+  | .ok ex =>
+    match Compat.HashMap.get? ex.anchors "pf" with
+    | none => throwError "no anchor 'pf'"
+    | some a =>
+      unless (a.toString.splitOn "trivial").length > 1 do
+        throwError m!"anchor 'pf' lost its tactic content: {repr a.toString}"
+
+-- Exact newline/indentation behavior: a directive at end-of-input (no trailing newline), blank lines
+-- around a directive, and a tab-indented directive (tabs count as line-leading whitespace).
+#assertAnchor "def a := 0\n-- ANCHOR: foo\ndef x := 1\n-- ANCHOR_END: foo" "foo" "def x := 1\n"
+#assertAnchor "def a := 0\n\n-- ANCHOR: foo\n\ndef x := 1\n-- ANCHOR_END: foo" "foo" "\ndef x := 1\n"
+-- A more deeply indented directive (extra leading spaces) is still recognized as a line start.
+#assertAnchor "def a := 0\nsection\n    -- ANCHOR: foo\n    def x := 1\n    -- ANCHOR_END: foo\nend" "foo" "    def x := 1\n"
+
 -- Operators are `.operator`, including multi-character symbols (classified per character) and
 -- Unicode math symbols like the function arrow.
 #assertKind "def f (a b : Nat) := a + b" "+" "operator"
@@ -517,7 +632,9 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 -- A subscript/superscript-decorated operator (an operator char plus subscript/superscript chars)
 -- is still an operator, including superscript operator signs like `⁻` in `⁻¹`.
 #assertKind "infixl:65 \" +ₙ \" => Nat.add\ndef z := 1 +ₙ 2" "+ₙ" "operator"
-#assertKind "postfix:max \"⁻¹\" => Nat.succ\ndef w := 0⁻¹" "⁻¹" "operator"
+-- A superscript-minus operator char plus a superscript digit classifies as an operator. Uses the
+-- obscure `⁻²` token rather than `⁻¹`, which would clash with the built-in `Inv.inv` notation.
+#assertKind "postfix:max \"⁻²\" => Nat.succ\ndef w := 0⁻²" "⁻²" "operator"
 -- But a letter-like notation symbol that doesn't resolve stays `.unknown` rather than being
 -- mislabeled as an operator (it has no operator character).
 #assertKind "prefix:max \"𝒫\" => Nat.succ\ndef y := 𝒫 0" "𝒫" "unknown"
@@ -539,7 +656,7 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 
 -- Core symbolic keywords/delimiters stay `.keyword`, not `.operator`
 #assertKind "def x := 1" ":=" "keyword"
-#assertKind "def f := fun x => x" "=>" "keyword"
+#assertKind "def f := fun (x : Nat) => x" "=>" "keyword"
 
 -- Module docs are tagged like doc comments
 #assertHasKind "/-! module doc -/" "docComment"

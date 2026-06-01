@@ -675,14 +675,12 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
     | Expr.lit (.strVal s) => return some (.str s, none)
     | Expr.mdata _ e =>
       findKind e
-    | other =>
+    | _other =>
       if allowUnknownTyped then
-        runMeta do
-          try
-            let t ← Meta.inferType other >>= instantiateMVars >>= Meta.ppExpr
-            return some (.withType <| toString t, none)
-          catch _ =>
-            return none
+        -- Pretty-print the type, collecting reflowable format data when requested (e.g. a numeral
+        -- of type `Fin 5`). The format is carried in the second projection for the caller to resolve.
+        let (tyStr, prettySig) ← ppVarType
+        if tyStr.isEmpty then return none else return some (.withType tyStr, prettySig)
       else
         return none
 
@@ -944,15 +942,10 @@ def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
 private def peekChar (iter : Compat.String.Iterator) : Option Char :=
   if h : iter.hasNext then some (iter.curr' h) else none
 
-/-- Emits an accumulated whitespace run as text, or as unparsed source when `unparsed` is set. -/
-private def emitTriviaText (unparsed : Bool) (s : String) : HighlightM Unit :=
+/-- Emits an accumulated whitespace run as text. -/
+private def emitTriviaText (s : String) : HighlightM Unit :=
   unless s.isEmpty do
-    modify fun st => { st with
-      output :=
-        if unparsed then
-          Output.addUnparsed st.output s
-        else Output.addText st.output s
-    }
+    modify fun st => { st with output := Output.addText st.output s }
 
 /-- Emits a non-empty trivia token of the given kind. -/
 private def emitTriviaToken (k : Token.Kind) (s : String) : HighlightM Unit :=
@@ -978,9 +971,9 @@ def emitLineComment (start : Compat.String.Iterator) : HighlightM Compat.String.
 
 /--
 Emits a depth-balanced (nesting) block comment, scanning from `iter` (positioned just after the
-opening `/-`). Each opener `/-` and closer `-/` (including nested ones) is emitted as a
-`.commentDelim` token; the text between delimiters is emitted as `.blockComment`. Returns the
-iterator just past the outermost closing `-/` (or at end if unterminated).
+opening `/-`). Only the *outermost* `/-` and `-/` are emitted as `.commentDelim` tokens; everything
+between them — including any nested `/-`…`-/` delimiters — is emitted as a single `.blockComment`
+body token. Returns the iterator just past the outermost closing `-/` (or at end if unterminated).
 -/
 def emitBlockComment (start : Compat.String.Iterator) : HighlightM (Option Compat.String.Iterator) := do
   -- Scan (without emitting) for the depth-balanced closing `-/`, tracking whether the previous
@@ -1026,12 +1019,16 @@ Splits a whitespace-and-comment trivia string into whitespace runs and comment t
 each to the output in source order. Comment delimiters (`--`, `/-`, `-/`) are emitted as
 `.commentDelim` tokens, distinct from the `.lineComment`/`.blockComment` body text. Doc comments are
 real syntax nodes and thus handled elsewhere.
+
+This must only be called on genuine token trivia (leading/trailing whitespace+comments). It is *not*
+used for unparsed source gaps, which are arbitrary un-attributed text: tokenizing comments there
+could falsely split non-comment text (e.g. comment markers appearing inside a string literal).
 -/
-def emitTrivia (s : String) (unparsed : Bool := false) : HighlightM Unit := do
+def emitTrivia (s : String) : HighlightM Unit := do
   -- Fast path: a comment can only contain `-` or `/`, so a string without either is pure
   -- whitespace and is emitted as a single run (matching the previous behavior exactly).
   if !s.any (fun c => c == '-' || c == '/') then
-    emitTriviaText unparsed s
+    emitTriviaText s
     return
   -- `runStart` marks the beginning of the current whitespace run; `iter` scans ahead. When a
   -- comment opener is found, the run `[runStart, iter)` is flushed and the comment is emitted.
@@ -1041,11 +1038,11 @@ def emitTrivia (s : String) (unparsed : Bool := false) : HighlightM Unit := do
     let c := iter.curr' h
     let next := iter.next' h
     if c == '-' && peekChar next == some '-' then
-      emitTriviaText unparsed (runStart.extract iter)
+      emitTriviaText (runStart.extract iter)
       iter := (← emitLineComment next.next)
       runStart := iter
     else if c == '/' && peekChar next == some '-' then
-      emitTriviaText unparsed (runStart.extract iter)
+      emitTriviaText (runStart.extract iter)
       match (← emitBlockComment next.next) with
       | some iter' =>
         iter := iter'
@@ -1056,7 +1053,7 @@ def emitTrivia (s : String) (unparsed : Bool := false) : HighlightM Unit := do
         iter := next
     else
       iter := next
-  emitTriviaText unparsed (runStart.extract iter)
+  emitTriviaText (runStart.extract iter)
 
 /-- Adds to the output any source (if any exists) lying between the last added position and `pos`. -/
 def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
@@ -1071,7 +1068,10 @@ def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
         let endPos := boundaries[i]!
         openUntil <| text.toPosition startPos
         let string := Compat.Substring.mk text.source startPos endPos |>.toString
-        emitTrivia string (unparsed := true)
+        -- Gaps are arbitrary un-attributed source, not guaranteed to be whitespace+comments, so emit
+        -- them verbatim rather than risk mis-tokenizing non-comment text as comments. Comments in
+        -- genuine token trivia are still tokenized via `emitToken`'s `emitTrivia` calls.
+        modify fun st => { st with output := Output.addUnparsed st.output string }
         closeUntil endPos
         setLastPos endPos
 
@@ -1292,6 +1292,21 @@ def identKind
   | .var id tyStr none =>
     return .var id tyStr (← resolveFormatWithInfos kindSig)
   | _ => pure kind
+
+/--
+The inferred type of a literal (e.g. a numeral), as a pretty-printed string and optional reflowable
+format. Unlike `identKind`, this just reads the type of the literal's own elaboration info rather
+than classifying it. A numeral should never be treated as, say, the `OfNat.ofNat` constant.
+-/
+def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
+    HighlightM (Option String × Option String) := do
+  for t in trees do
+    for (ci, info) in infoForSyntax t stx do
+      -- `exprKind` (with `allowUnknownTyped`) reports a non-`const`/`var`/`sort`/`str` expression —
+      -- which a numeral's `OfNat.ofNat …`/literal application is — as `.withType <type>`.
+      if let some (.withType ty, prettySig) ← infoKind ci info (allowUnknownTyped := true) then
+        return (some ty, ← resolveFormatWithInfos prettySig)
+  return (none, none)
 
 /-- Returns the format data JSON for `key` from the cache, or computes and caches it. -/
 def renderOrGetFormat (key : Expr) (render : Expr → HighlightM String) : HighlightM (Option String) := do
@@ -1862,12 +1877,8 @@ partial def highlight'
         emitToken stx i ⟨.unknown, c⟩
     | .node _ `num #[.atom i n] | .node _ `scientific #[.atom i n] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Numeral") do
-        -- Keep the inferred type (if any) for hover, but emit a dedicated numeric kind.
-        let k ← identKind trees ⟨stx⟩ (allowUnknownTyped := true)
-        let numKind := match k with
-          | .withType t => .num (some t) none
-          | _ => .num none none
-        emitToken stx i ⟨numKind, n⟩
+        let (ty?, tyFmt?) ← literalType trees stx
+        emitToken stx i ⟨.num ty? tyFmt?, n⟩
     | .node _ ``Lean.Parser.Command.docComment #[.atom i1 opener, .atom i2 body] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Doc comment") do
       if let .original leading pos ws _ := i1 then

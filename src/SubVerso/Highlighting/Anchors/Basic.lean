@@ -290,6 +290,12 @@ structure AnchoredExamples where
   -/
   proofStates : HashMap String Highlighted
 
+/-- The anchor/proof-state state updated by applying a directive (see `applyDirective`). -/
+private structure DirectiveUpdate where
+  openAnchors : HashMap String Hl
+  anchorOut : HashMap String Highlighted
+  tacOut : HashMap String Highlighted
+
 /--
 If `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` directive, applies it and returns the updated
 anchor and proof-state maps; if it is not a directive, returns `none` (the caller keeps the content).
@@ -298,7 +304,7 @@ anchor and proof-state maps; if it is not a directive, returns `none` (the calle
 private def applyDirective
     (line : String) (preText : Hl) (ctx : Array HlCtx) (textAnchors proofStates : Bool)
     (openAnchors : HashMap String Hl) (anchorOut tacOut : HashMap String Highlighted) :
-    Except String (Option (HashMap String Hl × HashMap String Highlighted × HashMap String Highlighted)) := do
+    Except String (Option DirectiveUpdate) := do
   match guard textAnchors *> (anchor? line |>.toOption) with
   | none =>
     match guard proofStates *> (proofState? line |>.toOption) with
@@ -307,15 +313,15 @@ private def applyDirective
       let some t := preText.tacticsAt? c
         | throw s!"No proof state at column {c} for '{p}'"
       if tacOut.get? p |>.isSome then throw s!"Proof state already found: '{p}'"
-      return some (openAnchors, anchorOut, tacOut.insert p t)
+      return some { openAnchors, anchorOut, tacOut := tacOut.insert p t }
   | some (a, true) =>
     if openAnchors.contains a then throw s!"Anchor already opened: {a}"
     if anchorOut.contains a then throw s!"Anchor already used: {a}"
-    return some (openAnchors.insert a { here := .empty, context := ctx.map (.empty, ·) }, anchorOut, tacOut)
+    return some { openAnchors := openAnchors.insert a { here := .empty, context := ctx.map (.empty, ·) }, anchorOut, tacOut }
   | some (a, false) =>
     let some hl := openAnchors.get? a
       | throw s!"Anchor not open: {a}"
-    return some (openAnchors.erase a, anchorOut.insert a hl.toHighlighted, tacOut)
+    return some { openAnchors := openAnchors.erase a, anchorOut := anchorOut.insert a hl.toHighlighted, tacOut }
 
 /-- Whether `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` directive comment. -/
 private def isDirectiveLine (textAnchors proofStates : Bool) (line : String) : Bool :=
@@ -435,7 +441,7 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
         | none =>
           openAnchors := openAnchors.map fun _ hl => hl ++ line
           doc := doc ++ line
-        | some (oa, ao, to) => openAnchors := oa; anchorOut := ao; tacOut := to
+        | some u => openAnchors := u.openAnchors; anchorOut := u.anchorOut; tacOut := u.tacOut
     | some h@(.token ..) :: hs | some h@(.point ..) :: hs | some h@(.unparsed ..) :: hs =>
       todo := hs
       openAnchors := openAnchors.map fun _ hl => hl ++ h
