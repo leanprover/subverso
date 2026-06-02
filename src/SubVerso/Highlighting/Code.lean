@@ -86,6 +86,7 @@ def Context.noDefinitions (ctxt : Context) : Context := {ctxt with definitionsPo
 
 partial def Token.Kind.priority : Token.Kind → Nat
   | .var .. => 2
+  | .wildcard .. => 2
   | .str .. => 3
   | .const .. => 5
   | .anonCtor .. => 6
@@ -93,6 +94,7 @@ partial def Token.Kind.priority : Token.Kind → Nat
   | .sort .. => 4
   | .moduleName .. => 4
   | .keyword .. => 3
+  | .delim .. => 3
   | .levelConst .. | .levelVar .. | .levelOp .. => 4
   | .num .. | .char .. => 3
   | .operator .. | .bracket .. | .separator .. => 1
@@ -1876,7 +1878,20 @@ partial def highlight'
         | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
+      -- A core delimiter (e.g. `:=` or `=>`) is always a `.delim`, regardless of any elaboration
+      -- info that happens to match its span.
+      if isSymbolicKeyword x then
+        emitToken stx i ⟨.delim name occ docs, x⟩
+      else
       let k ← identKind trees ⟨stx⟩
+      -- A wildcard / hole `_` is indicated separately from a variable to allow separate styling.
+      if x == "_" then
+        let (ty, tyFmt) := match k with
+          | .var _ ty tyFmt => (ty, tyFmt)
+          | .withType ty => (ty, none)
+          | _ => ("", none)
+        emitToken stx i ⟨.wildcard ty tyFmt, x⟩
+      else
       match k with
       | .sort docs? =>
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
@@ -1884,16 +1899,11 @@ partial def highlight'
       | .unknown =>
         -- `identKind` didn't match this to an identifier, so it's not something akin to Mathlib's
         -- `ℕ`; no elaboration info matches its exact span. Classify it lexically:
-        --  * a curated core symbolic keyword (`:=`, `=>`, …) is a `.keyword` — checked first so it
-        --    wins over the operator classification below;
-        --  * otherwise `atomKind` classifies punctuation (separator/bracket/operator), and notably a
+        --  * `atomKind` classifies punctuation (separator/bracket/operator), and notably a
         --    bracket-like atom such as `foo[` wins over the keyword heuristic even though it starts
         --    with a letter;
         --  * a remaining alphabetic or `#`-prefixed atom is a `.keyword`.
-        if isSymbolicKeyword x then
-          emitToken stx i ⟨.keyword name occ docs, x⟩
-        else
-          match atomKind name occ docs x with
+        match atomKind name occ docs x with
           | .unknown =>
             let isKeyword :=
               match Compat.String.Pos.get? x 0 with

@@ -72,11 +72,21 @@ where
 inductive Token.Kind where
   | /-- `occurrence` is a unique identifier that unites the various keyword tokens from a given production -/
     keyword (name : Option Name) (occurrence : Option String) (docs : Option String)
+  /--
+  A built-in syntactic delimiter such as `:=`, `=>`, `←`, `@`, `:`, or `|`. Like `keyword` it
+  carries the enclosing production's name, occurrence tag, and docs, but some themes style these
+  differently.
+  -/
+  | delim (name : Option Name) (occurrence : Option String) (docs : Option String)
   | const (name : Name) (signature : String) (docs : Option String) (isDef : Bool)
       (signatureFormat : Option String)
   | anonCtor (name : Name) (signature : String) (docs : Option String)
       (signatureFormat : Option String)
   | var (name : FVarId) (type : String) (typeFormat : Option String)
+  /--
+  A wildcard or hole `_` in term, pattern, or binder position.
+  -/
+  |  wildcard (type : String) (typeFormat : Option String)
   | str (string : String)
   | option (name : Name) (declName : Name) (docs : Option String)
   | docComment
@@ -137,10 +147,12 @@ open Syntax (mkCApp) in
 instance : Quote Token.Kind where
   quote
     | .keyword n occ docs => mkCApp ``keyword #[quote n, quote occ, quote docs]
+    | .delim n occ docs => mkCApp ``delim #[quote n, quote occ, quote docs]
     | .const n sig docs isDef sigFmt => mkCApp ``const #[quote n, quote sig, quote docs, quote isDef, quote sigFmt]
     | .anonCtor n sig docs sigFmt => mkCApp ``anonCtor #[quote n, quote sig, quote docs, quote sigFmt]
     | .option n d docs => mkCApp ``option #[quote n, quote d, quote docs]
     | .var (.mk n) type tyFmt => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type, quote tyFmt]
+    | .wildcard type tyFmt => mkCApp ``wildcard #[quote type, quote tyFmt]
     | .str s => mkCApp ``str #[quote s]
     | .docComment => mkCApp ``docComment #[]
     | .sort doc? => mkCApp ``sort #[quote doc?]
@@ -175,12 +187,14 @@ The canonical CSS class for a token kind.
 -/
 def Token.Kind.cssClass : Token.Kind → String
   | .var .. => "var"
+  | .wildcard .. => "wildcard"
   | .str .. => "literal string"
   | .sort .. => "sort"
   | .const .. => "const"
   | .option .. => "option"
   | .docComment => "doc-comment"
   | .keyword .. => "keyword"
+  | .delim .. => "built-in delim"
   | .anonCtor .. => "const anon-ctor"
   | .num .. => "literal number"
   | .char .. => "literal char"
@@ -205,6 +219,7 @@ def Token.Kind.binding : Token.Kind → String
   | .var ⟨v⟩ .. => "var-" ++ toString v
   | .option n _ _ => "option-" ++ toString n
   | .keyword _ (some occ) _
+  | .delim _ (some occ) _
   | .operator _ (some occ) _
   | .bracket _ (some occ) _
   | .separator _ (some occ) _ => "kw-occ-" ++ toString occ

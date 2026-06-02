@@ -346,9 +346,11 @@ namespace SubVerso.Highlighting
 /-- The name of a token kind's constructor, for use in assertions (payloads are ignored). -/
 def Token.Kind.name : Token.Kind → String
   | .keyword .. => "keyword"
+  | .delim .. => "delim"
   | .const .. => "const"
   | .anonCtor .. => "anonCtor"
   | .var .. => "var"
+  | .wildcard .. => "wildcard"
   | .str .. => "str"
   | .option .. => "option"
   | .docComment => "docComment"
@@ -388,7 +390,7 @@ partial def Highlighted.hasTactics : Highlighted → Bool
 
 /-- The occurrence tag of a production-bearing token kind, if any. -/
 def Token.Kind.occurrence? : Token.Kind → Option String
-  | .keyword _ occ _ | .operator _ occ _ | .bracket _ occ _ | .separator _ occ _ => occ
+  | .keyword _ occ _ | .delim _ occ _ | .operator _ occ _ | .bracket _ occ _ | .separator _ occ _ => occ
   | _ => none
 
 /-- Whether a token survives a `ToJson`/`FromJson` round-trip unchanged. -/
@@ -484,6 +486,19 @@ elab "#assertNumType" inp:str content:str expectedType:str : command => do
         throwError m!"numeral {repr content.getString} has type {repr ty}, expected {repr expectedType.getString}"
     | .num none _ => throwError m!"numeral {repr content.getString} has no inferred type"
     | _ => throwError m!"token {repr content.getString} is not a numeral"
+
+open Lean Elab Command in
+/-- Checks that the wildcard `_` with `content` is a `.wildcard` carrying the inferred `expectedType`. -/
+elab "#assertWildcardType" inp:str content:str expectedType:str : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  let toks := hl.tokenList.filter (·.content == content.getString)
+  if toks.isEmpty then throwError m!"no token with content {repr content.getString}"
+  for t in toks do
+    match t.kind with
+    | .wildcard ty _ =>
+      if ty != expectedType.getString then
+        throwError m!"wildcard {repr content.getString} has type {repr ty}, expected {repr expectedType.getString}"
+    | _ => throwError m!"token {repr content.getString} is not a wildcard (is {t.kind.name})"
 
 open Lean Elab Command in
 /-- Highlights `inp` with tactic info and checks the anchor pass found a proof state named `name`. -/
@@ -706,9 +721,16 @@ open Lean Elab Command in
 #assertKindRich "def p : Nat × Nat := ⟨1, 2⟩" "⟩" "anonCtor"
 #assertKindRich "def p : Nat × Nat := ⟨1, 2⟩" "," "anonCtor"
 
--- Core symbolic keywords/delimiters stay `.keyword`, not `.operator`
-#assertKind "def x := 1" ":=" "keyword"
-#assertKind "def f := fun (x : Nat) => x" "=>" "keyword"
+-- Core symbolic delimiters (`:=`, `=>`, …) are `.delim`, not `.operator` and not the bold `.keyword`
+#assertKind "def x := 1" ":=" "delim"
+#assertKind "def f := fun (x : Nat) => x" "=>" "delim"
+
+-- A wildcard / hole `_` is its own kind, not a `.var` (so it isn't italicized like a variable)
+#assertKind "def f := fun _ => 0" "_" "wildcard"
+#assertKindRich "def f := fun _ => 0" "_" "wildcard"
+#assertKindRich "def f (n : Nat) := match n with\n  | _ => 0" "_" "wildcard"
+-- Like `var`, a wildcard keeps the inferred type of its binder for hover.
+#assertWildcardType "def f := fun (_ : Nat) => 0" "_" "Nat"
 
 -- Module docs are tagged like doc comments
 #assertHasKind "/-! module doc -/" "docComment"
@@ -717,7 +739,9 @@ open Lean Elab Command in
 #evalString "true\n"
   (([Token.Kind.num (some "Nat") none, .num none none, .char 'a', .lineComment, .blockComment,
      .commentDelim, .operator (some `foo) (some "foo-1") (some "d"), .bracket none none none,
-     .separator none none none] : List Token.Kind).all (fun k => Token.jsonRoundtrips ⟨k, "x"⟩))
+     .separator none none none, .delim (some `foo) (some "foo-1") (some "d"),
+     .wildcard "Nat" none, .wildcard "" (some "[]")]
+     : List Token.Kind).all (fun k => Token.jsonRoundtrips ⟨k, "x"⟩))
 
 -- The new `identKind`-first atom step: a nullary notation atom (`ℕ`) resolves span-exact to its
 -- constant (`.const`), while a genuine infix operator (`+`) has no span-exact info and stays
@@ -725,7 +749,13 @@ open Lean Elab Command in
 -- extraction; this needs no Mathlib — a local `notation` suffices.
 #assertKindRich "notation \"ℕ\" => Nat\ndef m : ℕ := 0" "ℕ" "const"
 #assertKindRich "def f (a b : Nat) := a + b" "+" "operator"
-#assertKind "def x := 1" ":=" "keyword"
+
+-- `:=` stays a `.delim` across contexts even on the info-recording path, where `identKind` could
+-- otherwise match its span: a structure-instance field, an `instance … where` field, and a tactic
+-- `have` all keep it a delim (it is peeled off before `identKind` is consulted).
+#assertKindRich "structure S where\n  x : Nat\n#check ({ x := 1 } : S)" ":=" "delim"
+#assertKindRich "class C (a : Type) where\n  f : a → a\ninstance : C Nat where\n  f x := x" ":=" "delim"
+#assertKindRich "theorem t : True := by\n  have h : True := trivial\n  exact h" ":=" "delim"
 
 end TokenKinds
 
