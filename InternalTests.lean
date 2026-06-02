@@ -724,6 +724,15 @@ open Lean Elab Command in
 -- Core symbolic delimiters (`:=`, `=>`, …) are `.delim`, not `.operator` and not the bold `.keyword`
 #assertKind "def x := 1" ":=" "delim"
 #assertKind "def f := fun (x : Nat) => x" "=>" "delim"
+-- A run of only `.` is a delimiter (e.g. the projection dot).
+#assertKindRich "def n : Nat := (0 : Nat).succ" "." "delim"
+-- A `·` proof-focus bullet has no term info, so it is a delimiter; an anonymous-function
+-- placeholder `(· + 1)` resolves to a variable and keeps that kind.
+#assertKindRich "example : True ∧ True := by\n  refine ⟨?_, ?_⟩\n  · trivial\n  · trivial" "·" "delim"
+#assertKindRich "def f : Nat → Nat := (· + 1)" "·" "var"
+-- An anonymous `instance` keyword resolves span-exact to the synthesized instance name, but must
+-- stay a keyword rather than being rendered as that constant.
+#assertKindRich "class Foo (α : Type) where\n  bar : α\ninstance : Foo Nat where\n  bar := 0" "instance" "keyword"
 
 -- A wildcard / hole `_` is its own kind, not a `.var` (so it isn't italicized like a variable)
 #assertKind "def f := fun _ => 0" "_" "wildcard"

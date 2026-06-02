@@ -1665,7 +1665,7 @@ def highlightSpecial
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting projection {e} {tk} {field}") do
       hl trees tactics none e
       if let some ⟨pos, endPos⟩ := tk.getRange? then
-        emitToken stx tk.getHeadInfo <| .mk .unknown <| Compat.String.Pos.extract (← getFileMap).source pos endPos
+        emitToken stx tk.getHeadInfo <| .mk (.delim none none none) <| Compat.String.Pos.extract (← getFileMap).source pos endPos
       else
         emitString' "."
       hl trees tactics none field
@@ -1733,7 +1733,8 @@ These atoms will not be considered punctuation.
 -/
 def isSymbolicKeyword (s : String) : Bool :=
   s == ":=" || s == "=>" || s == "↦" || s == "←" || s == "@" || s == ":" ||
-  s == "⊢" || s == "|" || s == ".." || s == "..."
+  s == "⊢" || s == "|" ||
+  (!s.isEmpty && s.all (· == '.'))
 
 /--
 Whether `c` is a paired-delimiter (bracket) character. Note that `«` `»` are *not* brackets because
@@ -1852,7 +1853,7 @@ partial def highlight'
             if (← infoExists trees field) then
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Yes, a field!") do
               highlight' trees y tactics
-              emitToken' <| fakeToken .unknown "."
+              emitToken' <| fakeToken (.delim none none none) "."
               -- Manually bump the last-seen position so we don't double-print the dot.
               -- The source info for `y` has an erroneous trailing tail pos of `0`,
               -- so we use `tailPos?` since it can't have trailing whitespace anyway
@@ -1892,6 +1893,15 @@ partial def highlight'
           | _ => ("", none)
         emitToken stx i ⟨.wildcard ty tyFmt, x⟩
       else
+      -- Whether the atom is keyword-shaped: ASCII-alphabetic, or `#` followed by a letter.
+      let isKeyword :=
+        match Compat.String.Pos.get? x 0 with
+        | some '#' =>
+          match Compat.String.Pos.get? x ((0 : Compat.String.Pos) + '#') with
+          | some c => c.isAlpha
+          | _ => false
+        | some c => c.isAlpha
+        | _ => false
       match k with
       | .sort docs? =>
         withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
@@ -1899,28 +1909,27 @@ partial def highlight'
       | .unknown =>
         -- `identKind` didn't match this to an identifier, so it's not something akin to Mathlib's
         -- `ℕ`; no elaboration info matches its exact span. Classify it lexically:
+        --  * a `·` with no semantic info is a proof-focus bullet — a delimiter (the `·` that *does*
+        --    resolve, an anonymous-function placeholder like `(· + 1)`, keeps its kind below);
         --  * `atomKind` classifies punctuation (separator/bracket/operator), and notably a
         --    bracket-like atom such as `foo[` wins over the keyword heuristic even though it starts
         --    with a letter;
         --  * a remaining alphabetic or `#`-prefixed atom is a `.keyword`.
         match atomKind name occ docs x with
           | .unknown =>
-            let isKeyword :=
-              match Compat.String.Pos.get? x 0 with
-              | some '#' =>
-                match Compat.String.Pos.get? x ((0 : Compat.String.Pos) + '#') with
-                | some c => c.isAlpha
-                | _ => false
-              | some c => c.isAlpha
-              | _ => false
-            if isKeyword then emitToken stx i ⟨.keyword name occ docs, x⟩
+            if !x.isEmpty && x.all (· == '·') then emitToken stx i ⟨.delim name occ docs, x⟩
+            else if isKeyword then emitToken stx i ⟨.keyword name occ docs, x⟩
             else emitToken stx i ⟨.unknown, x⟩
           | k => emitToken stx i ⟨k, x⟩
       | _ =>
-        -- A nullary notation or symbol constant (e.g. `ℕ`, `ℤ`, `ℝ`) whose canonical span is
-        -- exactly this atom resolved span-exact via `identKind`; keep its semantic kind.
-        withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Resolved atom is {repr k}") do
-          emitToken stx i ⟨k, x⟩
+        -- A keyword-shaped atom (e.g. `instance`) can resolve span-exact to a generated declaration
+        -- name — anonymous instances get a synthesized name whose info covers the `instance` token.
+        -- Keep it a `.keyword` rather than rendering it as that constant. A non-keyword atom that
+        -- resolved (Mathlib's `ℕ`, or a `·` placeholder) keeps its semantic kind.
+        if isKeyword then emitToken stx i ⟨.keyword name occ docs, x⟩
+        else
+          withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Resolved atom is {repr k}") do
+            emitToken stx i ⟨k, x⟩
     | stx@(.node _ `Lean.Parser.Command.versoCommentBody _) =>
       if let some endPos := Compat.getTrailingTailPos? stx then
         fillMissingSourceUpTo endPos
