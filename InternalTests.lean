@@ -686,6 +686,15 @@ open Lean Elab Command in
 #assertKind "def l := [1, 2]" "[" "bracket"
 #assertKind "def l := [1, 2]" "]" "bracket"
 #assertKind "def l := [1, 2]" "," "separator"
+-- The array-literal opener `#[` is a single token combining `#` with `[`; it is a bracket too.
+#assertKind "def arr := #[1, 2]" "#[" "bracket"
+#assertKind "def arr := #[1, 2]" "]" "bracket"
+-- A letter-prefixed bracket notation (`foo[ … ]`) is bracket-like, not a keyword.
+#assertKind "notation:max \"foo[\" n \"]\" => n\ndef z := foo[5]" "foo[" "bracket"
+-- A mathematical-script-letter prefix (`ℰ⟦ … ⟧`) counts as a letter, so this is a bracket too.
+#assertKind "notation:max \"ℰ⟦\" n \"⟧\" => n\ndef z := ℰ⟦5⟧" "ℰ⟦" "bracket"
+#assertKind "notation \"{!\" n \"!}\" => n\ndef w := {! 5 !}" "{!" "bracket"
+#assertKind "notation \"{!\" n \"!}\" => n\ndef w := {! 5 !}" "!}" "bracket"
 -- The separator sits inside a `sepBy` null grouping; it must inherit the surrounding list
 -- production rather than the meaningless `null` kind.
 #assertOccurrenceNotNull "def l := [1, 2]" ","

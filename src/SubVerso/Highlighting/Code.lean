@@ -1740,6 +1740,33 @@ they are name-escaping syntax.
 def isBracketChar (c : Char) : Bool :=
   "()[]{}⟨⟩⦃⦄⟦⟧⟪⟫‹›⌊⌋⌈⌉".contains c
 
+/--
+Whether `c` is a mathematical alphabetic letter: a script, fraktur, double-struck, bold, italic, or
+sans-serif letter from the Mathematical Alphanumeric Symbols block, or one of the script/fraktur/
+double-struck letterlike forms (`ℬ`, `ℰ`, `ℱ`, `ℋ`, `ℐ`, `ℒ`, `ℳ`, `ℛ`, `ℓ`, `℘`, `ℕ`, `ℝ`, …) that
+live in the Letterlike Symbols block. `Char.isAlpha` only recognizes ASCII letters, so these
+must be matched explicitly.
+-/
+def isMathematicalLetter (c : Char) : Bool :=
+  let v := c.toNat
+  -- Mathematical Alphanumeric Symbols, letters & Greek (the digits at 0x1D7CE–0x1D7FF are excluded)
+  (0x1D400 ≤ v && v ≤ 0x1D7CB) ||
+    -- script/fraktur/double-struck letters carved out into the Letterlike Symbols block
+    "ℬℰℱℋℐℒℳℛℯℊℴℓ℘ℂℍℕℙℚℝℤℨℭℌℑℜ".contains c
+
+/--
+Characters that may decorate a bracket atom alongside its bracket character(s). Some brackets
+combine a bracket character with other characters:
+* a letter (ASCII or mathematical) — a user `notation` like `foo[ … ]` or `𝒜[ … ]` produces a
+  bracket-like `foo[`/`𝒜[` token;
+* `#` — `#[` (array) and `#v[` (`Vector`);
+* `%` — `%[` (list cons-notation);
+* `'` — `]'` (`getElem` with a proof, `xs[i]'h`);
+* `!`/`?` — brackets such as `{! … !}`.
+-/
+def isBracketExtra (c : Char) : Bool :=
+  c.isAlpha || isMathematicalLetter c || c == '#' || c == '%' || c == '\'' || c == '!' || c == '?'
+
 /-- Whether `c` is an item-separator character. -/
 def isSeparatorChar (c : Char) : Bool := c == ',' || c == ';'
 
@@ -1778,15 +1805,17 @@ Lexically classifies a symbolic atom that `identKind` did not resolve to a const
 `ℕ` in Mathlib), meaning that no elaboration info matches its exact span.
 
 This is a best-effort heuristic based on the characters in the atom. An atom made entirely of
-separator or bracket characters is classified accordingly. An operator must contain at least one
-operator character, with every character being an operator, subscript, or superscript (so a
-decorated operator like `→ₗ` or `→ᵇ` counts, but a bare letter-like symbol such as `𝒫` does not).
-Anything else stays `.unknown` rather than being assumed to be an operator.
+separator characters is a separator. A bracket must contain at least one bracket character, with
+every character being a bracket or a bracket extra (so `#[`, `%[`, and `]'` count). An operator must
+contain at least one operator character, with every character being an operator, subscript, or
+superscript (so a decorated operator like `→ₗ` or `→ᵇ` counts, but a bare letter-like symbol such as
+`𝒫` does not). Anything else stays `.unknown` rather than being assumed to be an operator.
 -/
 def atomKind (name : Option Name) (occ : Option String) (docs : Option String) (s : String) : Token.Kind :=
   if s.isEmpty then .unknown
   else if s.all isSeparatorChar then .separator name occ docs
-  else if s.all isBracketChar then .bracket name occ docs
+  else if s.any isBracketChar && s.all (fun c => isBracketChar c || isBracketExtra c) then
+    .bracket name occ docs
   else if s.any isOperatorChar && s.all (fun c => isOperatorChar c || isSubOrSuperscript c) then
     .operator name occ docs
   else .unknown
@@ -1854,21 +1883,29 @@ partial def highlight'
           emitToken stx i ⟨.sort docs?, x⟩
       | .unknown =>
         -- `identKind` didn't match this to an identifier, so it's not something akin to Mathlib's
-        -- `ℕ`. No elaboration info matches its exact span. If it reads as a keyword (alphabetic,
-        -- `#`-prefixed, or one of the curated core symbolic keywords) emit `.keyword`; otherwise it
-        -- is punctuation, classified lexically per character (operator/bracket/separator).
-        let isKeyword :=
-          match Compat.String.Pos.get? x 0 with
-          | some '#' =>
-            match Compat.String.Pos.get? x ((0 : Compat.String.Pos) + '#') with
-            | some c => c.isAlpha
-            | _ => false
-          | some c => c.isAlpha || isSymbolicKeyword x
-          | _ => false
-        if isKeyword then
+        -- `ℕ`; no elaboration info matches its exact span. Classify it lexically:
+        --  * a curated core symbolic keyword (`:=`, `=>`, …) is a `.keyword` — checked first so it
+        --    wins over the operator classification below;
+        --  * otherwise `atomKind` classifies punctuation (separator/bracket/operator), and notably a
+        --    bracket-like atom such as `foo[` wins over the keyword heuristic even though it starts
+        --    with a letter;
+        --  * a remaining alphabetic or `#`-prefixed atom is a `.keyword`.
+        if isSymbolicKeyword x then
           emitToken stx i ⟨.keyword name occ docs, x⟩
         else
-          emitToken stx i ⟨atomKind name occ docs x, x⟩
+          match atomKind name occ docs x with
+          | .unknown =>
+            let isKeyword :=
+              match Compat.String.Pos.get? x 0 with
+              | some '#' =>
+                match Compat.String.Pos.get? x ((0 : Compat.String.Pos) + '#') with
+                | some c => c.isAlpha
+                | _ => false
+              | some c => c.isAlpha
+              | _ => false
+            if isKeyword then emitToken stx i ⟨.keyword name occ docs, x⟩
+            else emitToken stx i ⟨.unknown, x⟩
+          | k => emitToken stx i ⟨k, x⟩
       | _ =>
         -- A nullary notation or symbol constant (e.g. `ℕ`, `ℤ`, `ℝ`) whose canonical span is
         -- exactly this atom resolved span-exact via `identKind`; keep its semantic kind.
