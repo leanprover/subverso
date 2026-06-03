@@ -619,6 +619,51 @@ open Lean Elab Command in
     unless (Compat.HashMap.get? ex.proofStates "afterIntro").isSome do
       throwError "no proof state 'afterIntro' (module-style highlighting)"
 
+-- The whole `rw [h₁, …, hₙ]` invocation gets the final proof state, and each rewrite rule gets its
+-- own intermediate state (after that rewrite) *nested inside* that region. `rewrite` behaves the
+-- same. Previously the whole `rw [...]` collapsed to a single, flat final state.
+namespace SubVerso.Highlighting
+/-- Each `.tactics` region as `(nestingDepth, code, goalConclusions)`, in pre-order. -/
+partial def Highlighted.stateTree (hl : Highlighted) (depth : Nat := 0) : Array (Nat × String × List String) := Id.run do
+  let mut out := #[]
+  match hl with
+  | .seq hls => for x in hls do out := out ++ x.stateTree depth
+  | .span _ hl' => out := out ++ hl'.stateTree depth
+  | .tactics info _ _ hl' =>
+    out := out.push (depth, hl'.asString, (info.map (fun g => g.conclusion.asString)).toList)
+    out := out ++ hl'.stateTree (depth + 1)
+  | _ => pure ()
+  out
+end SubVerso.Highlighting
+
+open Lean Elab Command in
+/-- Asserts the nested proof-state tree of `src` (highlighted module-style) equals `expected`. -/
+def assertStateTree (src : String) (expected : List (Nat × String × List String)) : CommandElabM Unit := do
+  let tree := (← highlightModuleStyle src).stateTree.toList
+  unless tree == expected do
+    throwError m!"proof-state tree =\n{repr tree}\nexpected\n{repr expected}"
+
+-- `rw`: the closing `rfl` solves the goal, so the outer `rw [...]` region shows the empty (solved)
+-- state, with the three rewrite steps nested at depth 1. Each step's region spans the elaborator's
+-- recorded node — the rule together with its trailing separator — so the non-final steps include the
+-- `,` (the last step has no trailing comma).
+open Lean Elab Command in
+#eval assertStateTree
+  "theorem rwSteps (a b c d : Nat) (h1 : a = b) (h2 : b = c) (h3 : c = d) : a = d := by\n  rw [h1, h2, h3]"
+  [(0, "by", ["a = d"]),
+   (0, "rw [h1, h2, h3]", []),
+     (1, "h1,", ["b = d"]), (1, "h2,", ["c = d"]), (1, "h3", ["d = d"])]
+
+-- `rewrite` behaves identically: the outer region shows the final state after both rewrites, with
+-- each step nested. (Here `rfl` is a separate following tactic.)
+open Lean Elab Command in
+#eval assertStateTree
+  "theorem rwLike (a b c : Nat) (h1 : a = b) (h2 : b = c) : a = c := by\n  rewrite [h1, h2]\n  rfl"
+  [(0, "by", ["a = c"]),
+   (0, "rewrite [h1, h2]", ["c = c"]),
+     (1, "h1,", ["b = c"]), (1, "h2", ["c = c"]),
+   (0, "rfl", [])]
+
 -- Comments that look like directives but are not directive *lines* must keep their token styling:
 -- a block comment and an ordinary full-line comment, both containing `ANCHOR:`.
 #assertAnchorCodeHasToken "def x := 1\n/- ANCHOR: foo -/\ndef y := 2" "blockComment" " ANCHOR: foo "
