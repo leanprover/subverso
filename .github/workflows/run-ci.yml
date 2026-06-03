@@ -90,8 +90,10 @@ jobs:
         run: |
           lean --version
 
-      - name: Cache .lake
-        uses: actions/cache@v5
+      # Lower-priority job-local cache: restore if present, but don't save one cache per matrix job.
+      # The fixed test-project caches warmed by `prebuild` are the caches we want to preserve.
+      - name: Restore .lake
+        uses: actions/cache/restore@v5
         with:
           path: .lake
           key: ${{ runner.os }}-${{ hashFiles('lakefile.lean') }}-${{ hashFiles('lean-toolchain') }}
@@ -141,11 +143,10 @@ jobs:
           restore-keys: |
             subverso-build-demo-4.10.0-${{ runner.os }}-${{ runner.arch }}-
 
-      # The small-tests build uses the *matrix* toolchain, so it can't be shared across jobs — but it
-      # can still be warmed run-over-run. `sanitizeToolchain('leanprover/lean4:<toolchain>')` is
-      # `leanprover-lean4-<toolchain>` (see Tests.lean), which is what the build dir is named.
-      - name: Cache small-tests build (matrix toolchain)
-        uses: actions/cache@v5
+      # The small-tests build uses the matrix toolchain, so saving it would create one cache per
+      # matrix job and can evict the shared prebuilt demo caches. Restore existing entries only.
+      - name: Restore small-tests build (matrix toolchain)
+        uses: actions/cache/restore@v5
         with:
           path: |
             .builds/leanprover-lean4-${{ inputs.toolchain }}/small-tests/.lake
