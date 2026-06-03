@@ -17,7 +17,7 @@ on:
         required: false
         type: string
         default: |
-          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
 
 
 jobs:
@@ -53,6 +53,38 @@ jobs:
       - name: Select Lean version
         run: |
           echo "leanprover/lean4:${{ inputs.toolchain }}" > lean-toolchain
+
+      - name: Install Lean toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan run --install leanprover/lean4:${{ inputs.toolchain }} lean --version
+
+      - name: Install demo Lean toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan run --install leanprover/lean4:v4.3.0 lean --version
+
+      - name: Install TOML demo Lean toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan run --install leanprover/lean4:v4.8.0 lean --version
+
+      - name: Install compatibility test Lean toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan run --install leanprover/lean4:4.10.0 lean --version
 
       - name: Lean version
         run: |

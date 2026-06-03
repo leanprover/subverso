@@ -43,7 +43,7 @@ jobs:
         platform:
           - os: nscloud-ubuntu-22.04-amd64-8x16
             installer: |
-              curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+              curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
         # Mac runners are rare and expensive, so spot-check that the
         # subprocess support seems OK but be less thorough
         include:
@@ -51,12 +51,12 @@ jobs:
             platform:
               os: macos-latest
               installer: |
-                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
           - toolchain: "4.9.1"
             platform:
               os: macos-latest
               installer: |
-                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y
+                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
           - toolchain: "4.8.0"
             platform:
               os: macos-latest
