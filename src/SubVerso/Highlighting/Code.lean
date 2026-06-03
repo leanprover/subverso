@@ -404,6 +404,12 @@ def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal 
 
 /--
 Whether a currently-open (enclosing) tactic region ends at `endPos` and already shows `info`.
+
+A new region with the same goals *and* the same closing position would just nest a duplicate at the
+tail of that enclosing region, so it should be dropped. The classic case is the closing `]` of a
+`rw`: it ends where the whole-`rw` region ends and shows the same final state. The closing-position
+check is what keeps this from suppressing a genuine *intermediate* state that merely happens to equal
+the final one (e.g. the last rewrite step of `rewrite [h₁, h₂]`, which ends before the `]`).
 -/
 def Output.tailDuplicatesOpen
     (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (endPos : Compat.String.Pos) : Bool :=
@@ -514,7 +520,8 @@ structure HighlightState where
   output : List Output
   /-- Messages being displayed -/
   inMessages : List MessageBundle
-  /-- A stack of currently-open tactic regions. -/
+  /-- Currently-open tactic regions, innermost first (a stack, so `rw`/`rewrite` can nest a
+  per-rule state inside the whole-invocation state). -/
   inTactic : List OpenTactic
   /-- Last source position added to the output -/
   lastPos? : Option Compat.String.Pos := none
@@ -1559,7 +1566,11 @@ partial def findTactics
   -- * `simp` shows a single state for the whole `simp [...]`.
   -- * `rw`/`rewrite` show the final state via `findTactics'` below, *and* give each rewrite rule a
   --   state.
-  if stx.getKind ∉ [``Lean.Parser.Tactic.simp, ``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq] then
+  -- * `intro`/`intros` (with possibly several binders) is one tactic, so the whole `intro h₁ … hₙ`
+  --   shows the state after all the intros. Otherwise the "most specific span" rule would put the
+  --   state on the last binder alone (and lose the first binder, whose info is bundled with the
+  --   keyword).
+  if stx.getKind ∉ [``Lean.Parser.Tactic.simp, ``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq, ``Lean.Parser.Tactic.intro, ``Lean.Parser.Tactic.intros] then
     if ← childHasTactics stx then return none
 
   if stx.getKind == ``Lean.Parser.Tactic.rwRule then
