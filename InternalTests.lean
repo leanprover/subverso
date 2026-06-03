@@ -735,8 +735,8 @@ open Lean Elab Command in
 #assertKindRich "class Foo (α : Type) where\n  bar : α\ninstance : Foo Nat where\n  bar := 0" "instance" "keyword"
 
 -- A wildcard / hole `_` is its own kind, not a `.var` (so it isn't italicized like a variable)
-#assertKind "def f := fun _ => 0" "_" "wildcard"
-#assertKindRich "def f := fun _ => 0" "_" "wildcard"
+#assertKind "def f := fun (_ : Nat) => 0" "_" "wildcard"
+#assertKindRich "def f := fun (_ : String) => 0" "_" "wildcard"
 #assertKindRich "def f (n : Nat) := match n with\n  | _ => 0" "_" "wildcard"
 -- Like `var`, a wildcard keeps the inferred type of its binder for hover.
 #assertWildcardType "def f := fun (_ : Nat) => 0" "_" "Nat"
