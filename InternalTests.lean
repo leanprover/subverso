@@ -699,6 +699,18 @@ open Lean Elab Command in
      (1, "h1,", ["b = c"]), (1, "h2", ["c = c"]),
    (0, "rfl", [])]
 
+-- A multi-binder `intro h1 h2 h3` is one tactic, so it gets a single region showing the state *after*
+-- all the intros — `a = d` — rather than the state landing only on the last binder (`h3`). Like
+-- `simp`, the whole tactic wins over its more-specific sub-states. (Regression guard: previously the
+-- whole-`intro` region was dropped by the "most specific span" filter, leaving the state on `h3`.)
+open Lean Elab Command in
+#eval assertStateTree
+  "example (a b c d : Nat) : a = b → b = c → c = d → a = d := by\n  intro h1 h2 h3\n  rw [h1, h2, h3]"
+  [(0, "by", ["a = b → b = c → c = d → a = d"]),
+   (0, "intro h1 h2 h3", ["a = d"]),
+   (0, "rw [h1, h2, h3]", []),
+     (1, "h1,", ["b = d"]), (1, "h2,", ["c = d"]), (1, "h3", ["d = d"])]
+
 -- Comments that look like directives but are not directive *lines* must keep their token styling:
 -- a block comment and an ordinary full-line comment, both containing `ANCHOR:`.
 #assertAnchorCodeHasToken "def x := 1\n/- ANCHOR: foo -/\ndef y := 2" "blockComment" " ANCHOR: foo "
