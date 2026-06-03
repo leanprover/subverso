@@ -643,9 +643,9 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
         pure (sigStr, sig, ci)
     if doCollect then return (sigStr, some (sig, ci)) else return (sigStr, none)
 
-  -- Pretty-print a variable's type. Returns (tyString, sigOrType?) — the second projection is a
-  -- pretty printed type for later use by identKind
-  let ppVarType : m (String × Option (FormatWithInfos × ContextInfo)) := do
+  -- Pretty-print the inferred type of `expr` (a variable, or any expression whose kind is otherwise
+  -- unknown).
+  let ppTermType : m (String × Option (FormatWithInfos × ContextInfo)) := do
     try
       if doCollect then
         let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
@@ -665,7 +665,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
       if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
         Compat.refIdentCase y
           (onFVar := fun x => do
-            let (tyStr, prettySig) ← ppVarType
+            let (tyStr, prettySig) ← ppTermType
             if let some localDecl := lctx.find? x then
               if localDecl.isAuxDecl then
                 let e ← runMeta <| Meta.ppExpr expr
@@ -680,7 +680,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
             let docs ← findDocString? (← getEnv) x
             return some (.const x sig docs false none, prettySig))
       else
-        let (tyStr, prettySig) ← ppVarType
+        let (tyStr, prettySig) ← ppTermType
         return some (.var id tyStr none, prettySig)
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
@@ -697,9 +697,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
       findKind e
     | _other =>
       if allowUnknownTyped then
-        -- Pretty-print the type, collecting reflowable format data when requested (e.g. a numeral
-        -- of type `Fin 5`). The format is carried in the second projection for the caller to resolve.
-        let (tyStr, prettySig) ← ppVarType
+        let (tyStr, prettySig) ← ppTermType
         if tyStr.isEmpty then return none else return some (.withType tyStr, prettySig)
       else
         return none
