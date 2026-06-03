@@ -404,12 +404,6 @@ def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal 
 
 /--
 Whether a currently-open (enclosing) tactic region ends at `endPos` and already shows `info`.
-
-A new region with the same goals *and* the same closing position would just nest a duplicate at the
-tail of that enclosing region, so it should be dropped. The classic case is the closing `]` of a
-`rw`: it ends where the whole-`rw` region ends and shows the same final state. The closing-position
-check is what keeps this from suppressing a genuine *intermediate* state that merely happens to equal
-the final one (e.g. the last rewrite step of `rewrite [h₁, h₂]`, which ends before the `]`).
 -/
 def Output.tailDuplicatesOpen
     (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (endPos : Compat.String.Pos) : Bool :=
@@ -520,8 +514,7 @@ structure HighlightState where
   output : List Output
   /-- Messages being displayed -/
   inMessages : List MessageBundle
-  /-- Currently-open tactic regions, innermost first (a stack, so `rw`/`rewrite` can nest a
-  per-rule state inside the whole-invocation state). -/
+  /-- A stack of currently-open tactic regions. -/
   inTactic : List OpenTactic
   /-- Last source position added to the output -/
   lastPos? : Option Compat.String.Pos := none
