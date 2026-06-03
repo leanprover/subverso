@@ -708,7 +708,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
         let docs? ← findDocString? (← getEnv) k
         return some (.sort docs?, none)
       else return some (.sort none, none)
-    | Expr.lit (.strVal s) => return some (.str s, none)
+    | Expr.lit (.strVal s) => return some (.str (some s) false, none)
     | Expr.mdata _ e =>
       findKind e
     | _other =>
@@ -1978,7 +1978,7 @@ partial def highlight'
     | .node _ `str #[.atom i string] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"String") do
       if let some s := Syntax.decodeStrLit string then
-        emitToken stx i ⟨.str s, string⟩
+        emitToken stx i ⟨.str (some s) false, string⟩
       else
         emitToken stx i ⟨.unknown, string⟩
     | .node _ `char #[.atom i c] =>
@@ -2040,7 +2040,27 @@ partial def highlight'
     | .node .none `hygieneInfo #[.ident (.original leading pos trailing endPos) s .anonymous ..] =>
       emitString leading.startPos trailing.stopPos (leading.toString ++ s.toString ++ trailing.toString)
     | stx@(.node _ k children) =>
-      if (`Lean.Doc.Syntax).isPrefixOf k then
+      -- `interpolatedStrKind`/`interpolatedStrLitKind` are abbreviations whose *values* are the node
+      -- kinds, so they're compared with `==` rather than matched as name-literal patterns.
+      if k == interpolatedStrKind then
+        withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Interpolated string") do
+        -- An interpolated string (e.g. the argument of `s!"abc {x}"`) is a sequence of literal
+        -- chunks (`interpolatedStrLitKind` atoms, each including its enclosing `"`/`{`/`}`
+        -- delimiters) interleaved with the interpolated terms. So in `s!"foo {bar} baz"` the chunk
+        -- tokens are `"foo {` and `} baz"`. Highlight each chunk as a string literal flagged as an
+        -- interpolation; the per-chunk decoded value is meaningless, so the kind carries `none`. The
+        -- interpolated terms (and the inner whitespace, which is their trivia) are highlighted
+        -- recursively.
+        for child in children do
+          match child with
+          | .node _ k' #[.atom i str] =>
+            if k' == interpolatedStrLitKind then
+              emitToken child i ⟨.str none true, str⟩
+            else
+              highlight' trees child tactics
+          | _ =>
+            highlight' trees child tactics
+      else if (`Lean.Doc.Syntax).isPrefixOf k then
         if let some endPos := Compat.getTrailingTailPos? stx then
           fillMissingSourceUpTo endPos
         else

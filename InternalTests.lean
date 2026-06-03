@@ -575,6 +575,41 @@ elab "#assertKindRich" inp:str content:str kind:str : command => do
 #assertCharValue "def c := 'a'" "a"
 #assertCharValue "def c := '\\n'" "\n"
 
+open Lean Elab Command in
+/--
+Checks that the token with `content` is a `.str` whose `interpolation` flag equals `expected`
+(`"true"`/`"false"`).
+-/
+elab "#assertStrInterpolation" inp:str content:str expected:str : command => do
+  let hl ← highlightFromString inp.getString
+  let toks := hl.tokenList.filter (·.content == content.getString)
+  if toks.isEmpty then throwError m!"no token with content {repr content.getString}"
+  let want := expected.getString == "true"
+  for t in toks do
+    match t.kind with
+    | .str _ interp =>
+      if interp != want then
+        throwError m!"string {repr content.getString} has interpolation {interp}, expected {want}"
+    | _ => throwError m!"token {repr content.getString} is not a string (is {t.kind.name})"
+
+-- A complete string literal is a `.str` that is *not* part of an interpolation.
+#assertKind "def s := \"hello\"" "\"hello\"" "str"
+#assertStrInterpolation "def s := \"hello\"" "\"hello\"" "false"
+
+-- An interpolated string (`s!"…"`) is split into literal chunks and interpolated terms. Each chunk
+-- is a `.str` flagged as an interpolation, and runs from `"`/`}` through the following `{`/`"`
+-- (inclusive) — the inner whitespace around `{1}` is the term's trivia, not part of either chunk.
+#assertKind "def s := s!\"foo {1} baz\"" "\"foo {" "str"
+#assertKind "def s := s!\"foo {1} baz\"" "} baz\"" "str"
+#assertStrInterpolation "def s := s!\"foo {1} baz\"" "\"foo {" "true"
+#assertStrInterpolation "def s := s!\"foo {1} baz\"" "} baz\"" "true"
+-- The interpolated term itself is highlighted normally (here a numeral).
+#assertKind "def s := s!\"foo {1} baz\"" "1" "num"
+-- An interpolated string with no `{}` is still a single interpolation chunk.
+#assertStrInterpolation "def s := s!\"plain\"" "\"plain\"" "true"
+-- Round-trips byte-for-byte through the includes-unparsed path.
+#evalHighlight' "def s := s!\"foo {1} baz\"" "def s := s!\"foo {1} baz\""
+
 -- Comments are split into delimiter tokens (`--`, `/-`, `-/`) and body text, and the surrounding
 -- source still round-trips byte-for-byte. A trailing line comment lives in trailing trivia; a
 -- block comment in leading trivia of an inner token. Both paths are exercised.
@@ -794,7 +829,7 @@ open Lean Elab Command in
   (([Token.Kind.num (some "Nat") none, .num none none, .char 'a', .lineComment, .blockComment,
      .commentDelim, .operator (some `foo) (some "foo-1") (some "d"), .bracket none none none,
      .separator none none none, .delim (some `foo) (some "foo-1") (some "d"),
-     .wildcard "Nat" none, .wildcard "" (some "[]")]
+     .wildcard "Nat" none, .wildcard "" (some "[]"), .str (some "x") false, .str none true]
      : List Token.Kind).all (fun k => Token.jsonRoundtrips ⟨k, "x"⟩))
 
 -- The new `identKind`-first atom step: a nullary notation atom (`ℕ`) resolves span-exact to its

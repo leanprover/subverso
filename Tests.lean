@@ -208,66 +208,80 @@ def desiredProofs : List (String × String) := [
   ("done", "")
 ]
 
-def desiredAltProofs : List (String × String × String) := [
+-- The third component lists the acceptable goal states. More than one is allowed because the case
+-- tag emitted for the goal of e.g. `apply Or.inr` changed across Lean versions: older toolchains
+-- tag it `inl.h` (after the constructor's field), while starting with version 4.31.0-rc1 they tag
+-- it just `inl`.
+def desiredAltProofs : List (String × String × List String) := [
   ("A",
    "| inl hp =>",
-   "case inl
+   ["case inl
 p : Prop
 q : Prop
 hp : p
-⊢ q ∨ p"),
+⊢ q ∨ p"]),
   ("A'",
    "| inl hp =>",
-   "case inl
+   ["case inl
 p : Prop
 q : Prop
 hp : p
-⊢ q ∨ p"),
+⊢ q ∨ p"]),
   ("A''",
    "| inl hp =>",
-   "case inl
+   ["case inl
 p : Prop
 q : Prop
 hp : p
-⊢ q ∨ p"),
+⊢ q ∨ p"]),
   ("A'''",
    "apply Or.inr",
-   "case inl.h
+   ["case inl.h
 p : Prop
 q : Prop
 hp : p
-⊢ p"),
+⊢ p",
+    "case inl
+p : Prop
+q : Prop
+hp : p
+⊢ p"]),
   ("B",
    "| inr hq =>",
-   "case inr
+   ["case inr
 p : Prop
 q : Prop
 hq : q
-⊢ q ∨ p"),
+⊢ q ∨ p"]),
   ("B'",
    "| inr hq =>",
-   "case inr
+   ["case inr
 p : Prop
 q : Prop
 hq : q
-⊢ q ∨ p"),
+⊢ q ∨ p"]),
   ("B''",
    "| inr hq =>",
-   "case inr
+   ["case inr
 p : Prop
 q : Prop
 hq : q
-⊢ q ∨ p"),
+⊢ q ∨ p"]),
   ("B'''",
    "apply Or.inl",
-   "case inr.h
+   ["case inr.h
 p : Prop
 q : Prop
 hq : q
-⊢ q"),
+⊢ q",
+    "case inr
+p : Prop
+q : Prop
+hq : q
+⊢ q"]),
   ("Arr",
    "=>",
-   "case inr
+   ["case inr
 p : Prop
 q : Prop
 hq : q
@@ -276,10 +290,10 @@ case inl
 p : Prop
 q : Prop
 hp : p
-⊢ q ∨ p"),
+⊢ q ∨ p"]),
   ("Two",
    "simp [*]",
-   "")
+   [""])
 ]
 
 partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool) : IO Unit := do
@@ -407,15 +421,15 @@ def main : IO UInt32 := do
       | .ok {code:=_, anchors:=_, proofStates} =>
         let mut errors := 0
         IO.println s!"There are {proofStates.size} proof states to check"
-        for (name, code, state) in desiredAltProofs do
+        for (name, code, states) in desiredAltProofs do
           if let some hl := proofStates.get? name then
             let .tactics goals _ _ hl := hl
               | IO.eprintln s!"Proof state '{name}' not a proof state: {repr hl}"; errors := errors + 1
             if hl.toString != code then
               IO.eprintln s!"Proof state '{name}': expected {repr code} but got {repr hl.toString}"; errors := errors + 1
             let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
-            if state != goalString then
-              IO.eprintln s!"Proof state '{name}': expected {repr state} but got {repr goalString}"; errors := errors + 1
+            unless states.contains goalString do
+              IO.eprintln s!"Proof state '{name}': expected one of {repr states} but got {repr goalString}"; errors := errors + 1
           else
             IO.eprintln "Not found: proof state '{name}'"; errors := errors + 1
         if errors > 0 then
