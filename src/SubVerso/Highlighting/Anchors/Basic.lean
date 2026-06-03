@@ -290,21 +290,21 @@ structure AnchoredExamples where
   -/
   proofStates : HashMap String Highlighted
 
-/-- The anchor/proof-state state updated by applying a directive (see `applyDirective`). -/
-private structure DirectiveUpdate where
+/-- The anchor/proof-state state updated by applying a magic comment (see `applyMagicComment`). -/
+private structure MagicCommentUpdate where
   openAnchors : HashMap String Hl
   anchorOut : HashMap String Highlighted
   tacOut : HashMap String Highlighted
 
 /--
-If `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` directive, applies it and returns the updated
-anchor and proof-state maps; if it is not a directive, returns `none` (the caller keeps the content).
+If `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` magic comment, applies it and returns the
+updated anchor and proof-state maps; if it is not one, returns `none` (the caller keeps the content).
 `preText` is the document the proof-state caret refers into (its last line is the one pointed at).
 -/
-private def applyDirective
+private def applyMagicComment
     (line : String) (preText : Hl) (ctx : Array HlCtx) (textAnchors proofStates : Bool)
     (openAnchors : HashMap String Hl) (anchorOut tacOut : HashMap String Highlighted) :
-    Except String (Option DirectiveUpdate) := do
+    Except String (Option MagicCommentUpdate) := do
   match guard textAnchors *> (anchor? line |>.toOption) with
   | none =>
     match guard proofStates *> (proofState? line |>.toOption) with
@@ -323,8 +323,8 @@ private def applyDirective
       | throw s!"Anchor not open: {a}"
     return some { openAnchors := openAnchors.erase a, anchorOut := anchorOut.insert a hl.toHighlighted, tacOut }
 
-/-- Whether `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` directive comment. -/
-private def isDirectiveLine (textAnchors proofStates : Bool) (line : String) : Bool :=
+/-- Whether `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` magic comment. -/
+private def isMagicCommentLine (textAnchors proofStates : Bool) (line : String) : Bool :=
   (textAnchors && (anchor? line |>.toOption).isSome) ||
     (proofStates && (proofState? line |>.toOption).isSome)
 
@@ -336,18 +336,13 @@ private def lineStartAfter (atLineStart : Bool) (s : String) : Bool :=
     else false                      -- any other character means content has appeared on the line
 
 /--
-Replaces *directive* comments — tokenized as a `commentDelim` (`--`) followed by a `lineComment` —
-with a single `.text` node holding the reconstructed comment text. After `normHl` merges that text
-with the surrounding whitespace, the line-based directive handling in `anchored` consumes the whole
-directive line (indentation and trailing newline included) exactly as it did before comments were
-tokenized.
+Replaces magic comments with a single `.text` node holding the reconstructed comment text. After
+`normHl` merges that text with the surrounding whitespace, the line-based magic-comment handling
+in `anchored` consumes the whole magic-comment line (indentation and trailing newline included).
 
-Only comments that *begin their line* (preceded by whitespace alone) are eligible, so a trailing
-comment such as `def x := 1 -- ANCHOR: foo` — which is not a directive line — is left as highlighted
-tokens, keeping its styling. The boolean threaded through tracks whether we are at the start of a
-line.
+Only comments that *begin their line* are eligible.
 -/
-private partial def inlineDirectiveCommentsAux (textAnchors proofStates : Bool) (atLineStart : Bool) :
+private partial def inlineMagicCommentsAux (textAnchors proofStates : Bool) (atLineStart : Bool) :
     Highlighted → Highlighted × Bool
   | .text s => (.text s, lineStartAfter atLineStart s)
   | .unparsed s => (.unparsed s, lineStartAfter atLineStart s)
@@ -357,32 +352,32 @@ private partial def inlineDirectiveCommentsAux (textAnchors proofStates : Bool) 
     let (xs', a) := goSeq atLineStart xs.toList
     (.seq xs'.toArray, a)
   | .span info x =>
-    let (x', a) := inlineDirectiveCommentsAux textAnchors proofStates atLineStart x
+    let (x', a) := inlineMagicCommentsAux textAnchors proofStates atLineStart x
     (.span info x', a)
   | .tactics info s e x =>
-    let (x', a) := inlineDirectiveCommentsAux textAnchors proofStates atLineStart x
+    let (x', a) := inlineMagicCommentsAux textAnchors proofStates atLineStart x
     (.tactics info s e x', a)
 where
   goSeq (atLineStart : Bool) : List Highlighted → List Highlighted × Bool
     | .token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: rest =>
-      if atLineStart && isDirectiveLine textAnchors proofStates (delim ++ body) then
+      if atLineStart && isMagicCommentLine textAnchors proofStates (delim ++ body) then
         let (rest', a) := goSeq false rest
         (.text (delim ++ body) :: rest', a)
       else
         let (rest', a) := goSeq false rest
         (.token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: rest', a)
     | x :: rest =>
-      let (x', a) := inlineDirectiveCommentsAux textAnchors proofStates atLineStart x
+      let (x', a) := inlineMagicCommentsAux textAnchors proofStates atLineStart x
       let (rest', a') := goSeq a rest
       (x' :: rest', a')
     | [] => ([], atLineStart)
 
-/-- Top-level entry: see `inlineDirectiveCommentsAux`. The document starts at the start of a line. -/
-private def inlineDirectiveComments (textAnchors proofStates : Bool) (hl : Highlighted) : Highlighted :=
-  (inlineDirectiveCommentsAux textAnchors proofStates true hl).1
+/-- Top-level entry: see `inlineMagicCommentsAux`. The document starts at the start of a line. -/
+private def inlineMagicComments (textAnchors proofStates : Bool) (hl : Highlighted) : Highlighted :=
+  (inlineMagicCommentsAux textAnchors proofStates true hl).1
 
 /--
-Extracts code from rendered examples based on comment directives.
+Extracts code from rendered examples based on magic comments.
 
 There are two kinds of extracted code: anchors and named proof states. Anchors name one or more
 lines of code:
@@ -415,11 +410,11 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
   let mut tacOut : HashMap String Highlighted := {}
   let mut openAnchors : HashMap String Hl := {}
   let mut doc : Hl := .empty
-  -- Directive comments (`-- ANCHOR: …`, `-- PROOF_STATE: …`) are tokenized as
+  -- Magic comments (`-- ANCHOR: …`, `-- PROOF_STATE: …`) are tokenized as
   -- `commentDelim`/`lineComment` rather than plain `.text`. Turn just those back into a single
-  -- `.text` node so the line-based directive handling below consumes the whole directive line
-  -- (after `normHl` re-merges the surrounding whitespace); non-directive comments stay as tokens.
-  let mut todo := [some (normHl (inlineDirectiveComments textAnchors proofStates (normHl hl)))]
+  -- `.text` node so the line-based magic-comment handling below consumes the whole magic-comment
+  -- line (after `normHl` re-merges the surrounding whitespace); ordinary comments stay as tokens.
+  let mut todo := [some (normHl (inlineMagicComments textAnchors proofStates (normHl hl)))]
   let mut ctx : Array HlCtx := #[]
   repeat
     match todo with
@@ -437,7 +432,7 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
       todo := hs
       let lines := Internal.getLines s
       for line in lines do
-        match ← applyDirective line preText ctx textAnchors proofStates openAnchors anchorOut tacOut with
+        match ← applyMagicComment line preText ctx textAnchors proofStates openAnchors anchorOut tacOut with
         | none =>
           openAnchors := openAnchors.map fun _ hl => hl ++ line
           doc := doc ++ line
