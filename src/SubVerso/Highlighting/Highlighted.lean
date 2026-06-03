@@ -87,7 +87,11 @@ inductive Token.Kind where
   A wildcard or hole `_` in term, pattern, or binder position.
   -/
   |  wildcard (type : String) (typeFormat : Option String)
-  | str (string : String)
+  /--
+  A string literal. `string` is the decoded value of the string, if available. `interpolation` is
+  `true` when the string literal is part of an interpolated string.
+  -/
+  | str (string : Option String) (interpolation : Bool)
   | option (name : Name) (declName : Name) (docs : Option String)
   | docComment
   | sort (doc? : Option String)
@@ -153,7 +157,7 @@ instance : Quote Token.Kind where
     | .option n d docs => mkCApp ``option #[quote n, quote d, quote docs]
     | .var (.mk n) type tyFmt => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type, quote tyFmt]
     | .wildcard type tyFmt => mkCApp ``wildcard #[quote type, quote tyFmt]
-    | .str s => mkCApp ``str #[quote s]
+    | .str s i => mkCApp ``str #[quote s, quote i]
     | .docComment => mkCApp ``docComment #[]
     | .sort doc? => mkCApp ``sort #[quote doc?]
     | .levelVar n => mkCApp ``levelVar #[quote n]
@@ -188,6 +192,7 @@ The canonical CSS class for a token kind.
 def Token.Kind.cssClass : Token.Kind → String
   | .var .. => "var"
   | .wildcard .. => "wildcard"
+  | .str _ true => "literal string interpolation"
   | .str .. => "literal string"
   | .sort .. => "sort"
   | .const .. => "const"
