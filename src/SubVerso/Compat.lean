@@ -389,6 +389,32 @@ abbrev String.trimRight : String → String := %first_succeeding -warning [
   @_root_.String.trimRight
 ]
 
+-- `Token.Kind` carries a decoded `Char` for character literals, so its derived
+-- `ToJson`/`FromJson`/`Hashable` and its `Quote` instance need the corresponding `Char` instances.
+-- Core's coverage of these varies across Lean versions (older Leans lack `Hashable Char` and a
+-- term-kind `Quote Char`; no supported version ships `ToJson`/`FromJson Char`), so provide each only
+-- when it can't already be synthesized, never duplicating an instance on a Lean that has it.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let needed (cls : TSyntax `term) : CommandElabM Bool := liftTermElabM do
+    match ← Meta.trySynthInstance (← Term.elabTerm cls none) with
+    | .some _ => pure false
+    | _ => pure true
+  if ← needed (← `(ToJson Char)) then
+    elabCommand (← `(instance : ToJson Char where toJson c := toJson c.toString))
+  if ← needed (← `(FromJson Char)) then
+    elabCommand (← `(instance : FromJson Char where
+      fromJson? j := do
+        let s ← fromJson? (α := String) j
+        if s.length = 1 then return String.Pos.get s 0
+        else .error "expected a single-character string for Char"))
+  if ← needed (← `(Hashable Char)) then
+    elabCommand (← `(instance : Hashable Char where hash c := hash c.val))
+  if ← needed (← `(Quote Char)) then
+    -- `Syntax.mkCharLit` doesn't exist on the oldest Leans, so quote as `Char.ofNat <code>`, which
+    -- elaborates back to the character. (Used only to quote highlighted code into terms.)
+    elabCommand (← `(instance : Quote Char where quote c := Syntax.mkCApp ``Char.ofNat #[quote c.toNat]))
+
 abbrev String.take : String → Nat → String :=
   %first_succeeding -warning [
     fun s n => (_root_.String.take s n).copy,

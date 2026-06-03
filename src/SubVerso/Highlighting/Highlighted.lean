@@ -17,6 +17,9 @@ open Lean
 
 namespace SubVerso.Highlighting
 
+-- The `Char` instances required by `Token.Kind`'s derived `ToJson`/`FromJson`/`Hashable` and `Quote`
+-- (for the decoded `Char` of character literals) are provided, where core lacks them, by `Compat`.
+
 deriving instance Repr for Std.Format.FlattenBehavior
 deriving instance Repr for Std.Format
 
@@ -69,11 +72,21 @@ where
 inductive Token.Kind where
   | /-- `occurrence` is a unique identifier that unites the various keyword tokens from a given production -/
     keyword (name : Option Name) (occurrence : Option String) (docs : Option String)
+  /--
+  A built-in syntactic delimiter such as `:=`, `=>`, `←`, `@`, `:`, or `|`. Like `keyword` it
+  carries the enclosing production's name, occurrence tag, and docs, but some themes style these
+  differently.
+  -/
+  | delim (name : Option Name) (occurrence : Option String) (docs : Option String)
   | const (name : Name) (signature : String) (docs : Option String) (isDef : Bool)
       (signatureFormat : Option String)
   | anonCtor (name : Name) (signature : String) (docs : Option String)
       (signatureFormat : Option String)
   | var (name : FVarId) (type : String) (typeFormat : Option String)
+  /--
+  A wildcard or hole `_` in term, pattern, or binder position.
+  -/
+  |  wildcard (type : String) (typeFormat : Option String)
   | str (string : String)
   | option (name : Name) (declName : Name) (docs : Option String)
   | docComment
@@ -85,6 +98,31 @@ inductive Token.Kind where
   | moduleName (name : Name)
   | /-- The token represents some otherwise-undescribed Expr whose type is known -/
     withType (type : String)
+  | /-- A numeric literal; keeps the optional inferred type (and its format) for hover -/
+    num (type : Option String) (typeFormat : Option String)
+  | /-- A character literal, e.g. `'c'`; carries the decoded character -/
+    char (char : Char)
+  | /-- The body text of a line comment (the part after `--`) -/
+    lineComment
+  | /-- The body text of a block comment (the part between `/-` and `-/`, non-doc) -/
+    blockComment
+  | /-- A comment delimiter: a `--` opener, or a `/-` / `-/` block-comment opener/closer -/
+    commentDelim
+  | /--
+    A symbolic operator atom, such as `+`, `::`, or `>>=`. Like `keyword`, it carries the
+    enclosing notation's name, a per-production occurrence tag, and its docstring.
+    -/
+    operator (name : Option Name) (occurrence : Option String) (docs : Option String)
+  | /--
+    A paired delimiter atom, such as `(` `)` `[` `]` `{` `}` `⟨` or `⟩`. Carries the enclosing
+    notation's name, a per-production occurrence tag, and its docstring.
+    -/
+    bracket (name : Option Name) (occurrence : Option String) (docs : Option String)
+  | /--
+    An item separator atom, such as `,` or `;`. Carries the enclosing notation's name, a
+    per-production occurrence tag, and its docstring.
+    -/
+    separator (name : Option Name) (occurrence : Option String) (docs : Option String)
   | unknown
 deriving Repr, Inhabited, BEq, Hashable, ToJson, FromJson
 
@@ -109,10 +147,12 @@ open Syntax (mkCApp) in
 instance : Quote Token.Kind where
   quote
     | .keyword n occ docs => mkCApp ``keyword #[quote n, quote occ, quote docs]
+    | .delim n occ docs => mkCApp ``delim #[quote n, quote occ, quote docs]
     | .const n sig docs isDef sigFmt => mkCApp ``const #[quote n, quote sig, quote docs, quote isDef, quote sigFmt]
     | .anonCtor n sig docs sigFmt => mkCApp ``anonCtor #[quote n, quote sig, quote docs, quote sigFmt]
     | .option n d docs => mkCApp ``option #[quote n, quote d, quote docs]
     | .var (.mk n) type tyFmt => mkCApp ``var #[mkCApp ``FVarId.mk #[quote n], quote type, quote tyFmt]
+    | .wildcard type tyFmt => mkCApp ``wildcard #[quote type, quote tyFmt]
     | .str s => mkCApp ``str #[quote s]
     | .docComment => mkCApp ``docComment #[]
     | .sort doc? => mkCApp ``sort #[quote doc?]
@@ -121,6 +161,14 @@ instance : Quote Token.Kind where
     | .moduleName m => mkCApp ``moduleName #[quote m]
     | .levelOp n => mkCApp ``levelOp #[quote n]
     | .withType t => mkCApp ``withType #[quote t]
+    | .num t tyFmt => mkCApp ``num #[quote t, quote tyFmt]
+    | .char c => mkCApp ``char #[quote c]
+    | .lineComment => mkCApp ``lineComment #[]
+    | .blockComment => mkCApp ``blockComment #[]
+    | .commentDelim => mkCApp ``commentDelim #[]
+    | .operator n occ docs => mkCApp ``operator #[quote n, quote occ, quote docs]
+    | .bracket n occ docs => mkCApp ``bracket #[quote n, quote occ, quote docs]
+    | .separator n occ docs => mkCApp ``separator #[quote n, quote occ, quote docs]
     | .unknown => mkCApp ``unknown #[]
 
 structure Token where
@@ -139,13 +187,23 @@ The canonical CSS class for a token kind.
 -/
 def Token.Kind.cssClass : Token.Kind → String
   | .var .. => "var"
+  | .wildcard .. => "wildcard"
   | .str .. => "literal string"
   | .sort .. => "sort"
   | .const .. => "const"
   | .option .. => "option"
   | .docComment => "doc-comment"
   | .keyword .. => "keyword"
-  | .anonCtor .. => "unknown"
+  | .delim .. => "built-in delim"
+  | .anonCtor .. => "const anon-ctor"
+  | .num .. => "literal number"
+  | .char .. => "literal char"
+  | .lineComment => "comment line"
+  | .blockComment => "comment block"
+  | .commentDelim => "comment delimiter"
+  | .operator .. => "punctuation operator"
+  | .bracket .. => "punctuation bracket"
+  | .separator .. => "punctuation separator"
   | .unknown => "unknown"
   | .withType .. => "typed"
   | .levelConst .. => "level-const"
@@ -160,7 +218,11 @@ def Token.Kind.binding : Token.Kind → String
   | .const n .. | .anonCtor n .. => "const-" ++ toString n
   | .var ⟨v⟩ .. => "var-" ++ toString v
   | .option n _ _ => "option-" ++ toString n
-  | .keyword _ (some occ) _ => "kw-occ-" ++ toString occ
+  | .keyword _ (some occ) _
+  | .delim _ (some occ) _
+  | .operator _ (some occ) _
+  | .bracket _ (some occ) _
+  | .separator _ (some occ) _ => "kw-occ-" ++ toString occ
   | .sort (some d) => s!"sort-{hash d}"
   | .levelVar x => s!"level-var-{x}"
   | .levelConst i => s!"level-const-{i}"

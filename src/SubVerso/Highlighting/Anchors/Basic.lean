@@ -290,8 +290,94 @@ structure AnchoredExamples where
   -/
   proofStates : HashMap String Highlighted
 
+/-- The anchor/proof-state state updated by applying a magic comment (see `applyMagicComment`). -/
+private structure MagicCommentUpdate where
+  openAnchors : HashMap String Hl
+  anchorOut : HashMap String Highlighted
+  tacOut : HashMap String Highlighted
+
 /--
-Extracts code from rendered examples based on comment directives.
+If `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` magic comment, applies it and returns the
+updated anchor and proof-state maps; if it is not one, returns `none` (the caller keeps the content).
+`preText` is the document the proof-state caret refers into (its last line is the one pointed at).
+-/
+private def applyMagicComment
+    (line : String) (preText : Hl) (ctx : Array HlCtx) (textAnchors proofStates : Bool)
+    (openAnchors : HashMap String Hl) (anchorOut tacOut : HashMap String Highlighted) :
+    Except String (Option MagicCommentUpdate) := do
+  match guard textAnchors *> (anchor? line |>.toOption) with
+  | none =>
+    match guard proofStates *> (proofState? line |>.toOption) with
+    | none => return none
+    | some (p, c) =>
+      let some t := preText.tacticsAt? c
+        | throw s!"No proof state at column {c} for '{p}'"
+      if tacOut.get? p |>.isSome then throw s!"Proof state already found: '{p}'"
+      return some { openAnchors, anchorOut, tacOut := tacOut.insert p t }
+  | some (a, true) =>
+    if openAnchors.contains a then throw s!"Anchor already opened: {a}"
+    if anchorOut.contains a then throw s!"Anchor already used: {a}"
+    return some { openAnchors := openAnchors.insert a { here := .empty, context := ctx.map (.empty, ·) }, anchorOut, tacOut }
+  | some (a, false) =>
+    let some hl := openAnchors.get? a
+      | throw s!"Anchor not open: {a}"
+    return some { openAnchors := openAnchors.erase a, anchorOut := anchorOut.insert a hl.toHighlighted, tacOut }
+
+/-- Whether `line` is an `ANCHOR:`/`ANCHOR_END:`/`PROOF_STATE:` magic comment. -/
+private def isMagicCommentLine (textAnchors proofStates : Bool) (line : String) : Bool :=
+  (textAnchors && (anchor? line |>.toOption).isSome) ||
+    (proofStates && (proofState? line |>.toOption).isSome)
+
+/-- Whether, after emitting `s`, we are at the start of a line (only whitespace since a newline). -/
+private def lineStartAfter (atLineStart : Bool) (s : String) : Bool :=
+  s.foldl (init := atLineStart) fun atStart c =>
+    if c == '\n' then true          -- a newline begins a fresh line
+    else if c.isWhitespace then atStart   -- whitespace keeps the current line-start status
+    else false                      -- any other character means content has appeared on the line
+
+/--
+Replaces magic comments with a single `.text` node holding the reconstructed comment text. After
+`normHl` merges that text with the surrounding whitespace, the line-based magic-comment handling
+in `anchored` consumes the whole magic-comment line (indentation and trailing newline included).
+
+Only comments that *begin their line* are eligible.
+-/
+private partial def inlineMagicCommentsAux (textAnchors proofStates : Bool) (atLineStart : Bool) :
+    Highlighted → Highlighted × Bool
+  | .text s => (.text s, lineStartAfter atLineStart s)
+  | .unparsed s => (.unparsed s, lineStartAfter atLineStart s)
+  | .point k i => (.point k i, atLineStart)
+  | .token t => (.token t, false)
+  | .seq xs =>
+    let (xs', a) := goSeq atLineStart xs.toList
+    (.seq xs'.toArray, a)
+  | .span info x =>
+    let (x', a) := inlineMagicCommentsAux textAnchors proofStates atLineStart x
+    (.span info x', a)
+  | .tactics info s e x =>
+    let (x', a) := inlineMagicCommentsAux textAnchors proofStates atLineStart x
+    (.tactics info s e x', a)
+where
+  goSeq (atLineStart : Bool) : List Highlighted → List Highlighted × Bool
+    | .token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: rest =>
+      if atLineStart && isMagicCommentLine textAnchors proofStates (delim ++ body) then
+        let (rest', a) := goSeq false rest
+        (.text (delim ++ body) :: rest', a)
+      else
+        let (rest', a) := goSeq false rest
+        (.token ⟨.commentDelim, delim⟩ :: .token ⟨.lineComment, body⟩ :: rest', a)
+    | x :: rest =>
+      let (x', a) := inlineMagicCommentsAux textAnchors proofStates atLineStart x
+      let (rest', a') := goSeq a rest
+      (x' :: rest', a')
+    | [] => ([], atLineStart)
+
+/-- Top-level entry: see `inlineMagicCommentsAux`. The document starts at the start of a line. -/
+private def inlineMagicComments (textAnchors proofStates : Bool) (hl : Highlighted) : Highlighted :=
+  (inlineMagicCommentsAux textAnchors proofStates true hl).1
+
+/--
+Extracts code from rendered examples based on magic comments.
 
 There are two kinds of extracted code: anchors and named proof states. Anchors name one or more
 lines of code:
@@ -324,7 +410,11 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
   let mut tacOut : HashMap String Highlighted := {}
   let mut openAnchors : HashMap String Hl := {}
   let mut doc : Hl := .empty
-  let mut todo := [some (normHl hl)]
+  -- Magic comments (`-- ANCHOR: …`, `-- PROOF_STATE: …`) are tokenized as
+  -- `commentDelim`/`lineComment` rather than plain `.text`. Turn just those back into a single
+  -- `.text` node so the line-based magic-comment handling below consumes the whole magic-comment
+  -- line (after `normHl` re-merges the surrounding whitespace); ordinary comments stay as tokens.
+  let mut todo := [some (normHl (inlineMagicComments textAnchors proofStates (normHl hl)))]
   let mut ctx : Array HlCtx := #[]
   repeat
     match todo with
@@ -342,30 +432,11 @@ def anchored (hl : Highlighted) (textAnchors := true) (proofStates := true) : Ex
       todo := hs
       let lines := Internal.getLines s
       for line in lines do
-        match guard textAnchors *> (anchor? line |>.toOption) with
+        match ← applyMagicComment line preText ctx textAnchors proofStates openAnchors anchorOut tacOut with
         | none =>
-          match guard proofStates *> (proofState? line |>.toOption) with
-          | none =>
-            openAnchors := openAnchors.map fun _ hl => hl ++ line
-            doc := doc ++ line
-          | some (p, c) =>
-            if let some t := preText.tacticsAt? c then
-              if tacOut.get? p |>.isSome then throw s!"Proof state already found: '{p}'"
-              tacOut := tacOut.insert p t
-            else
-              throw s!"No proof state at column {c} for '{p}'"
-        | some (a, true) =>
-          if openAnchors.contains a then throw s!"Anchor already opened: {a}"
-          if anchorOut.contains a then throw s!"Anchor already used: {a}"
-          openAnchors := openAnchors.insert a {
-            here := .empty
-            context := ctx.map (.empty, ·)
-          }
-        | some (a, false) =>
-          if let some hl := openAnchors.get? a then
-            anchorOut := anchorOut.insert a hl.toHighlighted
-            openAnchors := openAnchors.erase a
-          else throw s!"Anchor not open: {a}"
+          openAnchors := openAnchors.map fun _ hl => hl ++ line
+          doc := doc ++ line
+        | some u => openAnchors := u.openAnchors; anchorOut := u.anchorOut; tacOut := u.tacOut
     | some h@(.token ..) :: hs | some h@(.point ..) :: hs | some h@(.unparsed ..) :: hs =>
       todo := hs
       openAnchors := openAnchors.map fun _ hl => hl ++ h
