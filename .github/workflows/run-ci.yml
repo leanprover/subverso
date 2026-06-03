@@ -62,6 +62,30 @@ jobs:
           retry_wait_seconds: 15
           command: elan toolchain install leanprover/lean4:${{ inputs.toolchain }}
 
+      - name: Install demo Lean toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan toolchain install leanprover/lean4:v4.3.0
+
+      - name: Install TOML demo Lean toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan toolchain install leanprover/lean4:v4.8.0
+
+      - name: Install compatibility test Lean toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan toolchain install leanprover/lean4:4.10.0
+
       - name: Lean version
         run: |
           lean --version
