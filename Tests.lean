@@ -51,14 +51,6 @@ def Example.countProofStates (e : Example) : Nat :=
 end Examples
 end SubVerso
 
-def cleanupDemo (demo : System.FilePath := "demo") : IO Unit := do
-  if ← System.FilePath.pathExists (demo / "lake-manifest.json") then
-    IO.FS.removeFile (demo / "lake-manifest.json")
-  if ← System.FilePath.isDir (demo / "lake-packages") then
-    IO.FS.removeDirAll (demo / "lake-packages")
-  if ← System.FilePath.isDir (demo / ".lake") then
-    IO.FS.removeDirAll (demo / ".lake")
-
 open Lean in
 def proofCount (examples : NameMap (NameMap Example)) : Nat := Id.run do
   let mut n := 0
@@ -306,35 +298,112 @@ partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool
     let data ← IO.FS.readBinFile src
     IO.FS.writeBinFile tgt data
 
-def main : IO UInt32 := do
-  IO.println "Setting up demodulized SubVerso for test code"
+/--
+The root under which per-toolchain build directories are created. Each demo project is built in
+`<buildRoot>/<toolchain>/<project>`, so builds under different Lean versions don't share (and
+corrupt) a single `.lake`, and each directory can be cached independently in CI. Overridable via
+`SUBVERSO_TEST_BUILD_ROOT` so CI can point its cache at a known location.
+-/
+def buildRoot : IO System.FilePath := do
+  pure <| (← IO.getEnv "SUBVERSO_TEST_BUILD_ROOT").getD ".builds"
 
-  let demoDirs : List System.FilePath := ["demo", "demo-toml", "small-tests"]
-  for dir in demoDirs do
-    let srcDir := dir / "no-mod"
-    let manifest := dir / "lake-manifest.json"
-    -- First, delete potentially stale info. This doesn't matter for CI, but makes local builds reliable.
-    if ← srcDir.pathExists then
-      IO.FS.removeDirAll srcDir
-    if ← manifest.pathExists then
-      IO.FS.removeFile manifest
-    -- Then put the demodulized code where the Lake configs expect it.
-    IO.FS.createDirAll srcDir
-    copyRecursively "." srcDir (fun f => !f.startsWith "." && !(f.startsWith "demo" || f.startsWith "small-tests") && f != "lake-manifest.json")
-    discard <| IO.Process.run {cmd := "python3", args := #["demodulize.py", srcDir.toString]}
+/--
+Turns a toolchain string (e.g. `leanprover/lean4:v4.8.0`) into a safe single path component.
+-/
+def sanitizeToolchain (toolchain : String) : String :=
+  toolchain.map fun c => if c.isAlphanum || c == '.' then c else '-'
 
+/--
+Reads a project's pinned toolchain from its `lean-toolchain` file.
+-/
+def projectToolchain (project : System.FilePath) : IO String := do
+  let f := project / "lean-toolchain"
+  if !(← f.pathExists) then
+    throw <| .userError s!"File {f} doesn't exist, can't determine the project's toolchain"
+  pure <| Compat.String.trim (← IO.FS.readFile f)
+
+/--
+Generates the demodulized SubVerso source tree once, returning its path. This is the path
+dependency (`require subverso from "no-mod"`) shared, by copying, into every per-toolchain build
+directory's `no-mod`. It is regenerated deterministically from the current source on each run, so a
+source change is reflected in the dependency build.
+-/
+def prepareDemodulizedSource : IO System.FilePath := do
+  let src := (← buildRoot) / "no-mod-src"
+  IO.println "Generating demodulized SubVerso source for the test projects"
+  -- Regenerate from scratch so removed source files don't linger.
+  if ← src.pathExists then IO.FS.removeDirAll src
+  IO.FS.createDirAll src
+  copyRecursively "." src
+    (fun f => !f.startsWith "." && !(f.startsWith "demo" || f.startsWith "small-tests") && f != "lake-manifest.json")
+  discard <| IO.Process.run {cmd := "python3", args := #["demodulize.py", src.toString]}
+  pure src
+
+/--
+Prepares a per-toolchain build directory for `project` and returns it. The project's own files are
+refreshed into the directory and the demodulized dependency source is copied into its `no-mod`, but
+neither the project's `.lake` nor `no-mod/.lake` is removed, so a previously-built (e.g.
+cache-restored) directory stays warm and Lake rebuilds incrementally.
+-/
+def prepareProject (project : System.FilePath) (toolchain : String) (demodSrc : System.FilePath) :
+    IO System.FilePath := do
+  let buildDir := (← buildRoot) / sanitizeToolchain toolchain / project
+  IO.FS.createDirAll buildDir
+  -- Refresh the project's own files (lakefile, toolchain, library sources), but never its build
+  -- artifacts or a previously-generated dependency source — those are managed below / kept warm.
+  copyRecursively project buildDir
+    (fun f => f != ".lake" && f != "no-mod" && f != "lake-manifest.json")
+  -- Refresh the path-dependency source in place, leaving any existing `no-mod/.lake` untouched.
+  copyRecursively demodSrc (buildDir / "no-mod") (fun _ => true)
+  pure buildDir
+
+open Lean in
+/-- Loads examples from `project`, building it under `toolchain` in its per-toolchain build dir. -/
+def loadExamplesIn (project : System.FilePath) (toolchain : String) (demodSrc : System.FilePath) :
+    IO (NameMap (NameMap Example)) := do
+  let dir ← prepareProject project toolchain demodSrc
+  loadExamples dir (overrideToolchain := some toolchain)
+
+/-- Loads a module from `project`, building it under `toolchain` in its per-toolchain build dir. -/
+def loadModuleContentIn (project : System.FilePath) (mod : String) (toolchain : String)
+    (demodSrc : System.FilePath) : IO (Array ModuleItem) := do
+  let dir ← prepareProject project toolchain demodSrc
+  loadModuleContent dir.toString mod (overrideToolchain := some toolchain)
+
+/--
+The fixed (Lean-version-independent) demo builds. These don't depend on the toolchain under test, so
+they're identical across every matrix job and are good candidates to build once and cache. Kept as
+named constants so the prebuild phase and the full test run agree on the exact toolchain strings
+(and hence on the build-directory names).
+-/
+def demoToolchain48 : String := "leanprover/lean4:v4.8.0"
+@[inherit_doc demoToolchain48] def demoToolchain410 : String := "leanprover/lean4:4.10.0"
+
+/-- The `(project, toolchain)` pairs whose builds are shared across all matrix jobs. -/
+def fixedTargets : IO (List (System.FilePath × String)) := do
+  pure [
+    ("demo-toml", ← projectToolchain "demo-toml"),
+    ("demo", ← projectToolchain "demo"),
+    ("demo", demoToolchain48),
+    ("demo", demoToolchain410)
+  ]
+
+/--
+Runs the full test suite. `demodSrc` is the demodulized SubVerso source tree (from
+`prepareDemodulizedSource`) that backs every project's `no-mod` path dependency.
+-/
+def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
+  let demoTomlTc ← projectToolchain "demo-toml"
 
   IO.println "Checking that the TOML project will load"
-  cleanupDemo (demo := "demo-toml")
-  let examplesToml ← loadExamples "demo-toml"
+  let examplesToml ← loadExamplesIn "demo-toml" demoTomlTc demodSrc
   if examplesToml.isEmpty then
     IO.eprintln "No examples found"
     return 1
   else IO.println s!"Found {proofCount examplesToml} proofs"
 
   IO.println "Checking anchor test file in TOML project"
-  cleanupDemo (demo := "demo-toml")
-  let anchorMod := (← loadModuleContent "demo-toml" "Anchors").map (·.code) |>.foldl (· ++ ·) (.empty)
+  let anchorMod := (← loadModuleContentIn "demo-toml" "Anchors" demoTomlTc demodSrc).map (·.code) |>.foldl (· ++ ·) (.empty)
   match anchorMod.anchored with
   | .error e => IO.eprintln e; return 1
   | .ok {code:=_, anchors, proofStates} =>
@@ -360,8 +429,7 @@ def main : IO UInt32 := do
         IO.eprintln "Got non-tactic {hl y}"; return 1
 
   IO.println "Checking that the test project generates at least some deserializable JSON with 4.3.0"
-  cleanupDemo
-  let examples ← loadExamples "demo"
+  let examples ← loadExamplesIn "demo" (← projectToolchain "demo") demodSrc
   if examples.isEmpty then
     IO.eprintln "No examples found"
     return 1
@@ -372,8 +440,7 @@ def main : IO UInt32 := do
   IO.println s!"Found {proofCount1} proofs "
 
   IO.println "Checking that the test project generates at least some deserializable JSON with 4.8.0"
-  cleanupDemo
-  let examples' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:v4.8.0")
+  let examples' ← loadExamplesIn "demo" demoToolchain48 demodSrc
   if examples'.isEmpty then
     IO.eprintln "No examples found with later toolchain"
     return 1
@@ -384,8 +451,7 @@ def main : IO UInt32 := do
   IO.println s!"Found {proofCount2} proofs "
 
   IO.println "Checking that the test project generates at least some deserializable JSON with 4.10.0"
-  cleanupDemo
-  let examples'' ← loadExamples "demo" (overrideToolchain := some "leanprover/lean4:4.10.0")
+  let examples'' ← loadExamplesIn "demo" demoToolchain410 demodSrc
   if examples''.isEmpty then
     IO.eprintln "No examples found with later toolchain"
     return 1
@@ -407,12 +473,9 @@ def main : IO UInt32 := do
     IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {Compat.String.trim myToolchain}"
   else
     IO.println "Checking proof states for induction/cases alts"
-    IO.println "Setting up small-tests directory"
-
-    cleanupDemo (demo := "small-tests")
 
     IO.println s!"Loading content from small-tests directory using Lean toolchain {myToolchain}"
-    let items ← loadModuleContent "small-tests" "Small.TacticAlts" (overrideToolchain := some myToolchain)
+    let items ← loadModuleContentIn "small-tests" "Small.TacticAlts" myToolchain demodSrc
     let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
     match content.anchored with
       | .error e =>
@@ -438,3 +501,34 @@ def main : IO UInt32 := do
     IO.println "Proof states for induction/cases alts OK"
 
   pure 0
+
+/--
+Builds the fixed-toolchain demo targets (or a single `<project> <toolchain>` pair) into their
+per-toolchain build directories and exits, without running any assertions. Used by the CI prebuild
+job to cache the builds that are shared across all matrix jobs.
+-/
+def prepare (demodSrc : System.FilePath) (args : List String) : IO UInt32 := do
+  let targets ← match args with
+    | [] => fixedTargets
+    | [project, toolchain] => pure [((project : System.FilePath), toolchain)]
+    | _ =>
+      IO.eprintln "usage: subverso-tests prepare [<project> <toolchain>]"
+      return 2
+  for (project, toolchain) in targets do
+    IO.println s!"Prebuilding {project} using Lean toolchain {toolchain}"
+    let examples ← loadExamplesIn project toolchain demodSrc
+    if examples.isEmpty then
+      IO.eprintln s!"No examples found while prebuilding {project} @ {toolchain}"
+      return 1
+  pure 0
+
+def main (args : List String) : IO UInt32 := do
+  IO.println "Setting up demodulized SubVerso for test code"
+  let demodSrc ← prepareDemodulizedSource
+  match args with
+  | "prepare" :: rest => prepare demodSrc rest
+  | [] => fullRun demodSrc
+  | _ =>
+    IO.eprintln s!"Unknown arguments: {args}"
+    IO.eprintln "usage: subverso-tests [prepare [<project> <toolchain>]]"
+    pure 2
