@@ -402,6 +402,15 @@ def Output.inTacticState (output : List Output) (info : Array (Highlighted.Goal 
     | .tactics info' _ _ => info == info'
     | _ => false
 
+/--
+Whether a currently-open (enclosing) tactic region ends at `endPos` and already shows `info`.
+-/
+def Output.tailDuplicatesOpen
+    (output : List Output) (info : Array (Highlighted.Goal Highlighted)) (endPos : Compat.String.Pos) : Bool :=
+  output.any fun
+    | .tactics info' _ endPos' => endPos == endPos' && info == info'
+    | _ => false
+
 def Output.closeSpan (output : List Output) : List Output :=
   let rec go (acc : Highlighted) : List Output → List Output
     | [] => [.seq #[acc]]
@@ -505,8 +514,8 @@ structure HighlightState where
   output : List Output
   /-- Messages being displayed -/
   inMessages : List MessageBundle
-  /-- Currently-open tactic info -/
-  inTactic : Option OpenTactic -- No nested tactic states!
+  /-- A stack of currently-open tactic regions. -/
+  inTactic : List OpenTactic
   /-- Last source position added to the output -/
   lastPos? : Option Compat.String.Pos := none
   /-- Memoized results of searching for tactic info (by canonical range) -/
@@ -528,7 +537,7 @@ def HighlightState.empty : HighlightState where
   nextMessage := none
   output := []
   inMessages := []
-  inTactic := none
+  inTactic := []
 
 def HighlightState.resetCache (st : HighlightState) : HighlightState :=
   { st with terms := {}, ppTerms := {}, fmtTerms := {} }
@@ -543,7 +552,7 @@ def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
     output := [],
     inMessages := [],
-    inTactic := none
+    inTactic := []
     lastPos? := startPos?
   }
 where
@@ -570,7 +579,7 @@ def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.G
     {st with output := out'}
   else { st with
     output := .tactics info startPos endPos :: st.output,
-    inTactic := some ⟨startPos, endPos⟩
+    inTactic := ⟨startPos, endPos⟩ :: st.inTactic
   }
 where
   update?
@@ -886,28 +895,28 @@ partial def closeUntil (pos : Compat.String.Pos) : HighlightM Unit := do
   let text ← getFileMap
   let more ← modifyGet fun st =>
     match st.inMessages, st.inTactic with
-    | [], none => (false, st)
-    | [], some t =>
-      if t.closesAt ≤ pos || t.closesAt == pos then
-        (true, {st with output := Output.closeSpan st.output, inTactic := none})
+    | [], [] => (false, st)
+    | [], t :: ts =>
+      if t.closesAt ≤ pos then
+        (true, {st with output := Output.closeSpan st.output, inTactic := ts})
       else (false, st)
-    | m :: ms, none =>
+    | m :: ms, [] =>
       if needsClosing (text.toPosition pos) m then
         (true, {st with output := Output.closeSpan st.output, inMessages := ms})
       else (false, st)
-    | m :: ms, some t =>
+    | m :: ms, t :: ts =>
       if let some e := m.endPos then
         if text.toPosition t.closesAt |>.notAfter e then
-          -- Close the tactics first
-          if t.closesAt ≤ pos || t.closesAt == pos then
-            (true, {st with output := Output.closeSpan st.output, inTactic := none})
+          -- Close the tactics first, in nesting order
+          if t.closesAt ≤ pos then
+            (true, { st with output := Output.closeSpan st.output, inTactic := ts })
           else (false, st)
         else
           -- Close the message first
           if needsClosing (text.toPosition pos) m then
-            (true, {st with output := Output.closeSpan st.output, inMessages := ms})
+            (true, { st with output := Output.closeSpan st.output, inMessages := ms })
           else (false, st)
-      else (true, {st with output := Output.closeSpan st.output, inMessages := ms})
+      else (true, { st with output := Output.closeSpan st.output, inMessages := ms })
 
   if more then closeUntil pos
 
@@ -1473,6 +1482,25 @@ partial def findAllTactics'
   if found.isEmpty then return none
   else return some (found, startPos, endPos, endPosition)
 
+/--
+Finds the proof state _after_ a single rewrite rule `stx` (one entry of a `rw`/`rewrite` rule list).
+This gives each step of `rw [h₁, …, hₙ]` its own intermediate proof state.
+-/
+partial def rwRuleGoals
+    (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
+    HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) := do
+  let text ← getFileMap
+  let some ruleStart := stx.getPos? (canonicalOnly := true)
+    | return none
+  for t in trees do
+    for (ci, info) in infoIncludingSyntax t stx do
+      if let .ofTacticInfo ti := info then
+        if let some regionStart := ti.stx.getPos? (canonicalOnly := true) then
+          if let some regionEnd := ti.stx.getTailPos? (canonicalOnly := true) then
+            if regionStart == ruleStart then
+              return some (← tacticInfoGoals ci ti regionStart regionEnd (text.toPosition regionEnd) (before := false))
+  return none
+
 partial def findTactics
     (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
@@ -1527,15 +1555,15 @@ partial def findTactics
               return (← findTactics' rhs startPos endPos endPosition (before := true))
           | _ => continue
 
-  -- Only show tactic output for the most specific source spans possible, with a few exceptions
-  if stx.getKind ∉ [``Lean.Parser.Tactic.rwSeq,``Lean.Parser.Tactic.simp] then
+  -- Only show tactic output for the most specific source spans possible, with a few exceptions:
+  -- * `simp` shows a single state for the whole `simp [...]`.
+  -- * `rw`/`rewrite` show the final state via `findTactics'` below, *and* give each rewrite rule a
+  --   state.
+  if stx.getKind ∉ [``Lean.Parser.Tactic.simp, ``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq] then
     if ← childHasTactics stx then return none
 
-  -- Override states - some tactics show many intermediate states, which is overwhelming in rendered
-  -- output. Get the right one to show for the whole thing, then adjust its positioning.
-  if let some brak := Compat.rwTacticRightBracket? stx then
-    if let some (goals, _startPos, _endPos, _endPosition) ← findTactics trees brak then
-      return some (goals, startPos, endPos, endPosition)
+  if stx.getKind == ``Lean.Parser.Tactic.rwRule then
+    return ← rwRuleGoals trees stx
 
   findTactics' stx startPos endPos endPosition (before := before)
 
@@ -1831,10 +1859,15 @@ partial def highlight'
   let mut tactics := tactics
   if tactics then
     if let some (tacticInfo, startPos, endPos, position) ← findTactics trees stx then
-      HighlightM.openTactic tacticInfo startPos endPos position
-      -- No nested tactics - the tactic search process should only have returned results
-      -- on "leaf" nodes anyway
-      tactics := false
+      -- Drop a region that would just duplicate an enclosing region's state at its tail (e.g. the
+      -- closing `]` of a `rw`, nested in a tactic region with the same final state).
+      unless Output.tailDuplicatesOpen (← get).output tacticInfo endPos do
+        HighlightM.openTactic tacticInfo startPos endPos position
+        -- Tactic regions are normally leaves, so disable further search in the subtree. The exception
+        -- is `rw`/`rewrite`: their whole-invocation region is *not* a leaf — each rewrite rule nests
+        -- its own intermediate state inside it — so keep searching their subterms.
+        unless stx.getKind ∈ [``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq] do
+          tactics := false
   highlightSpecial trees stx tactics (lookingAt := lookingAt) fun trees tactics lookingAt => fun
     | .missing => pure () -- TODO emit unhighlighted string
     | .ident _ _ .anonymous _ =>
