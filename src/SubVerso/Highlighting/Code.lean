@@ -1559,7 +1559,11 @@ partial def findTactics
   -- * `simp` shows a single state for the whole `simp [...]`.
   -- * `rw`/`rewrite` show the final state via `findTactics'` below, *and* give each rewrite rule a
   --   state.
-  if stx.getKind ∉ [``Lean.Parser.Tactic.simp, ``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq] then
+  -- * `intro`/`intros` (with possibly several binders) is one tactic, so the whole `intro h₁ … hₙ`
+  --   shows the state after all the intros. Otherwise the "most specific span" rule would put the
+  --   state on the last binder alone (and lose the first binder, whose info is bundled with the
+  --   keyword).
+  if stx.getKind ∉ [``Lean.Parser.Tactic.simp, ``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq, ``Lean.Parser.Tactic.intro, ``Lean.Parser.Tactic.intros] then
     if ← childHasTactics stx then return none
 
   if stx.getKind == ``Lean.Parser.Tactic.rwRule then
