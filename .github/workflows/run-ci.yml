@@ -33,7 +33,7 @@ jobs:
         run: |
           set -o pipefail
           ${{ inputs.installer }}
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Which lake?
         run: |
@@ -90,8 +90,10 @@ jobs:
         run: |
           lean --version
 
-      - name: Cache .lake
-        uses: actions/cache@v5
+      # Lower-priority job-local cache: restore if present, but don't save one cache per matrix job.
+      # The fixed test-project caches warmed by `prebuild` are the caches we want to preserve.
+      - name: Restore .lake
+        uses: actions/cache/restore@v5
         with:
           path: .lake
           key: ${{ runner.os }}-${{ hashFiles('lakefile.lean') }}-${{ hashFiles('lean-toolchain') }}
@@ -99,6 +101,59 @@ jobs:
       - name: Build the project
         run: |
           lake build
+
+      # Restore the demo builds whose toolchains are fixed (shared
+      # across all matrix jobs), warmed by the `prebuild` job. Only
+      # the `.lake` directories are cached; source/config trees are
+      # always refreshed from checkout by the test driver.
+      - name: Restore prebuilt demo-toml (4.8.0)
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .builds/leanprover-lean4-v4.8.0/demo-toml/.lake
+            .builds/leanprover-lean4-v4.8.0/demo-toml/no-mod/.lake
+          key: subverso-build-demo-toml-v4.8.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-build-demo-toml-v4.8.0-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore prebuilt demo (4.3.0)
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .builds/leanprover-lean4-v4.3.0/demo/.lake
+            .builds/leanprover-lean4-v4.3.0/demo/no-mod/.lake
+          key: subverso-build-demo-v4.3.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-build-demo-v4.3.0-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore prebuilt demo (4.8.0)
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .builds/leanprover-lean4-v4.8.0/demo/.lake
+            .builds/leanprover-lean4-v4.8.0/demo/no-mod/.lake
+          key: subverso-build-demo-v4.8.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-build-demo-v4.8.0-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore prebuilt demo (4.10.0)
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .builds/leanprover-lean4-4.10.0/demo/.lake
+            .builds/leanprover-lean4-4.10.0/demo/no-mod/.lake
+          key: subverso-build-demo-4.10.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-build-demo-4.10.0-${{ runner.os }}-${{ runner.arch }}-
+
+      # The small-tests build uses the matrix toolchain, so saving it would create one cache per
+      # matrix job and can evict the shared prebuilt demo caches. Restore existing entries only.
+      - name: Restore small-tests build (matrix toolchain)
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .builds/leanprover-lean4-${{ inputs.toolchain }}/small-tests/.lake
+            .builds/leanprover-lean4-${{ inputs.toolchain }}/small-tests/no-mod/.lake
+          key: subverso-build-small-tests-${{ inputs.toolchain }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-build-small-tests-${{ inputs.toolchain }}-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Run tests
         run: |
