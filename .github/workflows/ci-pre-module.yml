@@ -5,10 +5,17 @@ on:
   pull_request:
   merge_group:
 
-name: CI (without module system)
+name: CI
 
 jobs:
-  build:
+  prebuild:
+    uses: "./.github/workflows/run-prebuild.yml"
+
+  build-no-module:
+    # Wait for the shared demo builds to be cached, but don't gate on their success — any real demo
+    # build failure still surfaces in the full test run below.
+    needs: prebuild
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -67,21 +74,68 @@ jobs:
               os: macos-latest
               installer: |
                 brew install elan-init
-    name: Build and test (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
+    name: Build and test without modules (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
     uses: "./.github/workflows/run-ci.yml"
     with:
       toolchain: ${{ matrix.toolchain }}
       os: ${{ matrix.platform.os }}
       installer: ${{ matrix.platform.installer }}
       module-system: false
-      
+
+  build-module:
+    # Wait for the same shared demo cache warming as the no-module matrix.
+    needs: prebuild
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - "4.25.0"
+          - "4.25.1"
+          - "4.26.0"
+          - "4.27.0"
+          - "4.28.0"
+          - "4.29.0"
+          - "4.30.0"
+          - "4.31.0-rc1"
+
+        platform:
+          - os: nscloud-ubuntu-22.04-amd64-8x16
+            installer: |
+              curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+        # Mac runners are rare and expensive, so spot-check that the
+        # subprocess support seems OK but be less thorough
+        include:
+          - toolchain: "4.27.0-rc1"
+            platform:
+              os: macos-latest
+              installer: |
+                curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+
+    name: Build and test with modules (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
+    uses: "./.github/workflows/run-ci.yml"
+    with:
+      toolchain: ${{ matrix.toolchain }}
+      os: ${{ matrix.platform.os }}
+      installer: ${{ matrix.platform.installer }}
+      module-system: true
 
   no-module-complete:
-    needs: build
+    needs: build-no-module
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: "Check matrix result"
-        if: needs.build.result != 'success'
+        if: needs.build-no-module.result != 'success'
         run: exit 1
       - run: echo "All tests prior to the module system passed"
+
+  module-complete:
+    needs: build-module
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: "Check matrix result"
+        if: needs.build-module.result != 'success'
+        run: exit 1
+      - run: echo "All module-system-enabled tests passed"

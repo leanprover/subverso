@@ -1,0 +1,80 @@
+name: CI - Prebuild demo projects
+
+# Builds the demo projects whose Lean toolchains are *fixed* (independent of the version under test),
+# so the work is done once and cached instead of repeated in every matrix job. Each (project,
+# toolchain) pair is built in its own `.builds/<sanitized-toolchain>/<project>` directory (see
+# `Tests.lean`'s `prepare`). Only their `.lake` directories are cached; source/config trees are
+# always refreshed from checkout by the test driver. Keys mirror the per-job restore in `run-ci.yml`.
+
+on:
+  workflow_call:
+
+jobs:
+  prebuild:
+    name: Prebuild ${{ matrix.tag }}
+    runs-on: nscloud-ubuntu-22.04-amd64-8x16
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep these (project, toolchain, dir) triples in sync with `run-ci.yml`'s restore steps and
+        # with `fixedTargets` in `Tests.lean`. `dir` is `sanitizeToolchain(toolchain)/project`.
+        include:
+          - tag: demo-toml-v4.8.0
+            project: demo-toml
+            toolchain: "leanprover/lean4:v4.8.0"
+            dir: .builds/leanprover-lean4-v4.8.0/demo-toml
+          - tag: demo-v4.3.0
+            project: demo
+            toolchain: "leanprover/lean4:v4.3.0"
+            dir: .builds/leanprover-lean4-v4.3.0/demo
+          - tag: demo-v4.8.0
+            project: demo
+            toolchain: "leanprover/lean4:v4.8.0"
+            dir: .builds/leanprover-lean4-v4.8.0/demo
+          - tag: demo-4.10.0
+            project: demo
+            toolchain: "leanprover/lean4:4.10.0"
+            dir: .builds/leanprover-lean4-4.10.0/demo
+
+    steps:
+      - name: Install elan
+        run: |
+          set -o pipefail
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v6
+
+      # The host toolchain (the repo's committed one) is module-capable, so the test driver builds as
+      # checked out — no demodulization needed here, since `prepare` demodulizes into `no-mod` itself.
+      - name: Install host toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan run --install "$(cat lean-toolchain)" lean --version
+
+      - name: Install target toolchain
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan run --install ${{ matrix.toolchain }} lean --version
+
+      - name: Cache demo build dir
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ matrix.dir }}/.lake
+            ${{ matrix.dir }}/no-mod/.lake
+          key: subverso-build-${{ matrix.tag }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-build-${{ matrix.tag }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build the test driver
+        run: lake build subverso-tests
+
+      - name: Prebuild the demo project
+        run: lake exe subverso-tests prepare ${{ matrix.project }} ${{ matrix.toolchain }}
