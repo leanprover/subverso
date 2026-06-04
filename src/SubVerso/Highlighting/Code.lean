@@ -1020,33 +1020,6 @@ private def scanBlockCommentEnd (start : Compat.String.Iterator) :
     iter := iter'
   return none
 
-/--
-Emits a line comment as a `.commentDelim` opener (`--`) followed by a `.lineComment` body, scanning
-from `iter` (positioned just after the `--`) up to but not including the terminating newline.
-Returns the iterator at the next new line, or end of string, whichever is first.
--/
-def emitLineComment (start : Compat.String.Iterator) : HighlightM Compat.String.Iterator := do
-  emitTriviaToken .commentDelim "--"
-  let iter := scanLineCommentEnd start
-  -- `iter` is now at the newline (left for the following whitespace run) or at the end.
-  emitTriviaToken .lineComment (start.extract iter)
-  return iter
-
-/--
-Emits a depth-balanced (nesting) block comment, scanning from `iter` (positioned just after the
-opening `/-`). Only the *outermost* `/-` and `-/` are emitted as `.commentDelim` tokens; everything
-between them — including any nested `/-`…`-/` delimiters — is emitted as a single `.blockComment`
-body token. Returns the iterator just past the outermost closing `-/` (or at end if unterminated).
--/
-def emitBlockComment (start : Compat.String.Iterator) : HighlightM (Option Compat.String.Iterator) := do
-  if let some (bodyEnd, afterClose) := scanBlockCommentEnd start then
-    emitTriviaToken .commentDelim "/-"
-    emitTriviaToken .blockComment (start.extract bodyEnd)
-    emitTriviaToken .commentDelim "-/"
-    return some afterClose
-  else
-    return none
-
 /-- Emits a trivia text run, optionally requiring it to contain only whitespace. -/
 private def emitTriviaRun (strict : Bool)
     (runStart iter : Compat.String.Iterator) : HighlightM Bool := do
@@ -1057,7 +1030,7 @@ private def emitTriviaRun (strict : Bool)
   return true
 
 /-- Implementation loop for `emitTriviaCore`, scanning once while emitting accepted trivia pieces. -/
-partial def emitTriviaCoreLoop (strict : Bool)
+private partial def emitTriviaCoreLoop (strict : Bool)
     (runStart iter : Compat.String.Iterator) : HighlightM Bool := do
   if h : iter.hasNext then
     let c := iter.curr' h
