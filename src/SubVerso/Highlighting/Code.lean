@@ -3,17 +3,15 @@ Copyright (c) 2023-2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
 import Lean.Widget.InteractiveCode
 import Lean.Widget.InteractiveDiagnostic
 import Lean.Widget.TaggedText
 import Lean.Server.References
 import Lean.Elab.Term
 
-public import SubVerso.Compat
-public import SubVerso.Highlighting.Highlighted
+import SubVerso.Compat
+import SubVerso.Highlighting.Highlighted
 import SubVerso.Highlighting.Messages
-public section
 
 open Lean hiding perhaps (HashMap)
 open Elab
