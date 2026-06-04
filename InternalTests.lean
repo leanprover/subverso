@@ -581,6 +581,15 @@ elab "#assertRichHasUnparsed" inp:str content:str : command => do
     throwError m!"unparsed segments = {repr hl.unparsedList.toList}, expected {repr content.getString}"
 
 open Lean Elab Command in
+/-- Checks that the includes-unparsed highlighter does not emit a token with this content and kind. -/
+elab "#assertRichLacksToken" inp:str content:str kind:str : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  let found := hl.tokenList.any fun t => t.content == content.getString && t.kind.name == kind.getString
+  if found then
+    let all := hl.tokenList.toList.map fun t => (t.content, t.kind.name)
+    throwError m!"unexpected token {repr content.getString}/{kind.getString}. Tokens: {repr all}"
+
+open Lean Elab Command in
 /-- Checks that the includes-unparsed highlighter emits no `.unparsed` segment. -/
 elab "#assertRichNoUnparsed" inp:str : command => do
   let hl ← highlightWithPrefixedMessages inp.getString
@@ -673,6 +682,30 @@ inject_info"
 -- Non-trivia recovered source remains `.unparsed`; comment tokenization of source gaps is
 -- all-or-nothing per message-split segment.
 #assertRichHasUnparsed "deriving a bunch of other filler text def b := true" "a bunch of other filler text "
+-- If strict trivia production accepts a comment and then later finds non-trivia source in the same
+-- gap segment, the speculative comment tokens must be rolled back before the `.unparsed` fallback.
+#assertRichHasUnparsed "deriving a -- rollback marker
+bunch of other filler text def b := true
+
+def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do
+  let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])
+  Lean.logInfoAt stx str
+
+elab \"inject_info\" : command => do
+  inject 10 11 \"subverso_test: rollback split\"
+
+inject_info" "-- rollback marker\nbunch of other filler text "
+#assertRichLacksToken "deriving a -- rollback marker
+bunch of other filler text def b := true
+
+def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do
+  let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])
+  Lean.logInfoAt stx str
+
+elab \"inject_info\" : command => do
+  inject 10 11 \"subverso_test: rollback split\"
+
+inject_info" " rollback marker" "lineComment"
 
 -- `-- ANCHOR:` / `-- ANCHOR_END:` directives are still recognized after comment tokenization, and
 -- the whole directive line (with its newline) is consumed — no extra blank lines, and the anchor
