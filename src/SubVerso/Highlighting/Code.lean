@@ -1047,70 +1047,88 @@ def emitBlockComment (start : Compat.String.Iterator) : HighlightM (Option Compa
   else
     return none
 
+/-- Emits a trivia text run, optionally requiring it to contain only whitespace. -/
+private def emitTriviaRun (strict : Bool)
+    (runStart iter : Compat.String.Iterator) : HighlightM Bool := do
+  let run := runStart.extract iter
+  if strict && !run.all (·.isWhitespace) then
+    return false
+  emitTriviaText run
+  return true
+
+/-- Implementation loop for `emitTriviaCore`, scanning once while emitting accepted trivia pieces. -/
+partial def emitTriviaCoreLoop (strict : Bool)
+    (runStart iter : Compat.String.Iterator) : HighlightM Bool := do
+  if h : iter.hasNext then
+    let c := iter.curr' h
+    let next := iter.next' h
+    if c == '-' && peekChar next == some '-' then
+      if !(← emitTriviaRun strict runStart iter) then
+        return false
+      emitTriviaToken .commentDelim "--"
+      let iter' := scanLineCommentEnd next.next
+      emitTriviaToken .lineComment (next.next.extract iter')
+      emitTriviaCoreLoop strict iter' iter'
+    else if c == '/' && peekChar next == some '-' then
+      if !(← emitTriviaRun strict runStart iter) then
+        return false
+      if let some (bodyEnd, iter') := scanBlockCommentEnd next.next then
+        emitTriviaToken .commentDelim "/-"
+        emitTriviaToken .blockComment (next.next.extract bodyEnd)
+        emitTriviaToken .commentDelim "-/"
+        emitTriviaCoreLoop strict iter' iter'
+      else if strict then
+        return false
+      else
+        -- Unterminated block comment: leave the `/-` in the (text) run.
+        emitTriviaCoreLoop strict iter next
+    else if strict && !c.isWhitespace then
+      return false
+    else
+      emitTriviaCoreLoop strict runStart next
+  else
+    emitTriviaRun strict runStart iter
+
 /--
 Splits a whitespace-and-comment trivia string into whitespace runs and comment tokens, emitting
 each to the output in source order. Comment delimiters (`--`, `/-`, `-/`) are emitted as
 `.commentDelim` tokens, distinct from the `.lineComment`/`.blockComment` body text. Doc comments are
 real syntax nodes and thus handled elsewhere.
 
-This is called on genuine token trivia (leading/trailing whitespace+comments), and on source gaps
-only after `isTriviaOnly` has accepted the whole gap segment. Source gaps can otherwise be arbitrary
-un-attributed text, so callers must not partially tokenize them.
+`strict := false` is for genuine token trivia (leading/trailing whitespace+comments), where malformed
+comment-looking text should remain text. `strict := true` is for source gaps: the scan succeeds only
+if the whole segment is whitespace plus well-formed comments.
 -/
-def emitTrivia (s : String) : HighlightM Unit := do
+private def emitTriviaCore (s : String) (strict : Bool) : HighlightM Bool := do
   -- Fast path: a comment can only contain `-` or `/`, so a string without either is pure
   -- whitespace and is emitted as a single run (matching the previous behavior exactly).
   if !s.any (fun c => c == '-' || c == '/') then
+    if strict && !s.all (·.isWhitespace) then
+      return false
     emitTriviaText s
-    return
-  -- `runStart` marks the beginning of the current whitespace run; `iter` scans ahead. When a
-  -- comment opener is found, the run `[runStart, iter)` is flushed and the comment is emitted.
-  let mut iter := s.compatIter
-  let mut runStart := iter
-  while h : iter.hasNext do
-    let c := iter.curr' h
-    let next := iter.next' h
-    if c == '-' && peekChar next == some '-' then
-      emitTriviaText (runStart.extract iter)
-      iter := (← emitLineComment next.next)
-      runStart := iter
-    else if c == '/' && peekChar next == some '-' then
-      emitTriviaText (runStart.extract iter)
-      match (← emitBlockComment next.next) with
-      | some iter' =>
-        iter := iter'
-        runStart := iter
-      | none =>
-        -- Unterminated block comment: nothing was emitted, so leave the `/-` in the (text) run.
-        runStart := iter
-        iter := next
-    else
-      iter := next
-  emitTriviaText (runStart.extract iter)
+    return true
+  let iter := s.compatIter
+  emitTriviaCoreLoop strict iter iter
 
 /--
-Whether a source segment is entirely trivia: whitespace plus well-formed line and block comments.
-
-This intentionally recognizes whole segments only. Source gaps can also contain arbitrary unparsed
-Lean code, so callers should tokenize the gap as comments only when this predicate accepts the
-entire segment.
+Splits a whitespace-and-comment trivia string into whitespace runs and comment tokens, emitting
+each to the output in source order. Comment delimiters (`--`, `/-`, `-/`) are emitted as
+`.commentDelim` tokens, distinct from the `.lineComment`/`.blockComment` body text. Doc comments are
+real syntax nodes and thus handled elsewhere.
 -/
-private def isTriviaOnly (s : String) : Bool := Id.run do
-  let mut iter := s.compatIter
-  while h : iter.hasNext do
-    let c := iter.curr' h
-    let next := iter.next' h
-    if c.isWhitespace then
-      iter := next
-    else if c == '-' && peekChar next == some '-' then
-      iter := scanLineCommentEnd next.next
-    else if c == '/' && peekChar next == some '-' then
-      match scanBlockCommentEnd next.next with
-      | some (_, iter') => iter := iter'
-      | none => return false
-    else
-      return false
-  return true
+def emitTrivia (s : String) : HighlightM Unit := do
+  let _ ← emitTriviaCore s (strict := false)
+
+/--
+Attempts to emit a source gap as trivia. If the whole gap is not whitespace plus well-formed
+comments, restores the highlighting state and returns `false`.
+-/
+private def tryEmitTriviaOnly (s : String) : HighlightM Bool := do
+  let st ← get
+  let ok ← emitTriviaCore s (strict := true)
+  unless ok do
+    set st
+  return ok
 
 /-- Adds to the output any source (if any exists) lying between the last added position and `pos`. -/
 def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
@@ -1125,9 +1143,7 @@ def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
         let endPos := boundaries[i]!
         openUntil <| text.toPosition startPos
         let string := Compat.Substring.mk text.source startPos endPos |>.toString
-        if isTriviaOnly string then
-          emitTrivia string
-        else
+        unless (← tryEmitTriviaOnly string) do
           -- Gaps are arbitrary un-attributed source, not guaranteed to be whitespace+comments, so
           -- emit them verbatim rather than risk mis-tokenizing non-comment text as comments.
           modify fun st => { st with output := Output.addUnparsed st.output string }
