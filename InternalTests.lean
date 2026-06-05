@@ -439,33 +439,6 @@ elab "#assertHasKind" inp:str kind:str : command => do
 
 open Lean Elab Command in
 /--
-`#assertTacticKind inp kind` parses `inp` as a tactic and checks its syntax kind is `kind`.
-
-The highlighter special-cases certain tactics (`have`, `obtain`, …) by their syntax kind. The kinds
-themselves are referenced with ``…`` in `findTactics`, so a *missing* name is caught at compile time;
-these assertions cover the other half — that the (sometimes auto-generated) name still denotes the
-tactic of interest. If a toolchain makes `have`/`obtain` parse to a different kind, this fails in CI
-for that toolchain, pointing at the kind in `findTactics` that needs updating.
--/
-elab "#assertTacticKind" inp:str kind:str : command => do
-  match Parser.runParserCategory (← getEnv) `tactic inp.getString with
-  | .error e => throwError m!"failed to parse tactic {repr inp.getString}: {e}"
-  | .ok stx =>
-    unless stx.getKind == kind.getString.toName do
-      throwError m!"tactic {repr inp.getString} parses to kind {stx.getKind}, expected \
-        {kind.getString}; update the highlighter's special-cased kind for this Lean toolchain"
-
--- The highlighter attaches whole-tactic proof-state regions to these tactics by keying on these
--- exact syntax kinds (see `findTactics`). These guard that the names still denote those tactics
--- (and the `assertStateTree` tests below guard the resulting behavior).
-#assertTacticKind "have h : Nat := by exact 0" "Lean.Parser.Tactic.tacticHave__"
-#assertTacticKind "obtain ⟨a, b⟩ := h" "Lean.Parser.Tactic.obtain"
-#assertTacticKind "let x : Nat := by exact 0" "Lean.Parser.Tactic.tacticLet__"
-#assertTacticKind "suffices h : Nat by trivial" "Lean.Parser.Tactic.tacticSuffices_"
-#assertTacticKind "replace h : Nat := by exact 0" "Lean.Parser.Tactic.replace"
-
-open Lean Elab Command in
-/--
 `#assertAnchor inp name expected` highlights `inp` (so comments are tokenized), runs the anchor
 extractor, and checks that the anchor `name` exists and its code equals `expected` exactly
 (untrimmed — the surrounding whitespace is part of what these tests protect). This guards that

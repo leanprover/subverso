@@ -1535,18 +1535,7 @@ partial def rwRuleGoals
   return none
 
 /-- Tactics which should show inner tactic scripts' states as well as the full final state -/
-def compoundTacticKinds := [
-  ``Lean.Parser.Tactic.simp,
-  ``Lean.Parser.Tactic.rwSeq,
-  ``Lean.Parser.Tactic.rewriteSeq,
-  ``Lean.Parser.Tactic.intro,
-  ``Lean.Parser.Tactic.intros,
-  ``Lean.Parser.Tactic.obtain,
-  ``Lean.Parser.Tactic.tacticHave__,
-  ``Lean.Parser.Tactic.tacticLet__,
-  ``Lean.Parser.Tactic.tacticSuffices_,
-  ``Lean.Parser.Tactic.replace
-]
+def compoundTacticKinds := Compat.wholeTacticStateKinds
 
 partial def findTactics
     (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
@@ -1911,15 +1900,7 @@ def atomKind (name : Option Name) (occ : Option String) (docs : Option String) (
     .operator name occ docs
   else .unknown
 
-def nestedTacticKinds := [
-  ``Lean.Parser.Tactic.rwSeq,
-  ``Lean.Parser.Tactic.rewriteSeq,
-  ``Lean.Parser.Tactic.obtain,
-  ``Lean.Parser.Tactic.tacticHave__,
-  ``Lean.Parser.Tactic.tacticLet__,
-  ``Lean.Parser.Tactic.tacticSuffices_,
-  ``Lean.Parser.Tactic.replace
-]
+def nestedTacticKinds := Compat.keepNestedStateKinds
 
 partial def highlight'
     (trees : Array Lean.Elab.InfoTree)
