@@ -411,6 +411,18 @@ def Output.tailDuplicatesOpen
     | .tactics info' _ endPos' => endPos == endPos' && info == info'
     | _ => false
 
+/--
+Whether the closest enclosing tactic region shows goals with the same conclusions as `info`. Used to
+drop a nested `by` token's initial state when it merely repeats the conclusion already shown by the
+tactic that immediately encloses it. This happens for macro tactics such as `have h := by …`, whose
+embedded `by` is recorded with the enclosing goal rather than the subproof's.
+-/
+def Output.conclusionDuplicatesEnclosing
+    (output : List Output) (info : Array (Highlighted.Goal Highlighted)) : Bool :=
+  match output.find? (· matches .tactics ..) with
+  | some (.tactics info' _ _) => info'.map (·.conclusion) == info.map (·.conclusion)
+  | _ => false
+
 def Output.closeSpan (output : List Output) : List Output :=
   let rec go (acc : Highlighted) : List Output → List Output
     | [] => [.seq #[acc]]
@@ -1522,6 +1534,9 @@ partial def rwRuleGoals
               return some (← tacticInfoGoals ci ti regionStart regionEnd (text.toPosition regionEnd) (before := false))
   return none
 
+/-- Tactics which should show inner tactic scripts' states as well as the full final state -/
+def compoundTacticKinds := Compat.wholeTacticStateKinds
+
 partial def findTactics
     (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
@@ -1550,6 +1565,14 @@ partial def findTactics
           | `(Lean.Parser.Term.byTactic'| by%$tk $tactics) =>
             if tk == stx then
               let ts ← findTactics' tactics startPos endPos endPosition (before := true)
+              -- Macro tactics that embed a `by` (e.g. `have h := by …`) record the byTactic's
+              -- tacticSeq with the *enclosing* goal as its `goalsBefore`, so the `by` token here
+              -- would be labelled with the surrounding state rather than the subproof's. Such an
+              -- initial state just duplicates the state already shown by the enclosing region, so
+              -- drop it: the nested `by` carries no state, but the subproof's own steps still do.
+              if let some (goals, _) := ts then
+                if Output.conclusionDuplicatesEnclosing (← get).output goals then
+                  return none
               return ts
           | _ => continue
 
@@ -1584,7 +1607,10 @@ partial def findTactics
   --   shows the state after all the intros. Otherwise the "most specific span" rule would put the
   --   state on the last binder alone (and lose the first binder, whose info is bundled with the
   --   keyword).
-  if stx.getKind ∉ [``Lean.Parser.Tactic.simp, ``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq, ``Lean.Parser.Tactic.intro, ``Lean.Parser.Tactic.intros] then
+  -- * `obtain`/`have`/`let`/`suffices`/`replace` are single tactics; their nested `by` would
+  --   otherwise suppress the whole-tactic state, so they show the state *after* the tactic (with the
+  --   subproof's steps nested inside).
+  if stx.getKind ∉ compoundTacticKinds then
     if ← childHasTactics stx then return none
 
   if stx.getKind == ``Lean.Parser.Tactic.rwRule then
@@ -1874,6 +1900,8 @@ def atomKind (name : Option Name) (occ : Option String) (docs : Option String) (
     .operator name occ docs
   else .unknown
 
+def nestedTacticKinds := Compat.keepNestedStateKinds
+
 partial def highlight'
     (trees : Array Lean.Elab.InfoTree)
     (stx : Syntax)
@@ -1888,10 +1916,12 @@ partial def highlight'
       -- closing `]` of a `rw`, nested in a tactic region with the same final state).
       unless Output.tailDuplicatesOpen (← get).output tacticInfo endPos do
         HighlightM.openTactic tacticInfo startPos endPos position
-        -- Tactic regions are normally leaves, so disable further search in the subtree. The exception
-        -- is `rw`/`rewrite`: their whole-invocation region is *not* a leaf — each rewrite rule nests
-        -- its own intermediate state inside it — so keep searching their subterms.
-        unless stx.getKind ∈ [``Lean.Parser.Tactic.rwSeq, ``Lean.Parser.Tactic.rewriteSeq] do
+        -- Tactic regions are normally leaves, so disable further search in the subtree. The
+        -- exceptions are not leaves and keep their nested states:
+        -- * `rw`/`rewrite`: each rewrite rule nests its own intermediate state inside the region.
+        -- * `obtain`/`have`/`let`/`suffices`/`replace`: a `… by …`/`… := by …` discharges a goal with
+        --   a nested `by` block, whose states should stay nested inside the whole-tactic region.
+        unless stx.getKind ∈ nestedTacticKinds do
           tactics := false
   highlightSpecial trees stx tactics (lookingAt := lookingAt) fun trees tactics lookingAt => fun
     | .missing => pure () -- TODO emit unhighlighted string

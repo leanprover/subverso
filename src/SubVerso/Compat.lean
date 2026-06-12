@@ -780,6 +780,42 @@ elab_rules : command
       elabCommand (← `(open $ns:ident hiding $xs*))
 
 
+-- The highlighter special-cases certain tactics by their syntax *kind*, but several of those kinds
+-- are auto-generated (`tacticHave__`, `tacticLet__`, `tacticSuffices_`, …) and named differently
+-- across Lean versions. The names can be found by parsing a representative example of each tactic
+-- and reading off its actual kind. A sample that doesn't parse (the tactic is absent in this
+-- version) is dropped, so the feature degrades gracefully rather than failing to build.
+open Lean Elab Command in
+/-- Elaborates `def <name> : List Name := …`, the kinds that `samples` parse to (as tactics) on this
+toolchain, dropping any sample that doesn't parse. -/
+def elabTacticKinds (name : Name) (samples : List String) : CommandElabM Unit := do
+  let env ← getEnv
+  let kinds := samples.filterMap fun s =>
+    match Parser.runParserCategory env `tactic s with
+    | .ok stx => some stx.getKind
+    | .error _ => none
+  let elems : Array Term := kinds.toArray.map (quote ·)
+  elabCommand (← `(def $(mkIdent name) : List Lean.Name := [$elems,*]))
+
+-- `wholeTacticStateKinds`: tactic kinds whose whole-invocation proof state should be shown even
+-- though a nested `by` makes them non-leaves (`simp`, `rw`/`rewrite`, `intro`/`intros`, `obtain`,
+-- `have`, `let`, `suffices`, `replace`). Derived per toolchain — see `elabTacticKinds`.
+open Lean Elab Command in
+#eval show CommandElabM Unit from
+  elabTacticKinds `wholeTacticStateKinds
+    ["simp", "rw [h]", "rewrite [h]", "intro x", "intros",
+     "obtain ⟨a, b⟩ := h", "have h : Nat := by exact 0", "let x : Nat := by exact 0",
+     "suffices h : Nat by trivial", "replace h : Nat := by exact 0"]
+
+-- `keepNestedStateKinds`: tactic kinds whose region is *not* a leaf — their nested states (rewrite
+-- rules, or a nested `by` subproof) must keep being searched for after the whole-tactic region
+-- opens. Derived per toolchain.
+open Lean Elab Command in
+#eval show CommandElabM Unit from
+  elabTacticKinds `keepNestedStateKinds
+    ["rw [h]", "rewrite [h]", "obtain ⟨a, b⟩ := h", "have h : Nat := by exact 0",
+     "let x : Nat := by exact 0", "suffices h : Nat by trivial", "replace h : Nat := by exact 0"]
+
 namespace Frontend
 
 open Lean.Elab.Frontend

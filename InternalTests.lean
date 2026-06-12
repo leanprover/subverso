@@ -751,12 +751,53 @@ partial def Highlighted.stateTree (hl : Highlighted) (depth : Nat := 0) : Array 
   out
 end SubVerso.Highlighting
 
+-- Some newer tactic syntax — `obtain … : T := by …`, `replace … : T := by …` — doesn't exist on
+-- older toolchains.
 open Lean Elab Command in
-/-- Asserts the nested proof-state tree of `src` (highlighted module-style) equals `expected`. -/
-def assertStateTree (src : String) (expected : List (Nat × String × List String)) : CommandElabM Unit := do
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let hasObtain :=
+    (Parser.runParserCategory env `tactic "obtain x : True := by trivial").isOk
+  elabCommand (← `(def$(mkIdent `hasObtain) : Bool := $(quote hasObtain)))
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let hasReplace :=
+    (Parser.runParserCategory env `tactic "replace x : True := by trivial").isOk
+  elabCommand (← `(def$(mkIdent `hasReplace) : Bool := $(quote hasReplace)))
+
+open Lean Elab Command in
+/-- Asserts the nested proof-state tree of `src` (highlighted module-style) equals `expected`. Does
+nothing when `skip` is true — used to skip tactics whose syntax doesn't parse on this toolchain. -/
+def assertStateTree (src : String) (expected : List (Nat × String × List String))
+    (skip : Bool := false) : CommandElabM Unit := do
+  if skip then return
   let tree := (← highlightModuleStyle src).stateTree.toList
   unless tree == expected do
     throwError m!"proof-state tree =\n{repr tree}\nexpected\n{repr expected}"
+
+open Lean Elab Command in
+/--
+Asserts the nested proof-state tree of `src` (highlighted module-style) equals `expected`, after
+dropping nested `by`-token regions (those at depth > 0 whose code is `"by"`).
+
+Whether a macro tactic's embedded `by` carries a state is toolchain-dependent: some Lean versions
+record it with the subproof's goal (so it is shown), later ones with the *enclosing* goal (so
+`Code.conclusionDuplicatesEnclosing` drops it as redundant). That nested-`by` state is therefore not
+a guaranteed output, so this asserts only the stable structure — the whole-tactic region and the real
+subproof steps.
+
+For tactics whose nested `by` state *is* stable, use `assertStateTree`, which compares exactly.
+
+Does nothing when `skip` is true — used to skip tactics whose syntax doesn't parse on this toolchain.
+-/
+def assertStateTreeIgnoringNestedBy (src : String) (expected : List (Nat × String × List String))
+    (skip : Bool := false) : CommandElabM Unit := do
+  if skip then return
+  let tree := (← highlightModuleStyle src).stateTree.toList.filter fun (depth, code, _) => !(depth > 0 && code == "by")
+  unless tree == expected do
+    throwError m!"proof-state tree (ignoring nested `by`) =\n{repr tree}\nexpected\n{repr expected}"
 
 -- `rw`: the closing `rfl` solves the goal, so the outer `rw [...]` region shows the empty (solved)
 -- state, with the three rewrite steps nested at depth 1. Each step's region spans the elaborator's
@@ -790,6 +831,101 @@ open Lean Elab Command in
    (0, "intro h1 h2 h3", ["a = d"]),
    (0, "rw [h1, h2, h3]", []),
      (1, "h1,", ["b = d"]), (1, "h2,", ["c = d"]), (1, "h3", ["d = d"])]
+
+-- `replace h : T := by …` is `have`'s sibling (it rebinds `h`): same macro shape, so the whole
+-- `replace` shows the state after it, with the subproof's real steps nested inside. (Asserted modulo
+-- the nested `by` token, which is toolchain-dependent — see the `have` tests below.)
+open Lean Elab Command in
+#eval assertStateTreeIgnoringNestedBy
+  "example (h : Nat) : True := by\n  replace h : Int := by exact 0\n  trivial"
+  [(0, "by", ["True"]),
+   (0, "replace h : Int := by exact 0", ["True"]),
+     (1, "exact 0", []),
+   (0, "trivial", [])]
+  (skip := !hasReplace)
+
+-- `suffices h : T by …` is one tactic: the whole `suffices` shows the state *after* it — the new
+-- (sufficient) goal `T` — and the nested `by …` (which discharges the *original* goal from `h`) keeps
+-- its own state, since it differs from the `suffices` region's conclusion and isn't shadowed by an
+-- open enclosing region of the same conclusion.
+open Lean Elab Command in
+#eval assertStateTree
+  "example : True := by\n  suffices h : Nat by trivial\n  exact 0"
+  [(0, "by", ["True"]),
+   (0, "suffices h : Nat by trivial", ["Nat"]),
+     (1, "by", ["True"]),
+     (1, "trivial", []),
+   (0, "exact 0", [])]
+
+-- `let … := by …`, like `have`, is one tactic, so the whole `let` shows the state *after* it (the
+-- goal with `x` bound). Unlike `have`, `let`'s embedded `by` is *not* macro-mangled — its tacticSeq
+-- is recorded with the subproof's own goal — so the nested `by` keeps its (correct) state, since it
+-- differs from the enclosing conclusion and `conclusionsDuplicateOpen` leaves it alone.
+open Lean Elab Command in
+#eval assertStateTree
+  "example : True := by\n  let x : Nat := by exact 0\n  trivial"
+  [(0, "by", ["True"]),
+   (0, "let x : Nat := by exact 0", ["True"]),
+     (1, "by", ["Nat"]),
+     (1, "exact 0", []),
+   (0, "trivial", [])]
+open Lean Elab Command in
+#eval assertStateTree
+  "example : True := by\n  let x : Nat × Nat := by\n    refine ⟨?_, ?_⟩\n    · exact 0\n    · exact 1\n  trivial"
+  [(0, "by", ["True"]),
+   (0, "let x : Nat × Nat := by\n    refine ⟨?_, ?_⟩\n    · exact 0\n    · exact 1", ["True"]),
+     (1, "by", ["Nat × Nat"]),
+     (1, "refine ⟨?_, ?_⟩", ["Nat", "Nat"]),
+     (1, "·", ["Nat"]), (1, "exact 0", []),
+     (1, "·", ["Nat"]), (1, "exact 1", []),
+   (0, "trivial", [])]
+
+-- `have … := by …` is a single tactic, so the whole `have` gets a region showing the state *after*
+-- it (the goal with `h` added), with the subproof's steps nested inside at depth 1. (Asserted modulo
+-- the nested `by` token: `have` is a macro, and whether its embedded `by` carries a state varies by
+-- toolchain.)
+open Lean Elab Command in
+#eval assertStateTreeIgnoringNestedBy
+  "example : True := by\n  have h : 2 = 2 := by rfl\n  trivial"
+  [(0, "by", ["True"]),
+   (0, "have h : 2 = 2 := by rfl", ["True"]),
+     (1, "rfl", []),
+   (0, "trivial", [])]
+-- A multi-step subproof keeps every nested step.
+open Lean Elab Command in
+#eval assertStateTreeIgnoringNestedBy
+  "example : True := by\n  have h : 1 = 1 ∧ 2 = 2 := by\n    constructor\n    · rfl\n    · rfl\n  trivial"
+  [(0, "by", ["True"]),
+   (0, "have h : 1 = 1 ∧ 2 = 2 := by\n    constructor\n    · rfl\n    · rfl", ["True"]),
+     (1, "constructor", ["1 = 1", "2 = 2"]),
+     (1, "·", ["1 = 1"]), (1, "rfl", []),
+     (1, "·", ["2 = 2"]), (1, "rfl", []),
+   (0, "trivial", [])]
+
+-- An `obtain` that discharges its goal with a nested `by` is a single tactic, so the whole
+-- `obtain … := …` gets a region showing the state *after* the destructuring, with the nested `by`
+-- proof's states nested inside at depth 1 (like `rw`). (Regression guard: previously the whole
+-- `obtain` region was dropped because `childHasTactics` counted the nested `by`'s tactic info,
+-- leaving only the flat nested `by` states and no clickable `obtain` region.) Both the `:= by …`
+-- form and the `:= f … (by …)` argument form are covered.
+open Lean Elab Command in
+#eval assertStateTree
+  "example : True := by\n  obtain ⟨k, hk⟩ : ∃ k : Nat, k = 0 := by exact ⟨0, rfl⟩\n  trivial"
+  [(0, "by", ["True"]),
+   (0, "obtain ⟨k, hk⟩ : ∃ k : Nat, k = 0 := by exact ⟨0, rfl⟩", ["True"]),
+     (1, "by", ["∃ k, k = 0"]),
+     (1, "exact ⟨0, rfl⟩", []),
+   (0, "trivial", [])]
+  (skip := !hasObtain)
+open Lean Elab Command in
+#eval assertStateTree
+  "example : True := by\n  obtain ⟨k, hk⟩ := id (α := ∃ k : Nat, k = 0) (by exact ⟨0, rfl⟩)\n  trivial"
+  [(0, "by", ["True"]),
+   (0, "obtain ⟨k, hk⟩ := id (α := ∃ k : Nat, k = 0) (by exact ⟨0, rfl⟩)", ["True"]),
+     (1, "by", ["∃ k, k = 0"]),
+     (1, "exact ⟨0, rfl⟩", []),
+   (0, "trivial", [])]
+  (skip := !hasObtain)
 
 -- Comments that look like directives but are not directive *lines* must keep their token styling:
 -- a block comment and an ordinary full-line comment, both containing `ANCHOR:`.
