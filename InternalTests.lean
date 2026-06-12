@@ -751,9 +751,28 @@ partial def Highlighted.stateTree (hl : Highlighted) (depth : Nat := 0) : Array 
   out
 end SubVerso.Highlighting
 
+-- Some newer tactic syntax — `obtain … : T := by …`, `replace … : T := by …` — doesn't exist on
+-- older toolchains.
 open Lean Elab Command in
-/-- Asserts the nested proof-state tree of `src` (highlighted module-style) equals `expected`. -/
-def assertStateTree (src : String) (expected : List (Nat × String × List String)) : CommandElabM Unit := do
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let hasObtain :=
+    (Parser.runParserCategory env `tactic "obtain x : True := by trivial").isOk
+  elabCommand (← `(def$(mkIdent `hasObtain) : Bool := $(quote hasObtain)))
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let hasReplace :=
+    (Parser.runParserCategory env `tactic "replace x : True := by trivial").isOk
+  elabCommand (← `(def$(mkIdent `hasReplace) : Bool := $(quote hasReplace)))
+
+open Lean Elab Command in
+/-- Asserts the nested proof-state tree of `src` (highlighted module-style) equals `expected`. Does
+nothing when `skip` is true — used to skip tactics whose syntax doesn't parse on this toolchain. -/
+def assertStateTree (src : String) (expected : List (Nat × String × List String))
+    (skip : Bool := false) : CommandElabM Unit := do
+  if skip then return
   let tree := (← highlightModuleStyle src).stateTree.toList
   unless tree == expected do
     throwError m!"proof-state tree =\n{repr tree}\nexpected\n{repr expected}"
@@ -770,8 +789,12 @@ a guaranteed output, so this asserts only the stable structure — the whole-tac
 subproof steps.
 
 For tactics whose nested `by` state *is* stable, use `assertStateTree`, which compares exactly.
+
+Does nothing when `skip` is true — used to skip tactics whose syntax doesn't parse on this toolchain.
 -/
-def assertStateTreeIgnoringNestedBy (src : String) (expected : List (Nat × String × List String)) : CommandElabM Unit := do
+def assertStateTreeIgnoringNestedBy (src : String) (expected : List (Nat × String × List String))
+    (skip : Bool := false) : CommandElabM Unit := do
+  if skip then return
   let tree := (← highlightModuleStyle src).stateTree.toList.filter fun (depth, code, _) => !(depth > 0 && code == "by")
   unless tree == expected do
     throwError m!"proof-state tree (ignoring nested `by`) =\n{repr tree}\nexpected\n{repr expected}"
@@ -819,6 +842,7 @@ open Lean Elab Command in
    (0, "replace h : Int := by exact 0", ["True"]),
      (1, "exact 0", []),
    (0, "trivial", [])]
+  (skip := !hasReplace)
 
 -- `suffices h : T by …` is one tactic: the whole `suffices` shows the state *after* it — the new
 -- (sufficient) goal `T` — and the nested `by …` (which discharges the *original* goal from `h`) keeps
@@ -892,6 +916,7 @@ open Lean Elab Command in
      (1, "by", ["∃ k, k = 0"]),
      (1, "exact ⟨0, rfl⟩", []),
    (0, "trivial", [])]
+  (skip := !hasObtain)
 open Lean Elab Command in
 #eval assertStateTree
   "example : True := by\n  obtain ⟨k, hk⟩ := id (α := ∃ k : Nat, k = 0) (by exact ⟨0, rfl⟩)\n  trivial"
@@ -900,6 +925,7 @@ open Lean Elab Command in
      (1, "by", ["∃ k, k = 0"]),
      (1, "exact ⟨0, rfl⟩", []),
    (0, "trivial", [])]
+  (skip := !hasObtain)
 
 -- Comments that look like directives but are not directive *lines* must keep their token styling:
 -- a block comment and an ordinary full-line comment, both containing `ANCHOR:`.
