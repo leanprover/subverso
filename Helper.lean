@@ -106,10 +106,8 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               | .ok v => pure v
             setInfoState {}
             withEnableInfoTree true do
-
               try
-                Command.runTermElabM fun _ => Compat.realizeNameNoOverloads name
-
+                discard <| Command.runTermElabM fun _ => Compat.realizeNameNoOverloads name
               catch
                 | e =>
                   return Response.error 4 (← e.toMessageData.toString) none

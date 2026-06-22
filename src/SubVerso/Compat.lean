@@ -907,7 +907,7 @@ partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM Fronten
 
 end Frontend
 
-def Nat.lt_step {n m : Nat} : n < m → n < m.succ :=
+theorem Nat.lt_step {n m : Nat} : n < m → n < m.succ :=
   %first_succeeding -warning [
     _root_.Nat.lt.step,
     Nat.lt_succ_of_lt

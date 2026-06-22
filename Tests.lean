@@ -136,12 +136,11 @@ def loadModuleContent
 
   let toolchain ←
     match overrideToolchain with
-    | none =>
+    | none => do
       let toolchainfile := projectDir / "lean-toolchain"
-      let toolchain ← do
-          if !(← toolchainfile.pathExists) then
-            throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
-          pure <| Compat.String.trim (← IO.FS.readFile toolchainfile)
+      if !(← toolchainfile.pathExists) then
+        throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
+      pure <| Compat.String.trim (← IO.FS.readFile toolchainfile)
     | some override => pure override
 
   -- Kludge: remove variables introduced by Lake. Clearing out DYLD_LIBRARY_PATH and
