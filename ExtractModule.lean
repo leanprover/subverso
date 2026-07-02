@@ -27,6 +27,11 @@ OPTS may be:
   --suppress-namespaces FILE
     Suppress the showing of the whitespace-delimited list of namespaces in FILE
 
+  --load-dynlib PATH
+    Load the native shared library at PATH before elaboration, so that
+    `@[extern]` declarations (e.g. FFI-backed tactics) resolve when the
+    interpreter runs code. May be given multiple times.
+
   --not-server
     When elaborating a module, import only the public parts. This emulates the
     behavior of the command-line compiler instead of the language server.
@@ -75,9 +80,14 @@ partial def commandKind (cmd : Syntax) : SyntaxNodeKind :=
   | `(command|$_cmd1 in $cmd2) => commandKind cmd2
   | _ => cmd.getKind
 
-unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
+unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (dynlibs : Array System.FilePath) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
     initSearchPath (← findSysroot)
+    -- Load the module's native shared libraries (extern libs and precompiled
+    -- module plugins) so that `@[extern]` declarations resolve when the
+    -- interpreter runs code during elaboration — e.g. FFI-backed tactics.
+    for lib in dynlibs do
+      Lean.loadDynlib lib
     let modName := mod.toName
 
     let sp ← Compat.initSrcSearchPath
@@ -132,41 +142,47 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
 structure Config where
   asServer : Bool
   suppressedNamespaces : Array Name := #[]
+  dynlibs : Array System.FilePath := #[]
   mod : String
   outFile : Option String := none
 
-def Config.fromArgs (args : List String) : IO Config := go true #[] args
+def Config.fromArgs (args : List String) : IO Config := go true #[] #[] args
 where
-  go (asServer : Bool) (nss : Array Name) : List String → IO Config
+  go (asServer : Bool) (nss : Array Name) (libs : Array System.FilePath) : List String → IO Config
     | "--suppress-namespace" :: more =>
       if let ns :: more := more then
-        go asServer (nss.push ns.toName) more
+        go asServer (nss.push ns.toName) libs more
       else
         throw <| .userError "No namespace given after --suppress-namespace"
     | "--suppress-namespaces" :: more => do
       if let file :: more := more then
         let contents ← IO.FS.readFile file
         let nss' := Compat.String.splitToList contents (·.isWhitespace) |>.filter (!·.isEmpty) |>.map (·.toName)
-        go asServer (nss ++ nss') more
+        go asServer (nss ++ nss') libs more
       else
         throw <| .userError "No namespace file given after --suppress-namespaces"
+    | "--load-dynlib" :: more =>
+      if let lib :: more := more then
+        go asServer nss (libs.push ⟨lib⟩) more
+      else
+        throw <| .userError "No path given after --load-dynlib"
     | "--not-server" :: more => do
-      go false nss more
-    | [mod] => pure { asServer, suppressedNamespaces := nss, mod }
-    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, mod, outFile := some outFile }
+      go false nss libs more
+    | [mod] => pure { asServer, suppressedNamespaces := nss, dynlibs := libs, mod }
+    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, dynlibs := libs, mod, outFile := some outFile }
     | other => throw <| .userError s!"Didn't understand remaining arguments: {other}"
 
 unsafe def main (args : List String) : IO UInt32 := do
   try
-    let { asServer, suppressedNamespaces, mod, outFile } ← Config.fromArgs args
+    let { asServer, suppressedNamespaces, dynlibs, mod, outFile } ← Config.fromArgs args
     match outFile with
     | none =>
-      go asServer suppressedNamespaces mod (← IO.getStdout)
+      go asServer suppressedNamespaces dynlibs mod (← IO.getStdout)
     | some outFile =>
       if let some p := (outFile : System.FilePath).parent then
         IO.FS.createDirAll p
       IO.FS.withFile outFile .write fun h =>
-        go asServer suppressedNamespaces mod (.ofHandle h)
+        go asServer suppressedNamespaces dynlibs mod (.ofHandle h)
   catch e =>
     if args.isEmpty then
       IO.eprintln s!"No arguments provided."

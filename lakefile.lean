@@ -60,6 +60,16 @@ open Lean Elab Command Term in
   else if ty == "LeanLib → IndexBuildM (Array Lake.Module)" then
     elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : IndexBuildM (Array Lake.Module) := lib.modules.fetch)
   else throwError "Didn't recognize type of lib.modules.fetch to define compatibility shim for 'getMods': {ty}"
+
+-- `ModuleSetup.plugins` is `Array Lean.Plugin` on versions that have the
+-- `Lean.Plugin` structure, and `Array System.FilePath` on those that don't.
+-- Normalize either to a plain array of paths.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  if (← getEnv).contains `Lean.Plugin then
+    elabCommand <| ← `(def $(mkIdent `pluginPaths) (ps : Array Lean.Plugin) : Array System.FilePath := ps.map (·.path))
+  else
+    elabCommand <| ← `(def $(mkIdent `pluginPaths) (ps : Array System.FilePath) : Array System.FilePath := ps)
 end Compat
 
 def nightly? (version : String) : Option (Nat × Nat × Nat) := do
@@ -185,6 +195,11 @@ else
 
     let exeJob ← «subverso-extract-mod».fetch
     let modJob ← mod.olean.fetch
+    -- The module's interpreter dynlibs (extern libs and precompiled-module
+    -- plugins). Passing these to the extractor lets `@[extern]` declarations
+    -- resolve when it runs code during elaboration (e.g. FFI-backed tactics);
+    -- without them such calls fail with a missing-native-symbol error.
+    let setupJob ← mod.setup.fetch
     let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
     let buildDir := ws.root.buildDir
@@ -192,21 +207,29 @@ else
     let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
 
     exeJob.bindM fun exeFile =>
+      setupJob.bindM fun setup =>
       modJob.mapM fun oleanFile => do
         addPureTrace suppNS
         buildFileUnlessUpToDate' (text := true) nsFile do
           IO.FS.createDirAll (buildDir / "highlighted")
           IO.FS.writeFile nsFile suppNS
 
-        -- Rebuild if either the SubVerso executable changes, or if the module changes
+        let dynlibs := setup.dynlibs ++ Compat.pluginPaths setup.plugins
+        let dynlibArgs : Array String :=
+          dynlibs.toList.flatMap (fun p => ["--load-dynlib", p.toString]) |>.toArray
+
+        -- Rebuild if the SubVerso executable, the module, or the set of native
+        -- libraries changes.
         addTrace (← fetchFileTrace exeFile)
         addTrace (← fetchFileTrace oleanFile)
         addTrace (← fetchFileTrace nsFile)
+        addPureTrace (String.intercalate "\n" dynlibArgs.toList)
 
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
-            args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
+            args := #["--suppress-namespaces", nsFile.toString] ++ dynlibArgs ++
+              #[mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
         pure hlFile
