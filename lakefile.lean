@@ -9,7 +9,18 @@ open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let env ← getEnv
   let useOldBind := mkIdent `useOldBind
-  elabCommand <| ← `(def $useOldBind := !$(quote <| env.contains `Lake.buildFileUnlessUpToDate'))
+  let useSetupFile := mkIdent `useSetupFile
+  let hasBuildFileUnlessUpToDate' := env.contains `Lake.buildFileUnlessUpToDate'
+  let hasModuleSetupFile :=
+    match Lean.versionString.splitOn "." with
+    | "4" :: minor :: _ =>
+      match minor.toNat? with
+      | some n => decide (n >= 27)
+      | none => false
+    | _ => false
+  let useOld := !hasBuildFileUnlessUpToDate'
+  elabCommand <| ← `(def $useOldBind := $(quote useOld))
+  elabCommand <| ← `(def $useSetupFile := $(quote hasModuleSetupFile))
 
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
@@ -180,39 +191,75 @@ meta if Compat.useOldBind then
         pure (hlFile, trace)
 
 else
-  module_facet highlighted mod : FilePath := do
-    let ws ← getWorkspace
+  meta if Compat.useSetupFile then
+    module_facet highlighted mod : FilePath := do
+      let ws ← getWorkspace
 
-    let exeJob ← «subverso-extract-mod».fetch
-    let modJob ← mod.olean.fetch
-    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
+      let exeJob ← «subverso-extract-mod».fetch
+      let modJob ← mod.olean.fetch
+      let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
-    let buildDir := ws.root.buildDir
-    let hlFile := mod.filePath (buildDir / "highlighted") "json"
-    let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
+      let buildDir := ws.root.buildDir
+      let hlFile := mod.filePath (buildDir / "highlighted") "json"
+      let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
 
-    exeJob.bindM fun exeFile =>
-      modJob.mapM fun oleanFile => do
-        addPureTrace suppNS
-        buildFileUnlessUpToDate' (text := true) nsFile do
-          IO.FS.createDirAll (buildDir / "highlighted")
-          IO.FS.writeFile nsFile suppNS
+      exeJob.bindM fun exeFile =>
+        modJob.mapM fun oleanFile => do
+          addPureTrace suppNS
+          buildFileUnlessUpToDate' (text := true) nsFile do
+            IO.FS.createDirAll (buildDir / "highlighted")
+            IO.FS.writeFile nsFile suppNS
 
-        -- Rebuild when the SubVerso executable, the module's source, or the compiled module
-        -- changes. Changes to the source code that don't change the olean must also be reflected
-        -- in semantically-highlighted source, so the Lean file is important here.
-        addTrace (← computeTrace exeFile)
-        addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
-        addTrace (← computeTrace oleanFile)
-        addTrace (← computeTrace (TextFilePath.mk nsFile))
+          -- Rebuild when the SubVerso executable, the module's source, or the compiled module
+          -- changes. Changes to the source code that don't change the olean must also be reflected
+          -- in semantically-highlighted source, so the Lean file is important here.
+          addTrace (← computeTrace exeFile)
+          addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
+          addTrace (← computeTrace oleanFile)
+          addTrace (← computeTrace (TextFilePath.mk mod.setupFile))
+          addTrace (← computeTrace (TextFilePath.mk nsFile))
 
-        buildFileUnlessUpToDate' (text := true) hlFile <|
-          proc {
-            cmd := exeFile.toString
-            args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
-            env := ← getAugmentedEnv
-          }
-        pure hlFile
+          buildFileUnlessUpToDate' (text := true) hlFile <|
+            proc {
+              cmd := exeFile.toString
+              args :=  #["--suppress-namespaces", nsFile.toString, "--setup", mod.setupFile.toString, mod.name.toString, hlFile.toString]
+              env := ← getAugmentedEnv
+            }
+          pure hlFile
+  else
+    module_facet highlighted mod : FilePath := do
+      let ws ← getWorkspace
+
+      let exeJob ← «subverso-extract-mod».fetch
+      let modJob ← mod.olean.fetch
+      let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
+
+      let buildDir := ws.root.buildDir
+      let hlFile := mod.filePath (buildDir / "highlighted") "json"
+      let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
+
+      exeJob.bindM fun exeFile =>
+        modJob.mapM fun oleanFile => do
+          addPureTrace suppNS
+          buildFileUnlessUpToDate' (text := true) nsFile do
+            IO.FS.createDirAll (buildDir / "highlighted")
+            IO.FS.writeFile nsFile suppNS
+
+          -- Rebuild when the SubVerso executable, the module's source, or the compiled module
+          -- changes. Changes to the source code that don't change the olean must also be reflected
+          -- in semantically-highlighted source, so the Lean file is important here.
+          addTrace (← computeTrace exeFile)
+          addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
+          addTrace (← computeTrace oleanFile)
+          addTrace (← computeTrace (TextFilePath.mk nsFile))
+
+          buildFileUnlessUpToDate' (text := true) hlFile <|
+            proc {
+              cmd := exeFile.toString
+              args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
+              env := ← getAugmentedEnv
+            }
+          pure hlFile
 
 meta if Compat.useOldBind then
   module_facet examples mod : FilePath := do
