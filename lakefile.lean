@@ -218,12 +218,14 @@ else
         let dynlibArgs : Array String :=
           dynlibs.toList.flatMap (fun p => ["--load-dynlib", p.toString]) |>.toArray
 
-        -- Rebuild if the SubVerso executable, the module, or the set of native
-        -- libraries changes.
+        -- Rebuild if the SubVerso executable, the module, the set of native
+        -- libraries, or any of their contents change.
         addTrace (← fetchFileTrace exeFile)
         addTrace (← fetchFileTrace oleanFile)
         addTrace (← fetchFileTrace nsFile)
         addPureTrace (String.intercalate "\n" dynlibArgs.toList)
+        for lib in dynlibs do
+          addTrace (← fetchFileTrace lib)
 
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
