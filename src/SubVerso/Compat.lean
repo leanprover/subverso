@@ -239,12 +239,50 @@ def isModule (stx : Syntax) : Bool :=
 
 set_option linter.unusedVariables false in
 open CanBeArrayOrList in
-def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) (asServer : Bool := false) : IO Environment :=
+def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) (asServer : Bool := false) (plugins : Array System.FilePath := #[]) : IO Environment :=
   %first_succeeding [
-    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then if asServer then .server else .exported else .private),
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (plugins := plugins) (loadExts := true) (level := if isModule then if asServer then .server else .exported else .private),
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (plugins := plugins) (loadExts := true),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  if (← getEnv).contains `Lean.Environment.setModulePackage then
+    elabCommand <| ← `(def $(mkIdent `setModulePackage) (env : Lean.Environment) (pkg? : Option String) : Lean.Environment := env.setModulePackage pkg?)
+  else
+    elabCommand <| ← `(def $(mkIdent `setModulePackage) (env : Lean.Environment) (_pkg? : Option String) : Lean.Environment := env)
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let importModulesWithSetup := mkIdent `importModulesWithSetup?
+  if (← getEnv).contains `Lean.ModuleSetup then
+    elabCommand <| ← `(
+      def $importModulesWithSetup:ident
+          (asServer : Bool) (setupFile? : Option System.FilePath) (headerImports : Array Import)
+          (headerIsModule : Bool) : IO (Option (Environment × Options)) := do
+        let some setupFile := setupFile?
+          | pure none
+        let setup ← Lean.ModuleSetup.load setupFile
+        setup.dynlibs.forM Lean.loadDynlib
+        let opts := setup.options.toOptions
+        let imports := setup.imports?.getD headerImports
+        let isModule := setup.isModule || headerIsModule
+        let level := if isModule then if asServer then .server else .exported else .private
+        let env ← Lean.importModules imports opts (trustLevel := 0) (plugins := setup.plugins)
+          (loadExts := true) (level := level) (arts := setup.importArts)
+        let env := env.setMainModule setup.name
+        let env := setModulePackage env setup.package?
+        pure <| some (env, opts)
+    )
+  else
+    elabCommand <| ← `(
+      def $importModulesWithSetup:ident
+          (_asServer : Bool) (_setupFile? : Option System.FilePath) (_headerImports : Array Import)
+          (_headerIsModule : Bool) : IO (Option (Environment × Options)) := do
+        pure none
+    )
 
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do

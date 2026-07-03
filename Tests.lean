@@ -117,6 +117,38 @@ def lakeVars :=
     "LEAN_GITHASH",
     "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
 
+def runLake
+    (projectDir : String) (args : Array String)
+    (overrideToolchain : Option String := none) :
+    IO Unit := do
+
+  let projectDir : System.FilePath := projectDir
+  let toolchain ←
+    match overrideToolchain with
+    | none =>
+      let toolchainfile := projectDir / "lean-toolchain"
+      if !(← toolchainfile.pathExists) then
+        throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
+      pure <| Compat.String.trim (← IO.FS.readFile toolchainfile)
+    | some override => pure override
+
+  let cmd := "elan"
+  let args := #["run", "--install", toolchain, "lake"] ++ args
+  let res ← IO.Process.output {
+    cmd, args, cwd := projectDir
+    env := lakeVars.map (·, none)
+  }
+  if res.exitCode != 0 then
+    IO.eprintln <|
+      "Lake process failed." ++
+      "\nCWD: " ++ projectDir.toString ++
+      "\nCommand: " ++ cmd ++
+      "\nArgs: " ++ repr args ++
+      "\nExit code: " ++ toString res.exitCode ++
+      "\nstdout: " ++ res.stdout ++
+      "\nstderr: " ++ res.stderr
+    throw <| .userError "Lake process failed"
+
 -- Loads a module. To work well, it really should lock the toolchain file, but that's not available
 -- in all targeted versions, so it's just part of these tests. See Verso for a version to use in
 -- documents.
@@ -334,7 +366,10 @@ def prepareDemodulizedSource : IO System.FilePath := do
   if ← src.pathExists then IO.FS.removeDirAll src
   IO.FS.createDirAll src
   copyRecursively "." src
-    (fun f => !f.startsWith "." && !(f.startsWith "demo" || f.startsWith "small-tests") && f != "lake-manifest.json")
+    (fun f =>
+      !f.startsWith "." &&
+      !(f.startsWith "demo" || f.startsWith "small-tests" || f.startsWith "ffi-tests") &&
+      f != "lake-manifest.json")
   discard <| IO.Process.run {cmd := "python3", args := #["demodulize.py", src.toString]}
   pure src
 
@@ -464,10 +499,14 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.eprintln "Example proof count mismatch"
     return 1
 
+  let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
+
+  IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
+  let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
+  runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
 
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
   let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
-  let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
   if oldest.contains (Compat.String.trim myToolchain) then
     IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {Compat.String.trim myToolchain}"
   else
