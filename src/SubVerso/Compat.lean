@@ -260,13 +260,15 @@ open Lean Elab Command in
         `(env.setMainModule setup.name)
     elabCommand <| ← `(
       def $importModulesWithSetup:ident
-          (asServer : Bool) (setupFile? : Option System.FilePath) (headerImports : Array Import)
+          {f : Type → Type} [CanBeArrayOrList f]
+          (asServer : Bool) (setupFile? : Option System.FilePath) (headerImports : f Import)
           (headerIsModule : Bool) : IO (Option (Environment × Options)) := do
         let some setupFile := setupFile?
           | pure none
         let setup ← Lean.ModuleSetup.load setupFile
         setup.dynlibs.forM Lean.loadDynlib
         let opts := setup.options.toOptions
+        let headerImports := CanBeArrayOrList.asArray headerImports
         let imports := setup.imports?.getD headerImports
         let isModule := setup.isModule || headerIsModule
         let level := if isModule then if asServer then .server else .exported else .private
@@ -278,7 +280,8 @@ open Lean Elab Command in
   else
     elabCommand <| ← `(
       def $importModulesWithSetup:ident
-          (_asServer : Bool) (setupFile? : Option System.FilePath) (_headerImports : Array Import)
+          {f : Type → Type} [CanBeArrayOrList f]
+          (_asServer : Bool) (setupFile? : Option System.FilePath) (_headerImports : f Import)
           (_headerIsModule : Bool) : IO (Option (Environment × Options)) := do
         match setupFile? with
         | none => pure none
