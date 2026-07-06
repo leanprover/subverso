@@ -9,18 +9,24 @@ open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let env ← getEnv
   let useOldBind := mkIdent `useOldBind
-  let useSetupFile := mkIdent `useSetupFile
-  let hasBuildFileUnlessUpToDate' := env.contains `Lake.buildFileUnlessUpToDate'
-  let hasModuleSetupFile :=
-    match Lean.versionString.splitOn "." with
-    | "4" :: minor :: _ =>
-      match minor.toNat? with
-      | some n => decide (n >= 27)
-      | none => false
-    | _ => false
-  let useOld := !hasBuildFileUnlessUpToDate'
-  elabCommand <| ← `(def $useOldBind := $(quote useOld))
-  elabCommand <| ← `(def $useSetupFile := $(quote hasModuleSetupFile))
+  elabCommand <| ← `(def $useOldBind := !$(quote <| env.contains `Lake.buildFileUnlessUpToDate'))
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let addSetupArg := mkIdent `addSetupArg
+  -- Feature-probe Lake's setup-file support instead of version-gating it, so older Lake keeps the
+  -- original extractor CLI while newer Lake passes the module setup file it already computes.
+  if (← getEnv).contains `Lake.Module.setupFile then
+    elabCommand <| ← `(
+      def $addSetupArg:ident (mod : Lake.Module) (args : Array String) : Lake.JobM (Array String) := do
+        Lake.addTrace (← Lake.fetchFileTrace mod.setupFile)
+        pure (args ++ #["--setup", mod.setupFile.toString])
+    )
+  else
+    elabCommand <| ← `(
+      def $addSetupArg:ident (_mod : Lake.Module) (args : Array String) : Lake.JobM (Array String) :=
+        pure args
+    )
 
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
@@ -161,6 +167,9 @@ lean_exe «subverso-helper» where
   root := `Helper
   supportInterpreter := true
 
+-- Keep the old and modern facet implementations separate: their Lake job/trace APIs differ enough
+-- that factoring the full body would force more compatibility shims. Share only the small setup-file
+-- argument helper above, which is the new behavior this fix needs.
 meta if Compat.useOldBind then
   module_facet highlighted mod : FilePath := do
     let ws ← getWorkspace
@@ -191,69 +200,37 @@ meta if Compat.useOldBind then
         pure (hlFile, trace)
 
 else
-  meta if Compat.useSetupFile then
-    module_facet highlighted mod : FilePath := do
-      let ws ← getWorkspace
+  module_facet highlighted mod : FilePath := do
+    let ws ← getWorkspace
 
-      let exeJob ← «subverso-extract-mod».fetch
-      let modJob ← mod.olean.fetch
-      let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
+    let exeJob ← «subverso-extract-mod».fetch
+    let modJob ← mod.olean.fetch
+    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
-      let buildDir := ws.root.buildDir
-      let hlFile := mod.filePath (buildDir / "highlighted") "json"
-      let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
+    let buildDir := ws.root.buildDir
+    let hlFile := mod.filePath (buildDir / "highlighted") "json"
+    let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
 
-      exeJob.bindM fun exeFile =>
-        modJob.mapM fun oleanFile => do
-          addPureTrace suppNS
-          buildFileUnlessUpToDate' (text := true) nsFile do
-            IO.FS.createDirAll (buildDir / "highlighted")
-            IO.FS.writeFile nsFile suppNS
+    exeJob.bindM fun exeFile =>
+      modJob.mapM fun oleanFile => do
+        addPureTrace suppNS
+        buildFileUnlessUpToDate' (text := true) nsFile do
+          IO.FS.createDirAll (buildDir / "highlighted")
+          IO.FS.writeFile nsFile suppNS
 
-          -- Rebuild if either the SubVerso executable changes, or if the module changes
-          addTrace (← fetchFileTrace exeFile)
-          addTrace (← fetchFileTrace oleanFile)
-          addTrace (← fetchFileTrace mod.setupFile)
-          addTrace (← fetchFileTrace nsFile)
+        -- Rebuild if either the SubVerso executable changes, or if the module changes
+        addTrace (← fetchFileTrace exeFile)
+        addTrace (← fetchFileTrace oleanFile)
+        addTrace (← fetchFileTrace nsFile)
 
-          buildFileUnlessUpToDate' (text := true) hlFile <|
-            proc {
-              cmd := exeFile.toString
-              args :=  #["--suppress-namespaces", nsFile.toString, "--setup", mod.setupFile.toString, mod.name.toString, hlFile.toString]
-              env := ← getAugmentedEnv
-            }
-          pure hlFile
-  else
-    module_facet highlighted mod : FilePath := do
-      let ws ← getWorkspace
-
-      let exeJob ← «subverso-extract-mod».fetch
-      let modJob ← mod.olean.fetch
-      let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
-
-      let buildDir := ws.root.buildDir
-      let hlFile := mod.filePath (buildDir / "highlighted") "json"
-      let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
-
-      exeJob.bindM fun exeFile =>
-        modJob.mapM fun oleanFile => do
-          addPureTrace suppNS
-          buildFileUnlessUpToDate' (text := true) nsFile do
-            IO.FS.createDirAll (buildDir / "highlighted")
-            IO.FS.writeFile nsFile suppNS
-
-          -- Rebuild if either the SubVerso executable changes, or if the module changes
-          addTrace (← fetchFileTrace exeFile)
-          addTrace (← fetchFileTrace oleanFile)
-          addTrace (← fetchFileTrace nsFile)
-
-          buildFileUnlessUpToDate' (text := true) hlFile <|
-            proc {
-              cmd := exeFile.toString
-              args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
-              env := ← getAugmentedEnv
-            }
-          pure hlFile
+        let args ← Compat.addSetupArg mod #["--suppress-namespaces", nsFile.toString]
+        buildFileUnlessUpToDate' (text := true) hlFile <|
+          proc {
+            cmd := exeFile.toString
+            args := args ++ #[mod.name.toString, hlFile.toString]
+            env := ← getAugmentedEnv
+          }
+        pure hlFile
 
 meta if Compat.useOldBind then
   module_facet examples mod : FilePath := do

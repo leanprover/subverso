@@ -239,25 +239,25 @@ def isModule (stx : Syntax) : Bool :=
 
 set_option linter.unusedVariables false in
 open CanBeArrayOrList in
-def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) (asServer : Bool := false) (plugins : Array System.FilePath := #[]) : IO Environment :=
+def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) (asServer : Bool := false) : IO Environment :=
   %first_succeeding [
-    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (plugins := plugins) (loadExts := true) (level := if isModule then if asServer then .server else .exported else .private),
-    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (plugins := plugins) (loadExts := true),
+    Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then if asServer then .server else .exported else .private),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
 
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
-  if (← getEnv).contains `Lean.Environment.setModulePackage then
-    elabCommand <| ← `(def $(mkIdent `setModulePackage) (env : Lean.Environment) (pkg? : Option String) : Lean.Environment := env.setModulePackage pkg?)
-  else
-    elabCommand <| ← `(def $(mkIdent `setModulePackage) (env : Lean.Environment) (_pkg? : Option String) : Lean.Environment := env)
-
-open Lean Elab Command in
-#eval show CommandElabM Unit from do
   let importModulesWithSetup := mkIdent `importModulesWithSetup?
-  if (← getEnv).contains `Lean.ModuleSetup then
+  let env ← getEnv
+  -- Older Lean versions also had `ModuleSetup`, but with a different JSON schema.
+  -- Gate on the fields used by the Lake setup files that `lean --setup` consumes here.
+  if env.contains `Lean.ModuleSetup.imports? && env.contains `Lean.ModuleSetup.importArts then
+    let setModuleName ←
+      if env.contains `Lean.ModuleSetup.package? && env.contains `Lean.Environment.setModulePackage then
+        `(Lean.Environment.setModulePackage setup.package? (env.setMainModule setup.name))
+      else
+        `(env.setMainModule setup.name)
     elabCommand <| ← `(
       def $importModulesWithSetup:ident
           (asServer : Bool) (setupFile? : Option System.FilePath) (headerImports : Array Import)
@@ -272,16 +272,18 @@ open Lean Elab Command in
         let level := if isModule then if asServer then .server else .exported else .private
         let env ← Lean.importModules imports opts (trustLevel := 0) (plugins := setup.plugins)
           (loadExts := true) (level := level) (arts := setup.importArts)
-        let env := env.setMainModule setup.name
-        let env := setModulePackage env setup.package?
+        let env := $setModuleName:term
         pure <| some (env, opts)
     )
   else
     elabCommand <| ← `(
       def $importModulesWithSetup:ident
-          (_asServer : Bool) (_setupFile? : Option System.FilePath) (_headerImports : Array Import)
+          (_asServer : Bool) (setupFile? : Option System.FilePath) (_headerImports : Array Import)
           (_headerIsModule : Bool) : IO (Option (Environment × Options)) := do
-        pure none
+        match setupFile? with
+        | none => pure none
+        | some _ =>
+          throw <| IO.userError "--setup is not supported by this Lean version"
     )
 
 

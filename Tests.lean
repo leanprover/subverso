@@ -344,6 +344,29 @@ Turns a toolchain string (e.g. `leanprover/lean4:v4.8.0`) into a safe single pat
 def sanitizeToolchain (toolchain : String) : String :=
   toolchain.map fun c => if c.isAlphanum || c == '.' then c else '-'
 
+/-- Extracts the leading `major.minor` release version from a Lean toolchain string. -/
+def toolchainRelease? (toolchain : String) : Option (Nat × Nat) := do
+  let version :=
+    match Compat.String.splitToList toolchain (· == ':') with
+    | [_pkg, v] => v
+    | [v] => v
+    | _ => toolchain
+  let version := if version.startsWith "v" then Compat.String.drop version 1 else version
+  let core :=
+    match Compat.String.splitToList version (· == '-') with
+    | v :: _ => v
+    | [] => version
+  match Compat.String.splitToList core (· == '.') with
+  | major :: minor :: _ => pure (← major.toNat?, ← minor.toNat?)
+  | _ => none
+
+/-- Whether this toolchain is new enough for the Lake setup-file highlighted-facet regression. -/
+def supportsModuleSetupFixture (toolchain : String) : Bool :=
+  match toolchainRelease? toolchain with
+  | some (4, minor) => minor >= 25
+  | some (major, _) => major > 4
+  | none => false
+
 /--
 Reads a project's pinned toolchain from its `lean-toolchain` file.
 -/
@@ -387,6 +410,9 @@ def prepareProject (project : System.FilePath) (toolchain : String) (demodSrc : 
   -- artifacts or a previously-generated dependency source — those are managed below / kept warm.
   copyRecursively project buildDir
     (fun f => f != ".lake" && f != "no-mod" && f != "lake-manifest.json")
+  -- The prepared copy must run under the matrix/fixed toolchain, not under a fixture's checked-in
+  -- toolchain, because Lake may inspect or rewrite this file while building the project.
+  IO.FS.writeFile (buildDir / "lean-toolchain") toolchain
   -- Refresh the path-dependency source in place, leaving any existing `no-mod/.lake` untouched.
   copyRecursively demodSrc (buildDir / "no-mod") (fun _ => true)
   pure buildDir
@@ -501,9 +527,12 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
 
   let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
 
-  IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
-  let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
-  runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
+  if supportsModuleSetupFixture myToolchain then
+    IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
+    let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
+    runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
+  else
+    IO.println s!"Skipping Lake module setup dynlib check for old Lean toolchain {myToolchain}"
 
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
   let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
