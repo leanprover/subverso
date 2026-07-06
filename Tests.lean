@@ -360,10 +360,14 @@ def toolchainRelease? (toolchain : String) : Option (Nat × Nat) := do
   | major :: minor :: _ => pure (← major.toNat?, ← minor.toNat?)
   | _ => none
 
-/-- Whether this toolchain is new enough for the Lake setup-file highlighted-facet regression. -/
+/--
+Whether this toolchain can run the FFI regression for the highlighted facet's Lake setup-file path.
+Lake provides setup files earlier, but through 4.26 this fixture's own extern `#eval` cannot load its
+dynlib during module build, before SubVerso extraction runs.
+-/
 def supportsModuleSetupFixture (toolchain : String) : Bool :=
   match toolchainRelease? toolchain with
-  | some (4, minor) => minor >= 25
+  | some (4, minor) => minor >= 27
   | some (major, _) => major > 4
   | none => false
 
@@ -532,7 +536,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
     runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
   else
-    IO.println s!"Skipping Lake module setup dynlib check for old Lean toolchain {myToolchain}"
+    IO.println s!"Skipping Lake module setup dynlib fixture for Lean toolchain {myToolchain}"
 
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
   let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
