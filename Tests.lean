@@ -117,6 +117,38 @@ def lakeVars :=
     "LEAN_GITHASH",
     "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
 
+def runLake
+    (projectDir : String) (args : Array String)
+    (overrideToolchain : Option String := none) :
+    IO Unit := do
+
+  let projectDir : System.FilePath := projectDir
+  let toolchain ←
+    match overrideToolchain with
+    | none =>
+      let toolchainfile := projectDir / "lean-toolchain"
+      if !(← toolchainfile.pathExists) then
+        throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
+      pure <| Compat.String.trim (← IO.FS.readFile toolchainfile)
+    | some override => pure override
+
+  let cmd := "elan"
+  let args := #["run", "--install", toolchain, "lake"] ++ args
+  let res ← IO.Process.output {
+    cmd, args, cwd := projectDir
+    env := lakeVars.map (·, none)
+  }
+  if res.exitCode != 0 then
+    IO.eprintln <|
+      "Lake process failed." ++
+      "\nCWD: " ++ projectDir.toString ++
+      "\nCommand: " ++ cmd ++
+      "\nArgs: " ++ repr args ++
+      "\nExit code: " ++ toString res.exitCode ++
+      "\nstdout: " ++ res.stdout ++
+      "\nstderr: " ++ res.stderr
+    throw <| .userError "Lake process failed"
+
 -- Loads a module. To work well, it really should lock the toolchain file, but that's not available
 -- in all targeted versions, so it's just part of these tests. See Verso for a version to use in
 -- documents.
@@ -312,6 +344,33 @@ Turns a toolchain string (e.g. `leanprover/lean4:v4.8.0`) into a safe single pat
 def sanitizeToolchain (toolchain : String) : String :=
   toolchain.map fun c => if c.isAlphanum || c == '.' then c else '-'
 
+/-- Extracts the leading `major.minor` release version from a Lean toolchain string. -/
+def toolchainRelease? (toolchain : String) : Option (Nat × Nat) := do
+  let version :=
+    match Compat.String.splitToList toolchain (· == ':') with
+    | [_pkg, v] => v
+    | [v] => v
+    | _ => toolchain
+  let version := if version.startsWith "v" then Compat.String.drop version 1 else version
+  let core :=
+    match Compat.String.splitToList version (· == '-') with
+    | v :: _ => v
+    | [] => version
+  match Compat.String.splitToList core (· == '.') with
+  | major :: minor :: _ => pure (← major.toNat?, ← minor.toNat?)
+  | _ => none
+
+/--
+Whether this toolchain can run the FFI regression for the highlighted facet's Lake setup-file path.
+Lake provides setup files earlier, but through 4.26 this fixture's own extern `#eval` cannot load its
+dynlib during module build, before SubVerso extraction runs.
+-/
+def supportsModuleSetupFixture (toolchain : String) : Bool :=
+  match toolchainRelease? toolchain with
+  | some (4, minor) => minor >= 27
+  | some (major, _) => major > 4
+  | none => false
+
 /--
 Reads a project's pinned toolchain from its `lean-toolchain` file.
 -/
@@ -334,7 +393,10 @@ def prepareDemodulizedSource : IO System.FilePath := do
   if ← src.pathExists then IO.FS.removeDirAll src
   IO.FS.createDirAll src
   copyRecursively "." src
-    (fun f => !f.startsWith "." && !(f.startsWith "demo" || f.startsWith "small-tests") && f != "lake-manifest.json")
+    (fun f =>
+      !f.startsWith "." &&
+      !(f.startsWith "demo" || f.startsWith "small-tests" || f.startsWith "ffi-tests") &&
+      f != "lake-manifest.json")
   discard <| IO.Process.run {cmd := "python3", args := #["demodulize.py", src.toString]}
   pure src
 
@@ -352,6 +414,9 @@ def prepareProject (project : System.FilePath) (toolchain : String) (demodSrc : 
   -- artifacts or a previously-generated dependency source — those are managed below / kept warm.
   copyRecursively project buildDir
     (fun f => f != ".lake" && f != "no-mod" && f != "lake-manifest.json")
+  -- The prepared copy must run under the matrix/fixed toolchain, not under a fixture's checked-in
+  -- toolchain, because Lake may inspect or rewrite this file while building the project.
+  IO.FS.writeFile (buildDir / "lean-toolchain") toolchain
   -- Refresh the path-dependency source in place, leaving any existing `no-mod/.lake` untouched.
   copyRecursively demodSrc (buildDir / "no-mod") (fun _ => true)
   pure buildDir
@@ -464,10 +529,17 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.eprintln "Example proof count mismatch"
     return 1
 
+  let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
+
+  if supportsModuleSetupFixture myToolchain then
+    IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
+    let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
+    runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
+  else
+    IO.println s!"Skipping Lake module setup dynlib fixture for Lean toolchain {myToolchain}"
 
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
   let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
-  let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
   if oldest.contains (Compat.String.trim myToolchain) then
     IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {Compat.String.trim myToolchain}"
   else

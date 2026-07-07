@@ -13,6 +13,23 @@ open Lean Elab Command in
 
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
+  let addSetupArg := mkIdent `addSetupArg
+  -- Feature-probe Lake's setup-file support instead of version-gating it, so older Lake keeps the
+  -- original extractor CLI while newer Lake passes the module setup file it already computes.
+  if (← getEnv).contains `Lake.Module.setupFile then
+    elabCommand <| ← `(
+      def $addSetupArg:ident (mod : Lake.Module) (args : Array String) : Lake.JobM (Array String) := do
+        Lake.addTrace (← Lake.fetchFileTrace mod.setupFile)
+        pure (args ++ #["--setup", mod.setupFile.toString])
+    )
+  else
+    elabCommand <| ← `(
+      def $addSetupArg:ident (_mod : Lake.Module) (args : Array String) : Lake.JobM (Array String) :=
+        pure args
+    )
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
   let env ← getEnv
   let oldMixArray := `Lake.BuildJob.mixArray
   let useOld := (env.contains oldMixArray) && !Linter.isDeprecated env oldMixArray
@@ -150,6 +167,10 @@ lean_exe «subverso-helper» where
   root := `Helper
   supportInterpreter := true
 
+-- Keep the old and modern facet implementations separate: their Lake job/trace APIs differ enough
+-- that factoring the full body would force more compatibility shims. The setup-file behavior is
+-- factored only at the argument level, where it does not expose old and modern Lake APIs to each
+-- other.
 meta if Compat.useOldBind then
   module_facet highlighted mod : FilePath := do
     let ws ← getWorkspace
@@ -203,10 +224,11 @@ else
         addTrace (← fetchFileTrace oleanFile)
         addTrace (← fetchFileTrace nsFile)
 
+        let args ← Compat.addSetupArg mod #["--suppress-namespaces", nsFile.toString]
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
-            args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
+            args := args ++ #[mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
         pure hlFile

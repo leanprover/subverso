@@ -246,6 +246,49 @@ def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (tr
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
 
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let importModulesWithSetup := mkIdent `importModulesWithSetup?
+  let env ← getEnv
+  -- Older Lean versions also had `ModuleSetup`, but with a different JSON schema.
+  -- Gate on the fields used by the Lake setup files that `lean --setup` consumes here.
+  if env.contains `Lean.ModuleSetup.imports? && env.contains `Lean.ModuleSetup.importArts then
+    let setModuleName ←
+      if env.contains `Lean.ModuleSetup.package? && env.contains `Lean.Environment.setModulePackage then
+        `(Lean.Environment.setModulePackage setup.package? (env.setMainModule setup.name))
+      else
+        `(env.setMainModule setup.name)
+    elabCommand <| ← `(
+      def $importModulesWithSetup:ident
+          {f : Type → Type} [CanBeArrayOrList f]
+          (asServer : Bool) (setupFile? : Option System.FilePath) (headerImports : f Import)
+          (headerIsModule : Bool) : IO (Option (Environment × Options)) := do
+        let some setupFile := setupFile?
+          | pure none
+        let setup ← Lean.ModuleSetup.load setupFile
+        setup.dynlibs.forM Lean.loadDynlib
+        let opts := setup.options.toOptions
+        let headerImports := CanBeArrayOrList.asArray headerImports
+        let imports := setup.imports?.getD headerImports
+        let isModule := setup.isModule || headerIsModule
+        let level := if isModule then if asServer then .server else .exported else .private
+        let env ← Lean.importModules imports opts (trustLevel := 0) (plugins := setup.plugins)
+          (loadExts := true) (level := level) (arts := setup.importArts)
+        let env := $setModuleName:term
+        pure <| some (env, opts)
+    )
+  else
+    elabCommand <| ← `(
+      def $importModulesWithSetup:ident
+          {f : Type → Type} [CanBeArrayOrList f]
+          (_asServer : Bool) (setupFile? : Option System.FilePath) (_headerImports : f Import)
+          (_headerIsModule : Bool) : IO (Option (Environment × Options)) := do
+        match setupFile? with
+        | none => pure none
+        | some _ =>
+          throw <| IO.userError "--setup is not supported by this Lean version"
+    )
+
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [
