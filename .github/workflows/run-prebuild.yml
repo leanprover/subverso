@@ -11,27 +11,51 @@ on:
 
 jobs:
   prebuild:
-    name: Prebuild ${{ matrix.tag }}
-    runs-on: nscloud-ubuntu-22.04-amd64-8x16
+    name: Prebuild ${{ matrix.tag }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # Keep these (project, toolchain, dir) triples in sync with `run-ci.yml`'s restore steps and
         # with `fixedTargets` in `Tests.lean`. `dir` is `sanitizeToolchain(toolchain)/project`.
         include:
-          - tag: demo-toml-v4.8.0
+          - os: nscloud-ubuntu-22.04-amd64-8x16
+            tag: demo-toml-v4.8.0
             project: demo-toml
             toolchain: "leanprover/lean4:v4.8.0"
             dir: .builds/leanprover-lean4-v4.8.0/demo-toml
-          - tag: demo-v4.3.0
+          - os: nscloud-ubuntu-22.04-amd64-8x16
+            tag: demo-v4.3.0
             project: demo
             toolchain: "leanprover/lean4:v4.3.0"
             dir: .builds/leanprover-lean4-v4.3.0/demo
-          - tag: demo-v4.8.0
+          - os: nscloud-ubuntu-22.04-amd64-8x16
+            tag: demo-v4.8.0
             project: demo
             toolchain: "leanprover/lean4:v4.8.0"
             dir: .builds/leanprover-lean4-v4.8.0/demo
-          - tag: demo-4.10.0
+          - os: nscloud-ubuntu-22.04-amd64-8x16
+            tag: demo-4.10.0
+            project: demo
+            toolchain: "leanprover/lean4:4.10.0"
+            dir: .builds/leanprover-lean4-4.10.0/demo
+          - os: macos-15-intel
+            tag: demo-toml-v4.8.0
+            project: demo-toml
+            toolchain: "leanprover/lean4:v4.8.0"
+            dir: .builds/leanprover-lean4-v4.8.0/demo-toml
+          - os: macos-15-intel
+            tag: demo-v4.3.0
+            project: demo
+            toolchain: "leanprover/lean4:v4.3.0"
+            dir: .builds/leanprover-lean4-v4.3.0/demo
+          - os: macos-15-intel
+            tag: demo-v4.8.0
+            project: demo
+            toolchain: "leanprover/lean4:v4.8.0"
+            dir: .builds/leanprover-lean4-v4.8.0/demo
+          - os: macos-15-intel
+            tag: demo-4.10.0
             project: demo
             toolchain: "leanprover/lean4:4.10.0"
             dir: .builds/leanprover-lean4-4.10.0/demo

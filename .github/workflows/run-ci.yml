@@ -96,7 +96,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: .lake
-          key: ${{ runner.os }}-${{ hashFiles('lakefile.lean') }}-${{ hashFiles('lean-toolchain') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('lakefile.lean') }}-${{ hashFiles('lean-toolchain') }}
 
       - name: Build the project
         run: |

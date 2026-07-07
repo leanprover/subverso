@@ -52,26 +52,28 @@ jobs:
             installer: |
               curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
         # Mac runners are rare and expensive, so spot-check that the
-        # subprocess support seems OK but be less thorough
+        # subprocess support seems OK but be less thorough. Pin the macOS
+        # runner instead of using macos-latest: the current latest image is
+        # macOS 26 arm64, where older Lean-built binaries abort in dyld.
         include:
           - toolchain: "4.24.0"
             platform:
-              os: macos-latest
+              os: macos-15-intel
               installer: |
                 curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
           - toolchain: "4.9.1"
             platform:
-              os: macos-latest
+              os: macos-15-intel
               installer: |
                 curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
           - toolchain: "4.8.0"
             platform:
-              os: macos-latest
+              os: macos-15-intel
               installer: |
                 brew install elan-init
           - toolchain: "4.3.0"
             platform:
-              os: macos-latest
+              os: macos-15-intel
               installer: |
                 brew install elan-init
     name: Build and test without modules (${{ matrix.platform.os }}, ${{ matrix.platform.installer}}, ${{ matrix.toolchain}})
@@ -105,11 +107,13 @@ jobs:
             installer: |
               curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
         # Mac runners are rare and expensive, so spot-check that the
-        # subprocess support seems OK but be less thorough
+        # subprocess support seems OK but be less thorough. Pin the macOS
+        # runner instead of using macos-latest: the current latest image is
+        # macOS 26 arm64, where older Lean-built binaries abort in dyld.
         include:
           - toolchain: "4.27.0-rc1"
             platform:
-              os: macos-latest
+              os: macos-15-intel
               installer: |
                 curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
 
