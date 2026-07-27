@@ -90,7 +90,7 @@ open Lean Elab Command
         where
           loop p1 p2 :=
             if p2 < p.stopPos then
-              if p1 < s.stopPos then
+              if p1 < s.stopPos && s.str.get p1 == p.str.get p2 then
                 loop (s.str.next p1) (p.str.next p2)
               else none
             else pure {s with startPos := p1}

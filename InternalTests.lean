@@ -1079,6 +1079,11 @@ end TokenKinds
 
 section TermMatching
 
+-- `dropPrefix?` compares the characters of the prefix, not just its length
+#evalString "true\n" (("hello world".dropPrefix? "hello ").map (·.toString) == some "world")
+#evalString "true\n" ("hello world".dropPrefix? "hallo ").isNone
+#evalString "true\n" ("hi".dropPrefix? "hello ").isNone
+
 /--
 `#evalMatchingExpr inp term exp` highlights `inp`, looks up `term` with `matchingExpr?`, and checks
 that the matched code renders as `exp`.
