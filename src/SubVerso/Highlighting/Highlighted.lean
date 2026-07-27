@@ -187,6 +187,13 @@ instance : Quote Token where
       mkCApp ``Token.mk #[quote kind, quote content]
 
 /--
+Whether the token kind is part of a comment.
+-/
+def Token.Kind.isComment : Token.Kind → Bool
+  | .lineComment | .blockComment | .commentDelim => true
+  | _ => false
+
+/--
 The canonical CSS class for a token kind.
 -/
 def Token.Kind.cssClass : Token.Kind → String
