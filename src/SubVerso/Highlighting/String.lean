@@ -46,6 +46,16 @@ partial def firstToken (hl : Highlighted) : Option (Highlighted × Highlighted) 
   | .token .. => pure (hl, .empty)
 
 /--
+Splits highlighted code into its first token that's part of a term followed by the rest of the code,
+passing over comments. If the code contains no such token, `none` is returned.
+-/
+partial def firstCodeToken (hl : Highlighted) : Option (Highlighted × Highlighted) := do
+  let (first, rest) ← firstToken hl
+  if let .token ⟨k, _⟩ := first then
+    if k.isComment then return ← firstCodeToken rest
+  return (first, rest)
+
+/--
 Returns the prefix of `hl` that matches the string `term`. The returned code has whitespace from
 `term`.
 -/
@@ -58,7 +68,7 @@ def matchingExprPrefix? (hl : Highlighted) (term : String) : Option Highlighted 
     let ws := Compat.String.takeWhile term (·.isWhitespace)
     out := out ++ .text ws
     term := Compat.String.trimLeft term
-    let (first, rest) ← firstToken hl
+    let (first, rest) ← firstCodeToken hl
     hl := rest
     let firstStr := first.toString
     let term' ← term.dropPrefix? firstStr
@@ -73,7 +83,7 @@ whitespace from `term`.
 def matchingExpr? (hl : Highlighted) (term : String) : Option Highlighted := do
   let mut hl := hl
   repeat
-    let (first, rest) ← firstToken hl
+    let (first, rest) ← firstCodeToken hl
     hl := rest
     if let some out := matchingExprPrefix? (first ++ rest) term then
       return out

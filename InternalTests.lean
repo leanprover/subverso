@@ -2,6 +2,7 @@
 import SubVerso.Examples
 import SubVerso.Highlighting.Highlighted
 import SubVerso.Highlighting.Anchors
+import SubVerso.Highlighting.String
 
 /-! These are SubVerso tests that don't involve a subprocess, to make development easier. -/
 
@@ -1075,5 +1076,45 @@ open Lean Elab Command in
 #assertKindRich "theorem t : True := by\n  have h : True := trivial\n  exact h" ":=" "delim"
 
 end TokenKinds
+
+section TermMatching
+
+/--
+`#evalMatchingExpr inp term exp` highlights `inp`, looks up `term` with `matchingExpr?`, and checks
+that the matched code renders as `exp`.
+-/
+elab "#evalMatchingExpr" inp:str term:str exp:str : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  let some found := hl.matchingExpr? term.getString
+    | throwErrorAt term m!"No match for {String.quote term.getString} in\n{inp.getString}"
+  if found.asString != exp.getString then
+    throwError m!"Mismatched match\n---Found:---\n{found.asString}\n\n---Expected:---\n{exp.getString}"
+
+/--
+`#evalNoMatchingExpr inp term` highlights `inp` and checks that `matchingExpr?` finds no match for
+`term`.
+-/
+elab "#evalNoMatchingExpr" inp:str term:str : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  if let some found := hl.matchingExpr? term.getString then
+    throwErrorAt term m!"Expected no match for {String.quote term.getString}, got\n{found.asString}"
+
+-- A term is matched across the comments that separate its tokens, and the match renders with
+-- whitespace from the search string rather than the comment.
+#evalMatchingExpr
+  "def f (b : Bool) : Option Nat :=\n  if b then\n    some 0\n  else -- nothing to report\n    none"
+  "else none" "else none"
+
+#evalMatchingExpr
+  "def f (b : Bool) : Option Nat :=\n  if b then some 0 else /- nothing to report -/ none"
+  "else none" "else none"
+
+-- Matching starts at the token after a leading comment.
+#evalMatchingExpr "-- a leading comment\ndef x := 1 + 2" "1 + 2" "1 + 2"
+
+-- Comment content is not itself matchable as a term.
+#evalNoMatchingExpr "def x := 1 -- plus 2\n" "plus 2"
+
+end TermMatching
 
 def main : IO Unit := pure ()
