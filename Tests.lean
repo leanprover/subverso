@@ -344,32 +344,17 @@ Turns a toolchain string (e.g. `leanprover/lean4:v4.8.0`) into a safe single pat
 def sanitizeToolchain (toolchain : String) : String :=
   toolchain.map fun c => if c.isAlphanum || c == '.' then c else '-'
 
-/-- Extracts the leading `major.minor` release version from a Lean toolchain string. -/
-def toolchainRelease? (toolchain : String) : Option (Nat × Nat) := do
-  let version :=
-    match Compat.String.splitToList toolchain (· == ':') with
-    | [_pkg, v] => v
-    | [v] => v
-    | _ => toolchain
-  let version := if version.startsWith "v" then Compat.String.drop version 1 else version
-  let core :=
-    match Compat.String.splitToList version (· == '-') with
-    | v :: _ => v
-    | [] => version
-  match Compat.String.splitToList core (· == '.') with
-  | major :: minor :: _ => pure (← major.toNat?, ← minor.toNat?)
-  | _ => none
-
-/--
-Whether this toolchain can run the FFI regression for the highlighted facet's Lake setup-file path.
-Lake provides setup files earlier, but through 4.26 this fixture's own extern `#eval` cannot load its
-dynlib during module build, before SubVerso extraction runs.
--/
-def supportsModuleSetupFixture (toolchain : String) : Bool :=
-  match toolchainRelease? toolchain with
-  | some (4, minor) => minor >= 27
-  | some (major, _) => major > 4
-  | none => false
+-- The fixture's `lp_ffi_answer` symbol uses package-aware module names, so probe the corresponding
+-- setup features rather than inferring them from the Lean version.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let supports :=
+    env.contains `Lean.ModuleSetup.package? &&
+    env.contains `Lean.Environment.setModulePackage
+  elabCommand <| ← `(
+    def $(mkIdent `supportsModuleSetupFixture) : Bool := $(quote supports)
+  )
 
 /--
 Reads a project's pinned toolchain from its `lean-toolchain` file.
@@ -548,7 +533,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
 
   let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
 
-  if supportsModuleSetupFixture myToolchain then
+  if supportsModuleSetupFixture then
     IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
     let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
     runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)

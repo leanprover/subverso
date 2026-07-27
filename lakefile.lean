@@ -167,10 +167,8 @@ lean_exe «subverso-helper» where
   root := `Helper
   supportInterpreter := true
 
--- Keep the old and modern facet implementations separate: their Lake job/trace APIs differ enough
--- that factoring the full body would force more compatibility shims. The setup-file behavior is
--- factored only at the argument level, where it does not expose old and modern Lake APIs to each
--- other.
+-- Lake's job-binding API changed, so the old and modern implementations remain separate. Module
+-- setup files were introduced after that change and are handled only by the modern branch.
 meta if Compat.useOldBind then
   module_facet highlighted mod : FilePath := do
     let ws ← getWorkspace
