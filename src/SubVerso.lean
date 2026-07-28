@@ -5,6 +5,8 @@ Author: David Thrane Christiansen
 -/
 module
 public import SubVerso.Compat
-public import SubVerso.Highlighting
 public import SubVerso.Examples
-public section
+public import SubVerso.Helper
+public import SubVerso.Highlighting
+public import SubVerso.Module
+public import SubVerso.Signature
