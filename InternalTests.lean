@@ -90,7 +90,7 @@ elab "#evalString" s:str e:term : command => do
     elabCommand <| ← `(#eval $e)
     let msgs' := (← get).messages
     let [msg] := msgs'.toList
-      | throwError "Too many messages"
+      | throwError "Too many messages:\n{msgs'.toArray.map (·.data)}"
     if (← msg.toString) != s.getString then
       throwErrorAt e "Expected {String.quote s.getString}, got {String.quote (← msg.toString)}"
   finally
@@ -104,7 +104,7 @@ elab "#evalStrings " "[" ss:str,* "] " e:term : command => do
     elabCommand <| ← `(#eval $e)
     let msgs' := (← get).messages
     let [msg] := msgs'.toList
-      | throwError "Too many messages"
+      | throwError "Too many messages:\n{msgs'.toArray.map (·.data)}"
     let ok := ss.getElems.toList.map (·.getString)
     if (← msg.toString) ∉ ok then
       throwErrorAt e "Expected one of {ok.map String.quote}, got {String.quote (← msg.toString)}"
@@ -112,14 +112,14 @@ elab "#evalStrings " "[" ss:str,* "] " e:term : command => do
     modify ({· with messages := msgs})
 
 #evalString "[[\"n * 1 = n\"]]\n"
-  (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "by") |>.map (·.snd.toList.map (·.conclusion)))
+  (proofEx.highlighted.proofStates.toList.filter (·.fst == "by") |>.map (·.snd.toList.map (·.conclusion)))
 
 #evalStrings [ -- NB #5677 changed goal displays, so the second
                -- version here became the expected output after
                -- nightly-2024-10-18.
     "[[some \"zero\"], [some \"succ\"], [none], [some \"succ.succ\"], [none]]\n",
     "[[none], [some \"succ.succ\"], [none]]\n"]
- (proofEx.highlighted[0].proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
+ (proofEx.highlighted.proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
 
 /-! # Message Normalization -/
 

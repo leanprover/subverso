@@ -178,7 +178,7 @@ macro_rules (kind := exampleClassicConfig)
 
 private meta def saveExample
     [Monad m] [MonadEnv m] [MonadQuotation m] [MonadLog m] [AddMessageContext m] [MonadOptions m]
-    (name : Ident) (hl : Array Highlighted)
+    (name : Ident) (hl : Highlighted)
     (original : String) (start stop : Position)
     (messages : List (MessageSeverity × String))
     (kind : Option Name) : m Unit := do
@@ -280,7 +280,7 @@ meta def elabExample
   let text ← getFileMap
   let str := Compat.String.Pos.extract text.source b' e'
   if config.error || !config.keep then set initSt
-  saveExample name hl str (text.toPosition b) (text.toPosition e) freshMsgs config.kind
+  saveExample name (.seq hl) str (text.toPosition b) (text.toPosition e) freshMsgs config.kind
 
   for (tmName, term) in termExamples do
     let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees suppressedNS)
@@ -289,7 +289,7 @@ meta def elabExample
     let .original _ _ trailing stopPos := term.getTailInfo
       | throwErrorAt term "Failed to get source position"
     let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
-    saveExample (mkIdentFrom term <| name.getId ++ tmName) #[hl] str
+    saveExample (mkIdentFrom term <| name.getId ++ tmName) hl str
       (text.toPosition startPos) (text.toPosition stopPos)
       freshMsgs (config.kind.map (· ++ `inner))
 
@@ -410,7 +410,7 @@ elab_rules : command
     let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     let suppressedNS ← getSuppressed
     let hl ← liftTermElabM <| highlight x #[] trees suppressedNS
-    saveExample name #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] none
+    saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none
 
 scoped syntax "%show_term " ("(" &"kind" " := " ident ")")? ident (":" term)? " := " term : command
 elab_rules : command
@@ -431,7 +431,7 @@ elab_rules : command
     let hl ← liftTermElabM <| highlight tm #[] trees suppressedNS
     let kind? := kind?.map (·.getId.eraseMacroScopes)
 
-    saveExample x #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] kind?
+    saveExample x hl str (text.toPosition startPos) (text.toPosition stopPos) [] kind?
 
     for (tmName, term) in termExamples do
       let hl ← liftTermElabM (highlight term #[] trees suppressedNS)
@@ -440,7 +440,7 @@ elab_rules : command
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
       let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
-      saveExample (mkIdentFrom term (x.getId ++ tmName)) #[hl] str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner))
+      saveExample (mkIdentFrom term (x.getId ++ tmName)) hl str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner))
 
 private meta def biDesc : BinderInfo → String
   | .default => "explicit"

@@ -48,7 +48,7 @@ instance : FromJson MessageSeverity where
 deriving instance Repr for MessageSeverity
 
 structure Example where
-  highlighted : Array Highlighted
+  highlighted : Highlighted
   messages : List (MessageSeverity × String)
   original : String
   start : Lean.Position

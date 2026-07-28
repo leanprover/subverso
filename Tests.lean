@@ -46,7 +46,7 @@ def Highlighting.Highlighted.countProofStates (hl : Highlighting.Highlighted) : 
 namespace Examples
 
 def Example.countProofStates (e : Example) : Nat :=
-  e.highlighted.map (·.countProofStates) |>.foldl (· + ·) 0
+  e.highlighted.countProofStates
 
 end Examples
 end SubVerso
