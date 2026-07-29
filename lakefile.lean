@@ -115,11 +115,11 @@ open Lean Elab Command in
 -- Old Lean doesn't have `leanOptions` field
 meta if leanOptionsExists then
   package «subverso» where
-    precompileModules := false -- supportsPrecompile Lean.versionString
+    precompileModules := true -- supportsPrecompile Lean.versionString
     leanOptions := if supportsModuleSystem then #[⟨`experimental.module, true⟩] else #[]
 else
   package «subverso» where
-    precompileModules := false -- supportsPrecompile Lean.versionString
+    precompileModules := true -- supportsPrecompile Lean.versionString
 
 lean_lib SubVerso where
   srcDir := "src/"
