@@ -90,11 +90,11 @@ implicitly checked by downstream projects).
 def supportsPrecompile (version : String) : Bool :=
   if let some (y, m, _d) := nightly? version then
     y ≥ 2025 && m ≥ 6
+  else if let some (major, _minor, rc?) := release? version then
+    -- lean4#6063
+    !System.Platform.isOSX || (major > 20 || (major == 20 && rc?.isNone))
   else
-    version ∈ [
-      "4.21.0",
-      "4.22.0-rc4"
-    ]
+    false
 
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
@@ -115,11 +115,11 @@ open Lean Elab Command in
 -- Old Lean doesn't have `leanOptions` field
 meta if leanOptionsExists then
   package «subverso» where
-    precompileModules := true -- supportsPrecompile Lean.versionString
+    precompileModules := supportsPrecompile Lean.versionString
     leanOptions := if supportsModuleSystem then #[⟨`experimental.module, true⟩] else #[]
 else
   package «subverso» where
-    precompileModules := true -- supportsPrecompile Lean.versionString
+    precompileModules := supportsPrecompile Lean.versionString
 
 lean_lib SubVerso where
   srcDir := "src/"
