@@ -83,7 +83,7 @@ def checkSignature
     | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
 
   -- Elaborate as an opaque constant (unsafe is to avoid an Inhabited constraint on the return type)
-  let stx ← if supportsNoncomputableUnsafe then
+  let stx ← if Compat.supportsNoncomputableUnsafe then
       `(command| noncomputable unsafe opaque $noClash $sig)
     else
       `(command| unsafe opaque $noClash $sig)

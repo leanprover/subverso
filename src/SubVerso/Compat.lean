@@ -132,7 +132,11 @@ open Lean Elab Command
       `(def $(mkIdent `_root_.Array.flatten) {α} (xss : Array (Array α)) : Array α :=
           xss.foldl (init := #[]) fun acc xs => acc ++ xs)
     elabCommand cmd
+end
 
+namespace SubVerso.Compat
+
+open Lean Elab Command in
 /- Does this toolchain accept `noncomputable unsafe`,
 or only `noncomputable` and `unsafe` but not both?
 Allowed since Lean 4.8.0 (lean4#3647).
@@ -150,9 +154,6 @@ Result is saved as `supportsNoncomputableUnsafe`. -/
     catch _ => pure false
   modify fun s => { s with messages := savedMsgs }
   elabCommand <| ← `(def $(mkIdent `supportsNoncomputableUnsafe) : Bool := $(quote ok))
-end
-
-namespace SubVerso.Compat
 
 elab "%first_defined" "[" xs:ident,* "]" : term => do
   let env ← getEnv

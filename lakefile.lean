@@ -78,15 +78,6 @@ def release? (version : String) : Option (Nat × Nat × Option Nat) := do
   none
 
 /--
-Are precompiled modules known to work with this version and SubVerso?
-
-Precompiled modules give a performance boost to elaboration-time code that manipulates SubVerso's
-data structures, but they work differently across Lean versions.
-
-Precompiled modules may work with more versions; the versions checked here are those releases that
-have been specifically checked together with nightly releases that are considered probable (and
-implicitly checked by downstream projects).
-/--
 Do precompiled modules work in the current Lean version and operating system?
 
 Precompiled modules give a performance boost to elaboration-time code that manipulates SubVerso's
@@ -97,7 +88,7 @@ Precompilation has not been thoroughly tested on older nightly releases, so it i
 prior to 2026.
 -/
 def supportsPrecompile (version : String) : Bool :=
-  if let some (y, m, _d) := nightly? version then
+  if let some (y, _m, _d) := nightly? version then
     y ≥ 2026
   else if let some (major, _minor, rc?) := release? version then
     -- lean4#6063
@@ -376,6 +367,8 @@ library_facet orphanMods lib : Array Name := do
             unless modNames.contains m do
               modify (·.push m)
           get
-      catch _ =>
-        return orphans
+      catch
+        -- thrown by `forEachModuleIn` on roots with no corresponding directory
+        | .noFileOrDirectory .. => return orphans
+        | e => throw e
   return .pure orphans
