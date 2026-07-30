@@ -331,10 +331,8 @@ open Syntax in
 private meta def quoteJsonNumber : JsonNumber → Term
     | ⟨mantissa, exponent⟩ => mkCApp ``JsonNumber.mk #[quote mantissa, quote exponent]
 
-
 meta instance : Quote JsonNumber where
   quote := private quoteJsonNumber
-
 
 open Syntax in
 meta partial instance : Quote Json where
@@ -439,28 +437,6 @@ elab_rules : command
         | throwErrorAt term "Failed to get source position"
       let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
       saveExample (mkIdentFrom term (x.getId ++ tmName)) hl str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner))
-
-private meta def biDesc : BinderInfo → String
-  | .default => "explicit"
-  | .implicit => "implicit"
-  | .instImplicit => "instance"
-  | .strictImplicit => "strict implicit"
-
-
-private meta partial def compare (blame : Syntax): Expr → Expr → MetaM Unit
-  | .forallE x t1 b1 bi1, .forallE y t2 b2 bi2 => do
-    if x.eraseMacroScopes != y.eraseMacroScopes then
-      logErrorAt blame m!"Mismatched parameter name: expected '{x.eraseMacroScopes}' but got '{y.eraseMacroScopes}'"
-    if bi1 != bi2 then logErrorAt blame m!"Mismatched binder of {x}: expected {biDesc bi1} but got {biDesc bi2}"
-    if t1.isAppOfArity' ``optParam 2 then
-      if t2.isAppOfArity' ``optParam 2 then
-        if !(← Meta.isDefEq t1.appArg! t2.appArg!) then
-          logErrorAt blame m!"Mismatched default values for parameter {x}: expected '{t1.appArg!}' but got '{t2.appArg!}'"
-    Meta.withLocalDecl x bi1 t1 fun e =>
-      compare blame (b1.instantiate1 e) (b2.instantiate1 e)
-  | .mdata _ tty', sty => compare blame tty' sty
-  | tty , .mdata _ sty' => compare blame tty sty'
-  | _, _ => pure ()
 
 scoped syntax (name := signature) "%signature" ident declId declSig : command
 elab_rules : command
