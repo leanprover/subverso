@@ -122,7 +122,7 @@ else
     precompileModules := supportsPrecompile Lean.versionString
 
 lean_lib SubVerso where
-  srcDir := "src/"
+  srcDir := "src"
   roots := #[`SubVerso]
 
 @[default_target]
