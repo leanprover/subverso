@@ -27,3 +27,25 @@ jobs:
           else
             echo "All copyright headers present."
           fi
+
+  orphan-modules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install elan
+        run: |
+          set -o pipefail
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Check for orphaned modules
+        run: |
+          out="$(lake query SubVerso:orphanMods)"
+          if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+            echo "Found orphaned modules (under src/SubVerso/* but not imported by SubVerso.lean):"
+            echo "$out"
+            exit 1
+          fi
+          echo "No orphaned modules."

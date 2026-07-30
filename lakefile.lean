@@ -348,3 +348,25 @@ else
       let hlDir := buildDir / "examples"
       logInfo s!"Highlighted code written to '{hlDir}'"
       pure hlDir
+
+open Lean in
+/-- Compute the orphaned modules in a library:
+modules that appear under the glob `R.*` for some library root `R`
+but are not imported by any library root.
+
+Orphaned modules break `precompileModules` on some toolchains (lean4#14326). -/
+library_facet orphanMods lib : Array Name := do
+  let mods ← Compat.getMods lib
+  let modNames := mods.foldl (init := NameSet.empty) (·.insert ·.name)
+  let mut orphans := #[]
+  for root in lib.config.roots do
+    orphans ← show IO _ /- needed to catch IO.Error -/ from do
+      try
+        StateT.run' (s := orphans) do
+          Glob.submodules root |>.forEachModuleIn lib.srcDir fun m => do
+            unless modNames.contains m do
+              modify (·.push m)
+          get
+      catch _ =>
+        return orphans
+  return .pure orphans
