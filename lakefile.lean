@@ -86,6 +86,15 @@ data structures, but they work differently across Lean versions.
 Precompiled modules may work with more versions; the versions checked here are those releases that
 have been specifically checked together with nightly releases that are considered probable (and
 implicitly checked by downstream projects).
+/--
+Do precompiled modules work in the current Lean version and operating system?
+
+Precompiled modules give a performance boost to elaboration-time code that manipulates SubVerso's
+data structures, so it's useful to enable them. However, they do not work properly on macOS prior to Lean
+version 4.20.
+
+Precompilation has not been thoroughly tested on older nightly releases, so it is disabled for nightlies
+prior to 2026.
 -/
 def supportsPrecompile (version : String) : Bool :=
   if let some (y, m, _d) := nightly? version then
