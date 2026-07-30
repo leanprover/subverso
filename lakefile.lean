@@ -198,8 +198,11 @@ else
           IO.FS.createDirAll (buildDir / "highlighted")
           IO.FS.writeFile nsFile suppNS
 
-        -- Rebuild if either the SubVerso executable changes, or if the module changes
+        -- Rebuild when the SubVerso executable, the module's source, or the compiled module
+        -- changes. Changes to the source code that don't change the olean must also be reflected
+        -- in semantically-highlighted source, so the Lean file is important here.
         addTrace (← fetchFileTrace exeFile)
+        addTrace (← fetchFileTrace mod.leanFile (text := true))
         addTrace (← fetchFileTrace oleanFile)
         addTrace (← fetchFileTrace nsFile)
 
