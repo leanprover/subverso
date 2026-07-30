@@ -89,7 +89,7 @@ implicitly checked by downstream projects).
 -/
 def supportsPrecompile (version : String) : Bool :=
   if let some (y, m, _d) := nightly? version then
-    y ≥ 2025 && m ≥ 6
+    y ≥ 2026
   else if let some (major, _minor, rc?) := release? version then
     -- lean4#6063
     !System.Platform.isOSX || (major > 20 || (major == 20 && rc?.isNone))
