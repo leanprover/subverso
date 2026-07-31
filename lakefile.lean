@@ -201,10 +201,10 @@ else
         -- Rebuild when the SubVerso executable, the module's source, or the compiled module
         -- changes. Changes to the source code that don't change the olean must also be reflected
         -- in semantically-highlighted source, so the Lean file is important here.
-        addTrace (← fetchFileTrace exeFile)
-        addTrace (← fetchFileTrace mod.leanFile (text := true))
-        addTrace (← fetchFileTrace oleanFile)
-        addTrace (← fetchFileTrace nsFile)
+        addTrace (← computeTrace exeFile)
+        addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
+        addTrace (← computeTrace oleanFile)
+        addTrace (← computeTrace (TextFilePath.mk nsFile))
 
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
@@ -258,8 +258,9 @@ else
         buildFileUnlessUpToDate' (text := true) nsFile do
           IO.FS.createDirAll (buildDir / "examples")
           IO.FS.writeFile nsFile suppNS
-        addTrace (← fetchFileTrace exeFile)
-        addTrace (← fetchFileTrace oleanPath)
+        addTrace (← computeTrace exeFile)
+        addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
+        addTrace (← computeTrace oleanPath)
         Compat.logStep s!"Exporting highlighted example JSON for '{mod.name}'"
         buildFileUnlessUpToDate' (text := true) hlFile do
           proc {
