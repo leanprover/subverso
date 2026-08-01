@@ -78,23 +78,23 @@ def release? (version : String) : Option (Nat × Nat × Option Nat) := do
   none
 
 /--
-Are precompiled modules known to work with this version and SubVerso?
+Do precompiled modules work in the current Lean version and operating system?
 
 Precompiled modules give a performance boost to elaboration-time code that manipulates SubVerso's
-data structures, but they work differently across Lean versions.
+data structures, so it's useful to enable them. However, they do not work properly on macOS prior to Lean
+version 4.20.
 
-Precompiled modules may work with more versions; the versions checked here are those releases that
-have been specifically checked together with nightly releases that are considered probable (and
-implicitly checked by downstream projects).
+Precompilation has not been thoroughly tested on older nightly releases, so it is disabled for nightlies
+prior to 2026.
 -/
 def supportsPrecompile (version : String) : Bool :=
-  if let some (y, m, _d) := nightly? version then
-    y ≥ 2025 && m ≥ 6
+  if let some (y, _m, _d) := nightly? version then
+    y ≥ 2026
+  else if let some (major, _minor, rc?) := release? version then
+    -- lean4#6063
+    !System.Platform.isOSX || (major > 20 || (major == 20 && rc?.isNone))
   else
-    version ∈ [
-      "4.21.0",
-      "4.22.0-rc4"
-    ]
+    false
 
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
@@ -115,14 +115,14 @@ open Lean Elab Command in
 -- Old Lean doesn't have `leanOptions` field
 meta if leanOptionsExists then
   package «subverso» where
-    precompileModules := false -- supportsPrecompile Lean.versionString
+    precompileModules := supportsPrecompile Lean.versionString
     leanOptions := if supportsModuleSystem then #[⟨`experimental.module, true⟩] else #[]
 else
   package «subverso» where
-    precompileModules := false -- supportsPrecompile Lean.versionString
+    precompileModules := supportsPrecompile Lean.versionString
 
 lean_lib SubVerso where
-  srcDir := "src/"
+  srcDir := "src"
   roots := #[`SubVerso]
 
 @[default_target]
@@ -352,3 +352,27 @@ else
       let hlDir := buildDir / "examples"
       logInfo s!"Highlighted code written to '{hlDir}'"
       pure hlDir
+
+open Lean in
+/-- Compute the orphaned modules in a library:
+modules that appear under the glob `R.*` for some library root `R`
+but are not imported by any library root.
+
+Orphaned modules break `precompileModules` on some toolchains (lean4#14326). -/
+library_facet orphanMods lib : Array Name := do
+  let mods ← Compat.getMods lib
+  let modNames := mods.foldl (init := NameSet.empty) (·.insert ·.name)
+  let mut orphans := #[]
+  for root in lib.config.roots do
+    orphans ← show IO _ /- needed to catch IO.Error -/ from do
+      try
+        StateT.run' (s := orphans) do
+          Glob.submodules root |>.forEachModuleIn lib.srcDir fun m => do
+            unless modNames.contains m do
+              modify (·.push m)
+          get
+      catch
+        -- thrown by `forEachModuleIn` on roots with no corresponding directory
+        | .noFileOrDirectory .. => return orphans
+        | e => throw e
+  return .pure orphans

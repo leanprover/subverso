@@ -16,7 +16,7 @@ public section
 
 /-!
 This module contains a version of the signature checking code that's independent of the embedded
-example infrastructure. In the long run, this version should replace it, and we should migrate away
+example infrastructure. In the long run, we should migrate away
 from the old name example mechanism in favor of quotations from the anchor mechanism.
 -/
 
@@ -50,23 +50,23 @@ private partial def compare (blame : Syntax): Expr → Expr → MetaM Unit
   | tty , .mdata _ sty' => compare blame tty sty'
   | _, _ => pure ()
 
+def declNameOfId [Monad m] [MonadError m] : TSyntax ``Lean.Parser.Command.declId → m Ident
+  | `(Lean.Parser.Command.declId|$x:ident) => pure x
+  | `(Lean.Parser.Command.declId|$x:ident.{$_u:ident,*}) => pure x
+  | declId => throwErrorAt declId "Unexpected format of name: {declId}"
+
 /--
 Check the signature by elaborating and comparing.
 -/
 def checkSignature
     (sigName : TSyntax ``Lean.Parser.Command.declId)
     (sig : TSyntax ``Lean.Parser.Command.declSig) :
-    CommandElabM (Highlighted × String × Compat.String.Pos × Compat.String.Pos) := do
-  let sig : TSyntax `Lean.Parser.Command.declSig := ⟨sig⟩
-
+    CommandElabM (Highlighted × String × Compat.String.Pos × Compat.String.Pos × PersistentArray InfoTree) := do
   -- First make sure the names won't clash - we want two different declarations to compare.
   let mod ← getMainModule
   let sc ← getCurrMacroScope
   let addScope x := mkIdentFrom x (addMacroScope mod x.getId sc)
-  let declName ← match sigName with
-    | `(Lean.Parser.Command.declId|$x:ident) => pure x
-    | `(Lean.Parser.Command.declId|$x:ident.{$_u:ident,*}) => pure x
-    | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
+  let declName ← declNameOfId sigName
   let (target, targetTrees) ← do
     let origTrees ← getResetInfoTrees
     let mut tgtTrees := PersistentArray.empty
@@ -83,7 +83,10 @@ def checkSignature
     | _ => throwErrorAt sigName "Unexpected format of name: {sigName}"
 
   -- Elaborate as an opaque constant (unsafe is to avoid an Inhabited constraint on the return type)
-  let stx ← `(command| noncomputable unsafe opaque $noClash $sig)
+  let stx ← if Compat.supportsNoncomputableUnsafe then
+      `(command| noncomputable unsafe opaque $noClash $sig)
+    else
+      `(command| unsafe opaque $noClash $sig)
   let trees ← withoutModifyingEnv do
     let origTrees ← getResetInfoTrees
     let mut outTrees := PersistentArray.empty
@@ -126,5 +129,4 @@ def checkSignature
   let hl ← liftTermElabM <| withDeclName `x do
     pure <| .seq #[← highlight sigName #[] trees suppressedNS, ← highlight sig #[] trees suppressedNS]
 
-
-  return (hl, str, startPos, stopPos)
+  return (hl, str, startPos, stopPos, trees)

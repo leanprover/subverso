@@ -136,6 +136,25 @@ end
 
 namespace SubVerso.Compat
 
+open Lean Elab Command in
+/- Does this toolchain accept `noncomputable unsafe`,
+or only `noncomputable` and `unsafe` but not both?
+Allowed since Lean 4.8.0 (lean4#3647).
+Result is saved as `supportsNoncomputableUnsafe`. -/
+#eval show CommandElabM Unit from do
+  let probe ← `(command| noncomputable unsafe opaque subversoNoncomputableUnsafeProbe : Nat)
+  -- Elaborate the probe without keeping its declaration or messages.
+  let savedMsgs := (← get).messages
+  modify fun s => { s with messages := .empty }
+  let ok ←
+    try
+      withoutModifyingEnv do
+        elabCommand probe
+        pure !(← get).messages.hasErrors
+    catch _ => pure false
+  modify fun s => { s with messages := savedMsgs }
+  elabCommand <| ← `(def $(mkIdent `supportsNoncomputableUnsafe) : Bool := $(quote ok))
+
 elab "%first_defined" "[" xs:ident,* "]" : term => do
   let env ← getEnv
   for x in xs.getElems do
