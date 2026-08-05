@@ -107,9 +107,6 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
 
     let res ← Compat.Frontend.processCommands headerStx pctx cmdSt
 
-    let infos := (← cmdSt.get).commandState.infoState.trees
-    let msgs := Array.flatten (res.items.map (Compat.messageLogArray ·.messages))
-
     let res := res.updateLeading contents
 
     let hls ← (Frontend.runCommandElabM <| liftTermElabM <| Highlighting.highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)) pctx cmdSt

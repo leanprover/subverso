@@ -43,6 +43,15 @@ def Highlighting.Highlighted.countProofStates (hl : Highlighting.Highlighted) : 
     hl'.countProofStates + 1
   | _ => 0
 
+partial
+def Highlighting.Highlighted.hasError (hl : Highlighting.Highlighted) : Bool :=
+  match hl with
+  | .seq hls => hls.any hasError
+  | .span info hl' => info.any (·.1 == .error) || hl'.hasError
+  | .tactics _ _ _ hl' => hl'.hasError
+  | .point k _ => k == .error
+  | _ => false
+
 namespace Examples
 
 def Example.countProofStates (e : Example) : Nat :=
@@ -378,6 +387,19 @@ named constants so the prebuild phase and the full test run agree on the exact t
 def demoToolchain48 : String := "leanprover/lean4:v4.8.0"
 @[inherit_doc demoToolchain48] def demoToolchain410 : String := "leanprover/lean4:4.10.0"
 
+/--
+Whether `toolchain` elaborates asynchronously, which is the compiler default since the 4.19 cycle.
+Version-numbered toolchains before 4.19 elaborate synchronously; nightlies and other unrecognized
+toolchain strings are current enough to elaborate asynchronously.
+-/
+def toolchainHasAsync (toolchain : String) : Bool :=
+  let ver := (toolchain.splitOn ":").getLast!
+  let ver := if ver.startsWith "v" then Compat.String.drop ver 1 else ver
+  match (ver.splitOn ".").map (·.toNat?) with
+  | [some major, some minor] | some major :: some minor :: _ :: _ =>
+    major > 4 || (major == 4 && minor >= 19)
+  | _ => true
+
 /-- The `(project, toolchain)` pairs whose builds are shared across all matrix jobs. -/
 def fixedTargets : IO (List (System.FilePath × String)) := do
   pure [
@@ -498,6 +520,29 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
           IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
           return 1
     IO.println "Proof states for induction/cases alts OK"
+
+  if !toolchainHasAsync myToolchain then
+    IO.println s!"Skipping async auxiliary-name tests for Lean toolchain {myToolchain}"
+  else
+    IO.println "Checking auxiliary declaration names and proof states under async elaboration"
+    let items ← loadModuleContentIn "small-tests" "Small.MatchNames" myToolchain demodSrc
+    if items.isEmpty then
+      IO.eprintln "No module items found for Small.MatchNames"
+      return 1
+    let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+    if content.hasError then
+      IO.eprintln "Error span in Small.MatchNames: the generated auxiliary name did not resolve"
+      return 1
+    match content.anchored with
+    | .error e =>
+      IO.eprintln s!"Error loading anchored content: {e}"
+      return 1
+    | .ok {code:=_, anchors:=_, proofStates} =>
+      let some st := proofStates.get? "matchRfl"
+        | IO.eprintln "Not found: proof state 'matchRfl'"; return 1
+      let .tactics _ _ _ _ := st
+        | IO.eprintln s!"Proof state 'matchRfl' not a proof state: {repr st}"; return 1
+    IO.println "Auxiliary declaration names under async elaboration OK"
 
   pure 0
 

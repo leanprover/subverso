@@ -845,6 +845,43 @@ structure FrontendItem where
   messages : MessageLog
 deriving Inhabited
 
+/--
+A function that collects a command's asynchronous elaboration results from a command state.
+It reads messages from the snapshot tree that accumulates in the state's `snapshotTasks` field,
+and it resolves the lazy holes in the state's info trees. Both reads block until the command's
+asynchronous work has finished. On toolchains where elaboration is always synchronous, this is
+`none`, and a command state's `messages` and `infoState` fields already hold every result.
+-/
+def asyncSupport? : Option (Command.State → MessageLog × PersistentArray InfoTree) :=
+  %first_succeeding [
+    some fun (st : Command.State) =>
+      let tree := Language.SnapshotTree.mk { diagnostics := .empty } st.snapshotTasks
+      let msgs := tree.getAll.map (·.diagnostics.msgLog) |>.foldl (· ++ ·) {}
+      (msgs, st.infoState.substituteLazy.get.trees),
+    none
+  ]
+
+/--
+Turns on asynchronous elaboration when the toolchain supports it and the option is not otherwise
+set, matching the elaboration mode of the compiler on the same toolchain.
+-/
+def enableAsyncIfAvailable (opts : Options) : Options :=
+  if asyncSupport?.isSome && !opts.contains `Elab.async then
+    opts.setBool `Elab.async true
+  else
+    opts
+
+/--
+Clears the snapshot tasks accumulated in the command state, on toolchains that have them. The task
+array is cumulative across commands, so it must be cleared before each command for a per-command
+read to be meaningful.
+-/
+def resetSnapshotTasks : Frontend.FrontendM Unit :=
+  %first_succeeding [
+    (do setCommandState { (← getCommandState) with snapshotTasks := #[] }),
+    pure ()
+  ]
+
 structure FrontendResult where
   headerSyntax : Syntax
   items : Array FrontendItem
@@ -909,13 +946,22 @@ def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
     setParserState ps
     setMessages {}
     runCommandElabM <| setInfoState { enabled := true }
+    resetSnapshotTasks
     elabCommandAtFrontend cmd
-    let messages := messages ++ (← getCommandState).messages
-    let info := (← getCommandState).infoState.trees
+    let st ← getCommandState
+    let (messages, info) :=
+      match asyncSupport? with
+      | some collect =>
+        let (asyncMessages, info) := collect st
+        (messages ++ st.messages ++ asyncMessages, info)
+      | none => (messages ++ st.messages, st.infoState.trees)
     let res := { commandSyntax := cmd, messages, info }
     pure (Parser.isTerminalCommand cmd, res)
 
 partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM FrontendResult := do
+  let cmdState ← getCommandState
+  if let sc :: rest := cmdState.scopes then
+    setCommandState { cmdState with scopes := { sc with opts := enableAsyncIfAvailable sc.opts } :: rest }
   let mut done := false
   let mut out := #[]
   while !done do

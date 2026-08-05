@@ -1122,4 +1122,50 @@ elab "#evalNoMatchingExpr" inp:str term:str : command => do
 
 end TermMatching
 
+/-! # Async Elaboration -/
+section AsyncElab
+open SubVerso.Highlighting
+
+namespace SubVerso.Highlighting
+
+/-- Whether the highlighted tree contains an error span or error point. -/
+partial def Highlighted.hasError : Highlighted → Bool
+  | .span info x => info.any (·.1 == .error) || x.hasError
+  | .seq hls => hls.any Highlighted.hasError
+  | .tactics _ _ _ x => x.hasError
+  | .point k _ => k == .error
+  | _ => false
+
+end SubVerso.Highlighting
+
+open Lean Elab Command in
+-- On toolchains whose compiler elaborates asynchronously (4.19 and later), the collection probe
+-- must be available; otherwise the frontend would silently fall back to synchronous elaboration
+-- and name auxiliary declarations differently than the compiler.
+#eval show CommandElabM Unit from do
+  if Lean.version.major == 4 && Lean.version.minor >= 19 then
+    unless Compat.Frontend.asyncSupport?.isSome do
+      throwError "asyncSupport? is none, but this toolchain's compiler elaborates asynchronously"
+
+open Lean Elab Command in
+-- Under async elaboration, a `match`-using definition's auxiliary declarations get the names the
+-- compiler gives them, so a reference to such a name (as shown in the editor) elaborates cleanly.
+#eval show CommandElabM Unit from do
+  if Compat.Frontend.asyncSupport?.isSome then
+    let hl ← highlightModuleStyle
+      "theorem mySubst {p : Nat → Prop} : x = y → p x → p y\n  | rfl, h => h\n\n#check @mySubst.match_1_1\n"
+    if hl.hasError then
+      throwError m!"Unexpected error:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- Tactic proof states survive async elaboration: the info trees' lazy holes are resolved before
+-- highlighting.
+#eval show CommandElabM Unit from do
+  if Compat.Frontend.asyncSupport?.isSome then
+    let hl ← highlightModuleStyle "example : 2 + 2 = 4 := by\n  rfl\n"
+    unless hl.hasTactics do
+      throwError "No proof states found under async elaboration"
+
+end AsyncElab
+
 def main : IO Unit := pure ()
