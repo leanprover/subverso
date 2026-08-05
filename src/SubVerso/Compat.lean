@@ -17,6 +17,7 @@ import Lean.Elab.Import
 import Lean.Elab.DeclarationRange
 import Lean.Elab.Command
 import Lean.Widget.InteractiveDiagnostic
+public import Lean.Server.CodeActions
 
 -- nomodule skip
 import Std.Data.HashMap
@@ -42,6 +43,14 @@ open Lean Elab Command
 #eval show CommandElabM Unit from do
   if !(← getEnv).contains `Lean.MessageLog.toArray then
     let cmd ← `(def $(mkIdent `Lean.MessageLog.toArray) (msgs : Lean.MessageLog) : Array Lean.Message := msgs.toList.toArray)
+    elabCommand cmd
+
+#eval show CommandElabM Unit from do
+  if !(← getEnv).contains `Lean.Server.RequestM.runInIO then
+    let cmd ←
+      `(def $(mkIdent `Lean.Server.RequestM.runInIO) {α : Type}
+          (x : Lean.Server.RequestM α) (ctx : Lean.Server.RequestContext) : IO α :=
+        ReaderT.run x ctx |>.toIO fun e => IO.userError e.message)
     elabCommand cmd
 
 -- This was introduced in Lean 4.3.0. Older versions need the definition.
@@ -925,6 +934,174 @@ partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM Fronten
   return { headerSyntax, items := out }
 
 end Frontend
+
+namespace CodeAction
+
+open Lean.Server
+
+set_option linter.unusedVariables false in
+/--
+Builds the metadata for a synthetic document that stands in for the module being extracted.
+-/
+def mkDocumentMeta (uri : Lsp.DocumentUri) (mod : Name) (text : FileMap) : DocumentMeta :=
+  %first_succeeding [
+    { uri, mod, version := 1, text, dependencyBuildMode := .always },
+    { uri, version := 1, text, dependencyBuildMode := .always },
+    { uri, version := 1, text }
+  ]
+
+/--
+Builds a synthetic command snapshot from the final command state, with the given command's info
+trees and messages substituted in. The parser state is positioned at the end of the command's
+trailing whitespace, so position-based snapshot selection resolves a position within the command
+to this snapshot.
+-/
+def mkSnapshot (finalState : Command.State) (item : Frontend.FrontendItem) :
+    IO Snapshots.Snapshot := do
+  let cmdState := { finalState with
+    infoState := { finalState.infoState with trees := item.info },
+    messages := item.messages }
+  let endPos : String.Pos :=
+    getTrailingTailPos? item.commandSyntax |>.getD (item.commandSyntax.getTailPos? |>.getD ⟨0⟩)
+  %first_succeeding [
+    pure { stx := item.commandSyntax, mpState := { pos := endPos }, cmdState },
+    (do
+      pure {
+        beginPos := item.commandSyntax.getPos? |>.getD ⟨0⟩,
+        stx := item.commandSyntax,
+        mpState := { pos := endPos },
+        cmdState,
+        interactiveDiags := .empty,
+        tacticCache := (← IO.mkRef {})
+      })
+  ]
+
+/--
+Builds an editable document around the given snapshots. Requests against the document consult the
+metadata, the document identity, and the command snapshots; the initial snapshot is an inert stub.
+-/
+def mkEditableDocument («meta» : DocumentMeta) (snaps : List Snapshots.Snapshot) :
+    IO FileWorker.EditableDocument :=
+  %first_succeeding [
+    (do
+      pure {
+        «meta»,
+        initSnap := %first_succeeding [
+          { diagnostics := .empty,
+            metaSnap := .finished none { diagnostics := .empty },
+            ictx := «meta».mkInputContext,
+            stx := .missing,
+            result? := none },
+          { diagnostics := .empty,
+            ictx := «meta».mkInputContext,
+            stx := .missing,
+            result? := none },
+          { diagnostics := .empty,
+            ictx := «meta».mkInputContext,
+            stx := .missing,
+            result? := none,
+            cancelTk? := none }
+        ],
+        cmdSnaps := .ofList snaps,
+        diagnosticsRef := (← IO.mkRef #[]),
+        reporter := .pure ()
+      }),
+    (do
+      pure {
+        «meta»,
+        cmdSnaps := .ofList snaps,
+        cancelTk := (← Lean.Server.FileWorker.CancelToken.new)
+      })
+  ]
+
+/--
+Builds a request context around the given document, suitable for invoking code action providers
+directly. Requests to the client are answered with a failure.
+-/
+def mkRequestContext (doc : FileWorker.EditableDocument) : IO RequestContext :=
+  %first_succeeding [
+    (do
+      pure {
+        rpcSessions := {},
+        doc,
+        hLog := (← IO.getStderr),
+        initParams := { capabilities := {} },
+        cancelTk := (← RequestCancellationToken.new),
+        serverRequestEmitter := fun _ _ =>
+          pure (.pure (.failure .internalError "server requests are unavailable"))
+      }),
+    (do
+      pure {
+        rpcSessions := {},
+        srcSearchPathTask := .pure {},
+        doc,
+        hLog := (← IO.getStderr),
+        initParams := { capabilities := {} },
+        cancelTk := (← RequestCancellationToken.new)
+      }),
+    (do
+      pure {
+        rpcSessions := {},
+        srcSearchPath := {},
+        doc,
+        hLog := (← IO.getStderr),
+        initParams := { capabilities := {} }
+      }),
+    (do
+      pure {
+        rpcSessions := {},
+        srcSearchPath := {},
+        doc,
+        hLog := (← IO.getStderr),
+        hOut := (← IO.getStderr),
+        initParams := { capabilities := {} }
+      })
+  ]
+
+private def forceTask (t : RequestTask α) : RequestM α := do
+  match %first_succeeding [ServerTask.get t, Task.get t] with
+  | .ok v => pure v
+  | .error e => throw e
+
+/--
+Computes the code actions offered at the given range, dispatching every code action provider known
+to the language server. The resulting actions carry resolution data rather than computed edits;
+`resolveCodeAction` computes an action's edit.
+-/
+def codeActionsAt (params : Lsp.CodeActionParams) : RequestM (Array Lsp.CodeAction) := do
+  forceTask (← Lean.Server.handleCodeAction params)
+
+/--
+Resolves a code action returned by `codeActionsAt`, running its provider's lazy computation to
+produce its edit. Actions without a lazy computation are returned unchanged.
+-/
+def resolveCodeAction (action : Lsp.CodeAction) : RequestM Lsp.CodeAction := do
+  forceTask (← Lean.Server.handleCodeActionResolve action)
+
+/--
+All text edits contained in a workspace edit, from both its URI-keyed change map and its document
+change list. The extracted module is a single document, so every edit applies to it.
+-/
+def workspaceEditTextEdits (edit : Lsp.WorkspaceEdit) : Array Lsp.TextEdit := Id.run do
+  let mut out := #[]
+  let changes : List (Lsp.DocumentUri × Lsp.TextEditBatch) :=
+    %first_succeeding [
+      edit.changes?.map (·.toList) |>.getD [],
+      edit.changes.toList
+    ]
+  for (_, batch) in changes do
+    out := out ++ (show Array Lsp.TextEdit from batch)
+  let docChanges : Array Lsp.DocumentChange :=
+    %first_succeeding [
+      edit.documentChanges?.getD #[],
+      edit.documentChanges
+    ]
+  for c in docChanges do
+    if let .edit e := c then
+      out := out ++ (show Array Lsp.TextEdit from e.edits)
+  return out
+
+end CodeAction
 
 theorem Nat.lt_step {n m : Nat} : n < m → n < m.succ :=
   %first_succeeding -warning [

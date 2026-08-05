@@ -121,10 +121,10 @@ def lakeVars :=
 -- in all targeted versions, so it's just part of these tests. See Verso for a version to use in
 -- documents.
 open System in
-def loadModuleContent
+def loadModule
     (projectDir : String) (mod : String)
     (overrideToolchain : Option String := none) :
-    IO (Array ModuleItem) := do
+    IO Module.Module := do
 
   let projectDir : FilePath := projectDir
 
@@ -164,7 +164,7 @@ def loadModuleContent
   | .error err =>
     throw <| IO.userError s!"Couldn't parse JSON from output file: {err}\nIn:\n{json}"
   | .ok m =>
-    pure m.items
+    pure m
 
 
 where
@@ -185,6 +185,11 @@ where
       decorateOut "stdout" res.stdout ++
       decorateOut "stderr" res.stderr
 
+def loadModuleContent
+    (projectDir : String) (mod : String)
+    (overrideToolchain : Option String := none) :
+    IO (Array ModuleItem) := do
+  return (← loadModule projectDir mod overrideToolchain).items
 
 def desiredAnchors : List (String × String) := [
   ("cons", "  | cons : Nat → NatList → NatList\n"),
@@ -364,10 +369,14 @@ def loadExamplesIn (project : System.FilePath) (toolchain : String) (demodSrc : 
   loadExamples dir (overrideToolchain := some toolchain)
 
 /-- Loads a module from `project`, building it under `toolchain` in its per-toolchain build dir. -/
+def loadModuleIn (project : System.FilePath) (mod : String) (toolchain : String)
+    (demodSrc : System.FilePath) : IO Module.Module := do
+  let dir ← prepareProject project toolchain demodSrc
+  loadModule dir.toString mod (overrideToolchain := some toolchain)
+
 def loadModuleContentIn (project : System.FilePath) (mod : String) (toolchain : String)
     (demodSrc : System.FilePath) : IO (Array ModuleItem) := do
-  let dir ← prepareProject project toolchain demodSrc
-  loadModuleContent dir.toString mod (overrideToolchain := some toolchain)
+  return (← loadModuleIn project mod toolchain demodSrc).items
 
 /--
 The fixed (Lean-version-independent) demo builds. These don't depend on the toolchain under test, so
@@ -498,6 +507,27 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
           IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
           return 1
     IO.println "Proof states for induction/cases alts OK"
+
+  -- The command code action infrastructure, core "Try this" suggestions, and #guard_msgs are all
+  -- present in the Lean core library from 4.7.0 onward.
+  let preCodeActions := ["4.0.0", "4.1.0", "4.2.0", "4.3.0", "4.4.0", "4.5.0", "4.6.0"]
+  let preCodeActions := preCodeActions ++ preCodeActions.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
+  if preCodeActions.contains myToolchain then
+    IO.println s!"Skipping code action tests for old Lean toolchain {myToolchain}"
+  else
+    IO.println s!"Checking code action extraction using Lean toolchain {myToolchain}"
+    let mod ← loadModuleIn "small-tests" "Small.CodeActions" myToolchain demodSrc
+    let titles := mod.codeActions.map (·.title)
+    let some guardMsgsAction := mod.codeActions.find? (·.title.startsWith "Update #guard_msgs")
+      | IO.eprintln s!"No code action to update #guard_msgs found in {repr titles}"
+        return 1
+    if guardMsgsAction.edits.isEmpty then
+      IO.eprintln "The #guard_msgs update action has no edits"
+      return 1
+    unless mod.codeActions.any (·.title.startsWith "Try this") do
+      IO.eprintln s!"No \"Try this\" code action found in {repr titles}"
+      return 1
+    IO.println "Code actions OK"
 
   pure 0
 
