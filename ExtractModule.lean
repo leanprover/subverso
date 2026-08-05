@@ -6,6 +6,7 @@ Author: David Thrane Christiansen
 import SubVerso.Compat
 import SubVerso.Examples.Env
 import SubVerso.Module
+import SubVerso.Module.CodeActions
 
 open Lean Elab Frontend
 open Lean.Elab.Command hiding Context
@@ -45,6 +46,30 @@ fields:
  * \"code\": the JSON serialization of SubVerso's highlighted code datatype. The
    specifics of this representation are an implementation detail, and it should
    be deserialized using the same version of SubVerso.
+
+The top-level JSON object has a \"codeActions\" field that contains an array
+of the code actions offered in the module. Each code action is represented as
+a JSON object with the following fields:
+
+ * \"range\": the start and end source positions of the command at which the
+   action is offered, in the same format as a command's \"range\".
+
+ * \"utf8Range\": the same region as \"range\", as byte offsets into the UTF-8
+   encoding of the source.
+
+ * \"title\": the description of the action, as shown in an editor's code
+   action menu.
+
+ * \"kind\": the LSP code action kind (such as \"quickfix\"), or null if the
+   action does not declare one.
+
+ * \"isPreferred\": whether the action is marked as the preferred one at its
+   position.
+
+ * \"edits\": the text replacements performed by the action, as an array of
+   objects with \"range\", \"utf8Range\", and \"newText\" fields. Edit ranges
+   are absolute document positions and may lie outside the command at which
+   the action is offered.
 "
 
 /--
@@ -121,7 +146,14 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
       code := hl
     }
 
-    out.putStrLn (toString (Module.mk items).toJson)
+    let codeActions ←
+      try
+        extractCodeActions fm fname.toString modName (← cmdSt.get).commandState res.items
+      catch e =>
+        IO.eprintln s!"Couldn't extract code actions: {toString e}"
+        pure #[]
+
+    out.putStrLn (toString (Module.mk items codeActions).toJson)
 
     return (0 : UInt32)
 
