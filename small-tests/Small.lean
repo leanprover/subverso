@@ -1,7 +1,6 @@
--- `Small.MatchNames` is deliberately not imported: it references an auxiliary declaration by the
--- name asynchronous elaboration gives it, which only elaborates on toolchains whose compiler
--- elaborates asynchronously (4.19 and later), while this library builds on older toolchains too.
--- The tests extract it directly from source, so it needs no `lake build`.
+-- This root module builds on every supported toolchain. The tests elaborate `Small.MatchNames19`
+-- and `Small.MatchNames21` directly from source, each on the toolchain range whose compiler
+-- generates the auxiliary declaration name it references.
 import Small.TacticAlts
 
 example (p q : Prop) : p ∨ q → q ∨ p := by

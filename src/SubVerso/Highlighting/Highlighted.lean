@@ -466,6 +466,16 @@ partial def Highlighted.definedNames : Highlighted → NameSet
   | .seq hls => hls.map (·.definedNames) |>.foldr Compat.NameSet.union {}
   | .text .. | .point .. | .unparsed .. => {}
 
+/--
+Checks whether the highlighted code contains an error span or error point.
+-/
+partial def Highlighted.hasError : Highlighted → Bool
+  | .span info hl => info.any (·.1 == .error) || hl.hasError
+  | .tactics _ _ _ hl => hl.hasError
+  | .seq hls => hls.any (·.hasError)
+  | .point k _ => k == .error
+  | .token .. | .text .. | .unparsed .. => false
+
 def Highlighted.seq0 : Highlighted := .seq #[]
 def Highlighted.seq1 (x0 : Highlighted) : Highlighted := .seq #[x0]
 def Highlighted.seq2 (x0 x1 : Highlighted) : Highlighted := .seq #[x0, x1]
