@@ -2229,6 +2229,58 @@ where
 
 
 /--
+One segment of a module: the header or a single command, together with the messages whose start
+positions lie in its source region. A region runs from the segment's start to the next region's
+start. A segment without a region receives no messages. This can occur in two situations: the
+end-of-input item (which means that messages at the end of the file belong to the final command),
+and a header without tokens. A header has tokens when it contains a `module`, `prelude`, or
+`import` keyword. Trailing comments belong to the next segment.
+-/
+structure ModuleSegment where
+  messages : Array Message
+  region? : Option (Compat.String.Pos × Compat.String.Pos)
+deriving Inhabited
+
+/--
+Splits a module into source regions and distributes its messages among them. Segment 0 is the
+header and segment `i + 1` is command `i`. Each region runs from its segment's start position to
+the next region's start, with the first region widened to the start of the file and the last
+running to the end of the file. The messages are sorted by start position and drained into the
+regions in one simultaneous scan, so every message lands in exactly one segment.
+-/
+def moduleSegments (fileMap : FileMap) (result : Compat.Frontend.FrontendResult)
+    (messages : Array Message) : Array ModuleSegment := Id.run do
+  let starts := #[result.headerSyntax.getPos?] ++ result.items.map fun i =>
+    if i.commandSyntax.isOfKind ``Parser.Command.eoi then none else i.commandSyntax.getPos?
+  let sorted := messages.map (fun m => (fileMap.ofPosition m.pos, m)) |>.qsort (·.1 < ·.1)
+  let mut segments : Array ModuleSegment := starts.map fun _ =>
+    { messages := #[], region? := none }
+  let mut msgIdx := 0
+  -- The index and region start of the segment whose end is not yet known. Its slot in `segments`
+  -- is filled in when the next region's start is found: that start is the region's end, and the
+  -- sorted messages before it are the segment's messages. The first region begins at the start of
+  -- the file.
+  let mut prev? : Option (Nat × Compat.String.Pos) := none
+  for i in [0:segments.size] do
+    let some start := starts[i]! | continue
+    if let some (prev, prevStart) := prev? then
+      let mut msgs := #[]
+      while msgIdx < sorted.size do
+        let (pos, msg) := sorted[msgIdx]!
+        unless pos < start do break
+        msgs := msgs.push msg
+        msgIdx := msgIdx + 1
+      segments := segments.set! prev { messages := msgs, region? := some (prevStart, start) }
+      prev? := some (i, start)
+    else
+      prev? := some (i, ⟨0⟩)
+  if let some (prev, prevStart) := prev? then
+    segments := segments.set! prev {
+      messages := sorted.extract msgIdx sorted.size |>.map (·.2),
+      region? := some (prevStart, Compat.String.endPos fileMap.source) }
+  return segments
+
+/--
 Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
 module, where each command has its own corresponding tree.
 
@@ -2244,21 +2296,7 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
   let allMessages := Compat.messageLogArray result.headerMessages ++
     result.items.flatMap (fun i => Compat.messageLogArray i.messages)
   let fileMap ← getFileMap
-  let itemStarts := result.items.map (fun i => i.commandSyntax.getPos?.map fileMap.toPosition)
-  -- A message belongs to the last command that starts at or before it; messages before the first
-  -- command belong to the header (index 0).
-  let owner (msg : Message) : Nat := Id.run do
-    for i in [0:result.items.size] do
-      let idx := result.items.size - 1 - i
-      if let some s := itemStarts[idx]! then
-        if !(msg.pos.before s) then
-          return idx + 1
-    return 0
-  let mut buckets : Array (Array Message) := #[]
-  for _ in [0:result.items.size + 1] do
-    buckets := buckets.push #[]
-  for msg in allMessages do
-    buckets := buckets.modify (owner msg) (·.push msg)
+  let segments := moduleSegments fileMap result allMessages
   let infoTable : InfoTable := .ofInfoTrees trees'
   let modrefs := Lean.Server.findModuleRefs fileMap trees'
   let ids := build modrefs
@@ -2275,20 +2313,39 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
 
   let mut hls := #[]
 
-  let ((), headerSt) ← highlight' #[] result.headerSyntax true |>.run ctxt |>.run infoTable |>.run (← HighlightState.ofMessages result.headerSyntax buckets[0]!)
+  let segmentState (stx : Syntax) (seg : ModuleSegment) : TermElabM HighlightState :=
+    match seg.region? with
+    | some (start, stop) =>
+      HighlightState.ofMessages stx seg.messages (startPos? := some start) (endPos? := some stop)
+    | none => HighlightState.ofMessages stx seg.messages
+
+  let ((), headerSt) ← (do
+      let _ ← highlight' #[] result.headerSyntax true
+      flushSegment segments[0]!) |>.run ctxt |>.run infoTable |>.run
+    (← segmentState result.headerSyntax segments[0]!)
   hls := hls.push (Highlighted.fromOutput headerSt.output)
 
   for idx in [0:result.items.size] do
     let cmd := result.items[idx]!
-    let st ← HighlightState.ofMessages cmd.commandSyntax buckets[idx + 1]!
-    let (hl, _) ← go cmd |>.run ctxt |>.run infoTable |>.run st
+    let st ← segmentState cmd.commandSyntax segments[idx + 1]!
+    let (hl, _) ← go cmd segments[idx + 1]! |>.run ctxt |>.run infoTable |>.run st
     hls := hls.push hl
 
   return hls
 where
-  go (res : Compat.Frontend.FrontendItem) := do
+  go (res : Compat.Frontend.FrontendItem) (seg : ModuleSegment) := do
     let _ ← highlight' res.info.toArray res.commandSyntax true
+    flushSegment seg
     modifyGet fun (st : HighlightState) => (Highlighted.fromOutput st.output, {st with output := []})
+  /--
+  Opens and closes the segment's remaining messages at its end. A message can begin where the
+  segment's tokens end, such as a parse error at the end of the file, and span opening is otherwise
+  driven by token emission.
+  -/
+  flushSegment (seg : ModuleSegment) : HighlightM Unit := do
+    if let some (_, stop) := seg.region? then
+      openUntil ((← getFileMap).toPosition stop)
+      closeUntil stop
 
 def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     (trees : PersistentArray Lean.Elab.InfoTree)
