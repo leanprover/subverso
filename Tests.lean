@@ -475,7 +475,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
   checkHasSorry examples''
   checkIsLinted examples''
   let proofCount3 := proofCount examples''
-  IO.println s!"Found {proofCount2} proofs "
+  IO.println s!"Found {proofCount3} proofs "
 
   if proofCount1 != proofCount2 || proofCount2 != proofCount3 then
     IO.eprintln "Example proof count mismatch"
@@ -510,7 +510,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
             unless states.contains goalString do
               IO.eprintln s!"Proof state '{name}': expected one of {repr states} but got {repr goalString}"; errors := errors + 1
           else
-            IO.eprintln "Not found: proof state '{name}'"; errors := errors + 1
+            IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
         if errors > 0 then
           IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
           return 1

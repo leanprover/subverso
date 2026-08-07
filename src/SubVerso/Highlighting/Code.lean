@@ -2232,12 +2232,17 @@ where
 Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
 module, where each command has its own corresponding tree.
 
-The work of constructing the alias table is performed once, with all the trees together.
+The work of constructing the alias table is performed once, with all the trees together. Messages
+from the whole module are pooled, and each command is highlighted with the messages that lie within
+its range, so a message is rendered on the code it points at even when a different command produced
+it.
 -/
 def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
     (suppressNamespaces : List Name := []) (collectFormat := false) :
     TermElabM (Array Highlighted) := do
   let trees' := result.items.flatMap (·.info.toArray)
+  let allMessages := Compat.messageLogArray result.headerMessages ++
+    result.items.flatMap (fun i => Compat.messageLogArray i.messages)
   let infoTable : InfoTable := .ofInfoTrees trees'
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
   let ids := build modrefs
@@ -2254,11 +2259,11 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
 
   let mut hls := #[]
 
-  let ((), headerSt) ← highlight' #[] result.headerSyntax true |>.run ctxt |>.run infoTable |>.run (← HighlightState.ofMessages result.headerSyntax #[])
+  let ((), headerSt) ← highlight' #[] result.headerSyntax true |>.run ctxt |>.run infoTable |>.run (← HighlightState.ofMessages result.headerSyntax allMessages)
   hls := hls.push (Highlighted.fromOutput headerSt.output)
 
   for cmd in result.items do
-    let st ← HighlightState.ofMessages cmd.commandSyntax (Compat.messageLogArray cmd.messages)
+    let st ← HighlightState.ofMessages cmd.commandSyntax allMessages
     let (hl, _) ← go cmd |>.run ctxt |>.run infoTable |>.run st
     hls := hls.push hl
 

@@ -339,6 +339,22 @@ open Lean Elab Command in
   unless contains logs[1]! "2 : Nat" && !(contains logs[1]! "1 : Nat") do
     throwError m!"Second item's messages are wrong: {logs[1]!}"
 
+open Lean Elab Command in
+-- A message logged at a synthetic position inside another command's range is rendered on the code
+-- it points at.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle <|
+    "def target := 55\n\n" ++
+    "def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do\n" ++
+    "  let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])\n" ++
+    "  Lean.logInfoAt stx str\n\n" ++
+    "elab \"inject_info\" : command => do\n" ++
+    "  inject 4 10 \"subverso_test_pool\"\n\n" ++
+    "inject_info"
+  let out := hlStringWithMessages hl
+  unless (out.splitOn "[info: subverso_test_pool](target)").length > 1 do
+    throwError m!"Missing pooled message span:\n{out}"
+
 /--
 `#evalHighlight inp exp` highlights `inp` using the including-unparsed
 highlighter and checks that the result matches `exp`, where only messages
@@ -1145,15 +1161,6 @@ end TermMatching
 /-! # Async Elaboration -/
 section AsyncElab
 open SubVerso.Highlighting
-
-open Lean Elab Command in
--- On toolchains whose compiler elaborates asynchronously (4.19 and later), the collection probe
--- must be available; otherwise the frontend would silently fall back to synchronous elaboration
--- and name auxiliary declarations differently than the compiler.
-#eval show CommandElabM Unit from do
-  if Lean.version.major > 4 || (Lean.version.major == 4 && Lean.version.minor >= 19) then
-    unless Compat.Frontend.asyncSupport?.isSome do
-      throwError "asyncSupport? is none, but this toolchain's compiler elaborates asynchronously"
 
 open Lean Elab Command in
 -- Under async elaboration, a `match`-using definition's auxiliary declarations get the names the

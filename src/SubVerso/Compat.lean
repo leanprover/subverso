@@ -209,6 +209,16 @@ elab_rules : term <= ty
     throwError m!"No alternative succeeded. Attempts were: " ++
       indentD (MessageData.joinSep msgErrs Format.line)
 
+scoped syntax "%if_version_at_least" num num "then" term "else" term : term
+
+elab_rules : term <= ty
+  | `(%if_version_at_least $major:num $minor:num then $t1 else $t2) => do
+    let major := major.raw.isNatLit?.getD 0
+    let minor := minor.raw.isNatLit?.getD 0
+    let atLeast := Lean.version.major > major ||
+      (Lean.version.major == major && Lean.version.minor >= minor)
+    elabTermEnsuringType (if atLeast then t1 else t2) (some ty)
+
 scoped syntax "export_from_namespaces " "(" ident+ ") " "(" ident+ ")" : command
 
 elab_rules : command
@@ -846,25 +856,45 @@ structure FrontendItem where
 deriving Inhabited
 
 /--
-A function that collects a command's asynchronous elaboration results from a command state.
-It combines the snapshot tasks that accumulate in the state's `snapshotTasks` field with the
-resolution of the info trees' lazy holes into a single task that finishes once the command's
-asynchronous work has finished, yielding its messages and the resolved info trees. On toolchains
-where elaboration is always synchronous, this is `none`, and a command state's `messages` and
-`infoState` fields already hold every result.
+How asynchronous elaboration results are to be collected.
+
+On toolchains without async support, this is unused.
 -/
-def asyncSupport? :
-    Option (Command.State → BaseIO (Task (MessageLog × PersistentArray InfoTree))) :=
-  %first_succeeding [
-    some fun (st : Command.State) => do
-      let tree := Language.SnapshotTree.mk { diagnostics := .empty } st.snapshotTasks
-      let allDone ← tree.waitAll
-      return allDone.bind fun () =>
-        st.infoState.substituteLazy.map fun infoState =>
-          let msgs := tree.getAll.map (·.diagnostics.msgLog) |>.foldl (· ++ ·) {}
-          (msgs, infoState.trees),
+structure AsyncSupport where
+  /--
+  Clears the snapshot tasks accumulated in the command state. The task array is cumulative across
+  commands, so it must be cleared before each command for a per-command read to be meaningful.
+  -/
+  reset : Command.State → Command.State
+  /--
+  Combines a command's snapshot tasks with the resolution of the info trees' lazy holes into a
+  single task that finishes once the command's asynchronous work is complete.
+  -/
+  collect : Command.State → BaseIO (Task (MessageLog × PersistentArray InfoTree))
+
+/--
+The asynchronous elaboration support for this toolchain. On toolchains where elaboration is always
+synchronous, this is `none`, and a command state's `messages` and `infoState` fields already hold
+every result.
+-/
+-- Asynchronous elaboration is the default since 4.19
+def asyncSupport? : Option AsyncSupport :=
+  %if_version_at_least 4 19 then
+    some {
+      reset := fun st => { st with snapshotTasks := #[] }
+      collect := fun st => do
+        let tree := Language.SnapshotTree.mk { diagnostics := .empty } st.snapshotTasks
+        let allDone ← tree.waitAll
+        return allDone.bind fun () =>
+          st.infoState.substituteLazy.map fun infoState =>
+            -- Each snapshot's log carries the command's synchronous messages in its `reported`
+            -- field, so only the unreported messages are new.
+            let msgs := tree.getAll.foldl (init := ({} : MessageLog)) fun log s =>
+              s.diagnostics.msgLog.unreported.foldl (·.add ·) log
+            (msgs, infoState.trees)
+    }
+  else
     none
-  ]
 
 /--
 Turns on asynchronous elaboration when the toolchain supports it and the option is not otherwise
@@ -876,19 +906,15 @@ def enableAsyncIfAvailable (opts : Options) : Options :=
   else
     opts
 
-/--
-Clears the snapshot tasks accumulated in the command state, on toolchains that have them. The task
-array is cumulative across commands, so it must be cleared before each command for a per-command
-read to be meaningful.
--/
-def resetSnapshotTasks : Frontend.FrontendM Unit :=
-  %first_succeeding [
-    (do setCommandState { (← getCommandState) with snapshotTasks := #[] }),
-    pure ()
-  ]
+/-- Clears the snapshot tasks accumulated in the command state, on toolchains that have them. -/
+def resetSnapshotTasks : Frontend.FrontendM Unit := do
+  if let some async := asyncSupport? then
+    setCommandState (async.reset (← getCommandState))
 
 structure FrontendResult where
   headerSyntax : Syntax
+  /-- Messages that were logged before the first command, such as header parse diagnostics. -/
+  headerMessages : MessageLog := {}
   items : Array FrontendItem
 deriving Inhabited
 
@@ -972,13 +998,14 @@ def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
     elabCommandAtFrontend cmd
     let st ← getCommandState
     let results ← match asyncSupport? with
-      | some collect => collect st
+      | some async => async.collect st
       | none => pure (Task.pure ({}, st.infoState.trees))
     let res := { commandSyntax := cmd, syncMessages := messages ++ st.messages, results }
     pure (Parser.isTerminalCommand cmd, res)
 
 partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM FrontendResult := do
   let cmdState ← getCommandState
+  let headerMessages := cmdState.messages
   if let sc :: rest := cmdState.scopes then
     setCommandState { cmdState with scopes := { sc with opts := enableAsyncIfAvailable sc.opts } :: rest }
   let mut done := false
@@ -989,7 +1016,7 @@ partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM Fronten
     pending := pending.push res
   -- Every command's asynchronous elaboration is now underway; gathering results in a second pass
   -- lets it proceed concurrently across commands.
-  return { headerSyntax, items := pending.map (·.toFrontendItem) }
+  return { headerSyntax, headerMessages, items := pending.map (·.toFrontendItem) }
 
 end Frontend
 
