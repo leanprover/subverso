@@ -319,6 +319,26 @@ def highlightModuleStyle (input : String) : CommandElabM Highlighting.Highlighte
       let hls ← Highlighting.highlightFrontendResult result
       return hls.foldl (· ++ ·) .empty
 
+open Lean Elab Command in
+-- Each frontend item's messages are the command's own parse errors and elaboration messages, even
+-- when the previous command's message range ends exactly where the command starts.
+#eval show CommandElabM Unit from do
+  let inputCtx := Parser.mkInputContext "#check (1)#check (2)" "<input>"
+  let commandState : Command.State := { env := (← getEnv), maxRecDepth := (← get).maxRecDepth }
+  let (result, _) ← Compat.Frontend.processCommands mkNullNode
+    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let items := result.items.filter (·.commandSyntax.getKind != ``Lean.Parser.Command.eoi)
+  let logs ← items.mapM fun i => do
+    let msgs ← Compat.messageLogArray i.messages |>.mapM (·.toString)
+    pure <| String.join msgs.toList
+  unless logs.size == 2 do
+    throwError m!"Expected 2 items, got {logs.size}"
+  let contains (s pat : String) : Bool := (s.splitOn pat).length > 1
+  unless contains logs[0]! "1 : Nat" && !(contains logs[0]! "2 : Nat") do
+    throwError m!"First item's messages are wrong: {logs[0]!}"
+  unless contains logs[1]! "2 : Nat" && !(contains logs[1]! "1 : Nat") do
+    throwError m!"Second item's messages are wrong: {logs[1]!}"
+
 /--
 `#evalHighlight inp exp` highlights `inp` using the including-unparsed
 highlighter and checks that the result matches `exp`, where only messages
@@ -1131,7 +1151,7 @@ open Lean Elab Command in
 -- must be available; otherwise the frontend would silently fall back to synchronous elaboration
 -- and name auxiliary declarations differently than the compiler.
 #eval show CommandElabM Unit from do
-  if Lean.version.major == 4 && Lean.version.minor >= 19 then
+  if Lean.version.major > 4 || (Lean.version.major == 4 && Lean.version.minor >= 19) then
     unless Compat.Frontend.asyncSupport?.isSome do
       throwError "asyncSupport? is none, but this toolchain's compiler elaborates asynchronously"
 

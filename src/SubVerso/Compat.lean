@@ -960,7 +960,9 @@ def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
   let pstate ← getParserState
   let scope := cmdState.scopes.head!
   let pmctx := { env := cmdState.env, options := scope.opts, currNamespace := scope.currNamespace, openDecls := scope.openDecls }
-  match profileit "parsing" scope.opts fun _ => Parser.parseCommand ictx pmctx pstate cmdState.messages with
+  -- Parsing starts from an empty message log so that the item's messages are the command's own
+  -- parse errors and elaboration messages.
+  match profileit "parsing" scope.opts fun _ => Parser.parseCommand ictx pmctx pstate {} with
   | (cmd, ps, messages) =>
     modify fun s => { s with commands := s.commands.push cmd }
     setParserState ps
