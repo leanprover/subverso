@@ -307,12 +307,14 @@ doesn't, so it exercises comment trivia inside proof tactics.
 -/
 def highlightModuleStyle (input : String) : CommandElabM Highlighting.Highlighted := do
   let inputCtx := Parser.mkInputContext input "<input>"
-  let commandState : Command.State := { env := (← getEnv), maxRecDepth := (← get).maxRecDepth }
+  let (headerStx, parserState, msgs) ← Parser.parseHeader inputCtx
+  let commandState : Command.State :=
+    { env := (← getEnv), maxRecDepth := (← get).maxRecDepth, messages := msgs }
   let commandState :=
     let sc := commandState.scopes[0]!
     { commandState with scopes := { sc with opts := sc.opts.setBool `pp.tagAppFns true } :: commandState.scopes.tail! }
-  let (result, _) ← Compat.Frontend.processCommands mkNullNode
-    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let (result, _) ← Compat.Frontend.processCommands headerStx
+    |>.run { inputCtx } |>.run { commandState, parserState, cmdPos := parserState.pos }
   let result := result.updateLeading input
   runTermElabM fun _ =>
     withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
@@ -354,6 +356,24 @@ open Lean Elab Command in
   let out := hlStringWithMessages hl
   unless (out.splitOn "[info: subverso_test_pool](target)").length > 1 do
     throwError m!"Missing pooled message span:\n{out}"
+
+open Lean Elab Command in
+-- Empty and comment-only modules highlight cleanly.
+#eval show CommandElabM Unit from do
+  for input in ["", "\n\n  \n", "-- only a comment\n"] do
+    let hl ← highlightModuleStyle input
+    if hl.hasError then
+      throwError m!"Error span highlighting {repr input}:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- A message whose range ends exactly where the next command starts is rendered once, on the
+-- command that produced it.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle "example : Nat := \"hi\"#check 2"
+  let out := hlStringWithMessages hl
+  let errorSpans := (out.splitOn "[error:").length - 1
+  unless errorSpans == 1 do
+    throwError m!"Expected one error span, got {errorSpans}:\n{out}"
 
 /--
 `#evalHighlight inp exp` highlights `inp` using the including-unparsed

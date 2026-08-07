@@ -884,9 +884,10 @@ def asyncSupport? : Option AsyncSupport :=
       reset := fun st => { st with snapshotTasks := #[] }
       collect := fun st => do
         let tree := Language.SnapshotTree.mk { diagnostics := .empty } st.snapshotTasks
+        let infoState := st.infoState
         let allDone ← tree.waitAll
         return allDone.bind fun () =>
-          st.infoState.substituteLazy.map fun infoState =>
+          infoState.substituteLazy.map fun infoState =>
             -- Each snapshot's log carries the command's synchronous messages in its `reported`
             -- field, so only the unreported messages are new.
             let msgs := tree.getAll.foldl (init := ({} : MessageLog)) fun log s =>
