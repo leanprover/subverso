@@ -847,17 +847,22 @@ deriving Inhabited
 
 /--
 A function that collects a command's asynchronous elaboration results from a command state.
-It reads messages from the snapshot tree that accumulates in the state's `snapshotTasks` field,
-and it resolves the lazy holes in the state's info trees. Both reads block until the command's
-asynchronous work has finished. On toolchains where elaboration is always synchronous, this is
-`none`, and a command state's `messages` and `infoState` fields already hold every result.
+It combines the snapshot tasks that accumulate in the state's `snapshotTasks` field with the
+resolution of the info trees' lazy holes into a single task that finishes once the command's
+asynchronous work has finished, yielding its messages and the resolved info trees. On toolchains
+where elaboration is always synchronous, this is `none`, and a command state's `messages` and
+`infoState` fields already hold every result.
 -/
-def asyncSupport? : Option (Command.State → MessageLog × PersistentArray InfoTree) :=
+def asyncSupport? :
+    Option (Command.State → BaseIO (Task (MessageLog × PersistentArray InfoTree))) :=
   %first_succeeding [
-    some fun (st : Command.State) =>
+    some fun (st : Command.State) => do
       let tree := Language.SnapshotTree.mk { diagnostics := .empty } st.snapshotTasks
-      let msgs := tree.getAll.map (·.diagnostics.msgLog) |>.foldl (· ++ ·) {}
-      (msgs, st.infoState.substituteLazy.get.trees),
+      let allDone ← tree.waitAll
+      return allDone.bind fun () =>
+        st.infoState.substituteLazy.map fun infoState =>
+          let msgs := tree.getAll.map (·.diagnostics.msgLog) |>.foldl (· ++ ·) {}
+          (msgs, infoState.trees),
     none
   ]
 
@@ -933,7 +938,22 @@ where
       .node .none ``Lean.Parser.Command.eoi #[.atom (.original s (String.endPos contents) s (String.endPos contents)) ""]
     else cmd
 
-def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
+/--
+A command whose synchronous elaboration has finished. `syncMessages` holds the messages produced by
+parsing and synchronous elaboration, and `results` finishes once the command's asynchronous
+elaboration has finished, yielding its messages and the command's info trees.
+-/
+structure PendingItem where
+  commandSyntax : Syntax
+  syncMessages : MessageLog
+  results : Task (MessageLog × PersistentArray InfoTree)
+
+/-- Waits until the item's asynchronous elaboration has finished and assembles its results. -/
+def PendingItem.toFrontendItem (item : PendingItem) : FrontendItem :=
+  let (asyncMessages, info) := item.results.get
+  { commandSyntax := item.commandSyntax, messages := item.syncMessages ++ asyncMessages, info }
+
+def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
   updateCmdPos
   let cmdState ← getCommandState
   let ictx ← getInputContext
@@ -949,13 +969,10 @@ def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
     resetSnapshotTasks
     elabCommandAtFrontend cmd
     let st ← getCommandState
-    let (messages, info) :=
-      match asyncSupport? with
-      | some collect =>
-        let (asyncMessages, info) := collect st
-        (messages ++ st.messages ++ asyncMessages, info)
-      | none => (messages ++ st.messages, st.infoState.trees)
-    let res := { commandSyntax := cmd, messages, info }
+    let results ← match asyncSupport? with
+      | some collect => collect st
+      | none => pure (Task.pure ({}, st.infoState.trees))
+    let res := { commandSyntax := cmd, syncMessages := messages ++ st.messages, results }
     pure (Parser.isTerminalCommand cmd, res)
 
 partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM FrontendResult := do
@@ -963,12 +980,14 @@ partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM Fronten
   if let sc :: rest := cmdState.scopes then
     setCommandState { cmdState with scopes := { sc with opts := enableAsyncIfAvailable sc.opts } :: rest }
   let mut done := false
-  let mut out := #[]
+  let mut pending := #[]
   while !done do
     let (done', res) ← processCommand
     done := done'
-    out := out.push res
-  return { headerSyntax, items := out }
+    pending := pending.push res
+  -- Every command's asynchronous elaboration is now underway; gathering results in a second pass
+  -- lets it proceed concurrently across commands.
+  return { headerSyntax, items := pending.map (·.toFrontendItem) }
 
 end Frontend
 
