@@ -2230,11 +2230,11 @@ where
 
 /--
 One segment of a module: the header or a single command, together with the messages whose start
-positions lie in its source region. A region runs from the segment's start to the next region's
-start. A segment without a region receives no messages. This can occur in two situations: the
-end-of-input item (which means that messages at the end of the file belong to the final command),
-and a header without tokens. A header has tokens when it contains a `module`, `prelude`, or
-`import` keyword. Trailing comments belong to the next segment.
+positions lie in its source span. A region runs from the segment's start to the next source span's
+start. A segment without a source span receives no messages. EOI ordinarily has no region, so
+messages at the end of the file belong to the final command. A header without tokens also has no
+source span. A header has tokens when it contains a `module`, `prelude`, or `import` keyword. Trailing
+comments belong to the next segment.
 -/
 structure ModuleSegment where
   messages : Array Message
@@ -2242,16 +2242,16 @@ structure ModuleSegment where
 deriving Inhabited
 
 /--
-Splits a module into source regions and distributes its messages among them. Segment 0 is the
+Splits a module into source spans and distributes its messages among them. Segment 0 is the
 header and segment `i + 1` is command `i`. Each region runs from its segment's start position to
 the next region's start, with the first region widened to the start of the file and the last
-running to the end of the file. The messages are sorted by start position and drained into the
-regions in one simultaneous scan, so every message lands in exactly one segment.
+running to the end of the file. Every message lands in exactly one segment. When no segment has
+tokens, the end-of-input item owns the whole file's region, so its messages are still rendered.
 -/
 def moduleSegments (fileMap : FileMap) (result : Compat.Frontend.FrontendResult)
     (messages : Array Message) : Array ModuleSegment := Id.run do
-  let starts := #[result.headerSyntax.getPos?] ++ result.items.map fun i =>
-    if i.commandSyntax.isOfKind ``Parser.Command.eoi then none else i.commandSyntax.getPos?
+  let starts := result.syntax.map fun stx =>
+    if stx.isOfKind ``Parser.Command.eoi then none else stx.getPos?
   let sorted := messages.map (fun m => (fileMap.ofPosition m.pos, m)) |>.qsort (·.1 < ·.1)
   let mut segments : Array ModuleSegment := starts.map fun _ =>
     { messages := #[], region? := none }
@@ -2274,6 +2274,10 @@ def moduleSegments (fileMap : FileMap) (result : Compat.Frontend.FrontendResult)
       prev? := some (i, start)
     else
       prev? := some (i, ⟨0⟩)
+  -- A file whose only tokens belong to the end-of-input item has no other segment to render its
+  -- messages, so that item owns the whole file.
+  if prev?.isNone then
+    prev? := some (segments.size - 1, ⟨0⟩)
   if let some (prev, prevStart) := prev? then
     segments := segments.set! prev {
       messages := sorted.extract msgIdx sorted.size |>.map (·.2),

@@ -370,7 +370,14 @@ open Lean Elab Command in
       throwError m!"Error span highlighting {repr input}:\n{hlStringWithMessages hl}"
 
 open Lean Elab Command in
--- A parse error at the end of the file is rendered in the truncated command's pass.
+-- A parse error in a file with no commands is rendered.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle "/- foo"
+  unless hl.hasError do
+    throwError m!"Missing error span:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- A parse error at the end of the file is rendered in the truncated command's segment.
 #eval show CommandElabM Unit from do
   let hls ← highlightModuleStyleSegments "def foo :="
   unless hls.size == 3 do
