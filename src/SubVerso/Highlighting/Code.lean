@@ -2252,7 +2252,7 @@ def moduleSegments (fileMap : FileMap) (result : Compat.Frontend.FrontendResult)
     (messages : Array Message) : Array ModuleSegment := Id.run do
   let starts := result.syntax.map fun stx =>
     if stx.isOfKind ``Parser.Command.eoi then none else stx.getPos?
-  let sorted := messages.map (fun m => (fileMap.ofPosition m.pos, m)) |>.qsort (·.1 < ·.1)
+  let sorted := messages.map (fun m => (leanPosToUtf8Pos fileMap m.pos, m)) |>.qsort (·.1 < ·.1)
   let mut segments : Array ModuleSegment := starts.map fun _ =>
     { messages := #[], region? := none }
   let mut msgIdx := 0
