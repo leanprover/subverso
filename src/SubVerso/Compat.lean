@@ -209,6 +209,16 @@ elab_rules : term <= ty
     throwError m!"No alternative succeeded. Attempts were: " ++
       indentD (MessageData.joinSep msgErrs Format.line)
 
+scoped syntax "%if_version_at_least" num num "then" term "else" term : term
+
+elab_rules : term <= ty
+  | `(%if_version_at_least $major:num $minor:num then $t1 else $t2) => do
+    let major := major.raw.isNatLit?.getD 0
+    let minor := minor.raw.isNatLit?.getD 0
+    let atLeast := Lean.version.major > major ||
+      (Lean.version.major == major && Lean.version.minor >= minor)
+    elabTermEnsuringType (if atLeast then t1 else t2) (some ty)
+
 scoped syntax "export_from_namespaces " "(" ident+ ") " "(" ident+ ")" : command
 
 elab_rules : command
@@ -845,8 +855,67 @@ structure FrontendItem where
   messages : MessageLog
 deriving Inhabited
 
+/--
+How asynchronous elaboration results are to be collected.
+
+On toolchains without async support, this is unused.
+-/
+structure AsyncSupport where
+  /--
+  Clears the snapshot tasks accumulated in the command state. The task array is cumulative across
+  commands, so it must be cleared before each command for a per-command read to be meaningful.
+  -/
+  reset : Command.State → Command.State
+  /--
+  Combines a command's snapshot tasks with the resolution of the info trees' lazy holes into a
+  single task that finishes once the command's asynchronous work is complete.
+  -/
+  collect : Command.State → BaseIO (Task (MessageLog × PersistentArray InfoTree))
+
+/--
+The asynchronous elaboration support for this toolchain. On toolchains where elaboration is always
+synchronous, this is `none`, and a command state's `messages` and `infoState` fields already hold
+every result.
+-/
+-- Asynchronous elaboration is the default since 4.19
+def asyncSupport? : Option AsyncSupport :=
+  %if_version_at_least 4 19 then
+    some {
+      reset := fun st => { st with snapshotTasks := #[] }
+      collect := fun st => do
+        let tree := Language.SnapshotTree.mk { diagnostics := .empty } st.snapshotTasks
+        let infoState := st.infoState
+        let allDone ← tree.waitAll
+        return allDone.bind fun () =>
+          infoState.substituteLazy.map fun infoState =>
+            -- Each snapshot's log carries the command's synchronous messages in its `reported`
+            -- field, so only the unreported messages are new.
+            let msgs := tree.getAll.foldl (init := ({} : MessageLog)) fun log s =>
+              s.diagnostics.msgLog.unreported.foldl (·.add ·) log
+            (msgs, infoState.trees)
+    }
+  else
+    none
+
+/--
+Turns on asynchronous elaboration when the toolchain supports it and the option is not otherwise
+set, matching the elaboration mode of the compiler on the same toolchain.
+-/
+def enableAsyncIfAvailable (opts : Options) : Options :=
+  if asyncSupport?.isSome && !opts.contains `Elab.async then
+    opts.setBool `Elab.async true
+  else
+    opts
+
+/-- Clears the snapshot tasks accumulated in the command state, on toolchains that have them. -/
+def resetSnapshotTasks : Frontend.FrontendM Unit := do
+  if let some async := asyncSupport? then
+    setCommandState (async.reset (← getCommandState))
+
 structure FrontendResult where
   headerSyntax : Syntax
+  /-- Messages that were logged before the first command, such as header parse diagnostics. -/
+  headerMessages : MessageLog := {}
   items : Array FrontendItem
 deriving Inhabited
 
@@ -896,33 +965,59 @@ where
       .node .none ``Lean.Parser.Command.eoi #[.atom (.original s (String.endPos contents) s (String.endPos contents)) ""]
     else cmd
 
-def processCommand : Frontend.FrontendM (Bool × FrontendItem) := do
+/--
+A command whose synchronous elaboration has finished. `syncMessages` holds the messages produced by
+parsing and synchronous elaboration, and `results` finishes once the command's asynchronous
+elaboration has finished, yielding its messages and the command's info trees.
+-/
+structure PendingItem where
+  commandSyntax : Syntax
+  syncMessages : MessageLog
+  results : Task (MessageLog × PersistentArray InfoTree)
+
+/-- Waits until the item's asynchronous elaboration has finished and assembles its results. -/
+def PendingItem.toFrontendItem (item : PendingItem) : FrontendItem :=
+  let (asyncMessages, info) := item.results.get
+  { commandSyntax := item.commandSyntax, messages := item.syncMessages ++ asyncMessages, info }
+
+def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
   updateCmdPos
   let cmdState ← getCommandState
   let ictx ← getInputContext
   let pstate ← getParserState
   let scope := cmdState.scopes.head!
   let pmctx := { env := cmdState.env, options := scope.opts, currNamespace := scope.currNamespace, openDecls := scope.openDecls }
-  match profileit "parsing" scope.opts fun _ => Parser.parseCommand ictx pmctx pstate cmdState.messages with
+  -- Parsing starts from an empty message log so that the item's messages are the command's own
+  -- parse errors and elaboration messages.
+  match profileit "parsing" scope.opts fun _ => Parser.parseCommand ictx pmctx pstate {} with
   | (cmd, ps, messages) =>
     modify fun s => { s with commands := s.commands.push cmd }
     setParserState ps
     setMessages {}
     runCommandElabM <| setInfoState { enabled := true }
+    resetSnapshotTasks
     elabCommandAtFrontend cmd
-    let messages := messages ++ (← getCommandState).messages
-    let info := (← getCommandState).infoState.trees
-    let res := { commandSyntax := cmd, messages, info }
+    let st ← getCommandState
+    let results ← match asyncSupport? with
+      | some async => async.collect st
+      | none => pure (Task.pure ({}, st.infoState.trees))
+    let res := { commandSyntax := cmd, syncMessages := messages ++ st.messages, results }
     pure (Parser.isTerminalCommand cmd, res)
 
 partial def processCommands (headerSyntax : Syntax) : Frontend.FrontendM FrontendResult := do
+  let cmdState ← getCommandState
+  let headerMessages := cmdState.messages
+  if let sc :: rest := cmdState.scopes then
+    setCommandState { cmdState with scopes := { sc with opts := enableAsyncIfAvailable sc.opts } :: rest }
   let mut done := false
-  let mut out := #[]
+  let mut pending := #[]
   while !done do
     let (done', res) ← processCommand
     done := done'
-    out := out.push res
-  return { headerSyntax, items := out }
+    pending := pending.push res
+  -- Every command's asynchronous elaboration is now underway; gathering results in a second pass
+  -- lets it proceed concurrently across commands.
+  return { headerSyntax, headerMessages, items := pending.map (·.toFrontendItem) }
 
 end Frontend
 

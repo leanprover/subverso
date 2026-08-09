@@ -378,6 +378,23 @@ named constants so the prebuild phase and the full test run agree on the exact t
 def demoToolchain48 : String := "leanprover/lean4:v4.8.0"
 @[inherit_doc demoToolchain48] def demoToolchain410 : String := "leanprover/lean4:4.10.0"
 
+/--
+The small-tests module that references a `match` auxiliary declaration by the name `toolchain`'s
+compiler generates for it under asynchronous elaboration. Asynchronous elaboration is the compiler
+default since the 4.19 cycle, and the generated names gained an extra suffix in the 4.21 cycle.
+Version-numbered toolchains before 4.19 elaborate synchronously and get `none`. Nightlies and other
+unrecognized toolchain strings are current enough for the 4.21 naming.
+-/
+def matchNamesModule (toolchain : String) : Option String :=
+  let ver := (toolchain.splitOn ":").getLast!
+  let ver := if ver.startsWith "v" then Compat.String.drop ver 1 else ver
+  match (ver.splitOn ".").map (·.toNat?) with
+  | some major :: some minor :: _ =>
+    if major > 4 || (major == 4 && minor >= 21) then some "Small.MatchNames21"
+    else if major == 4 && minor >= 19 then some "Small.MatchNames19"
+    else none
+  | _ => some "Small.MatchNames21"
+
 /-- The `(project, toolchain)` pairs whose builds are shared across all matrix jobs. -/
 def fixedTargets : IO (List (System.FilePath × String)) := do
   pure [
@@ -458,7 +475,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
   checkHasSorry examples''
   checkIsLinted examples''
   let proofCount3 := proofCount examples''
-  IO.println s!"Found {proofCount2} proofs "
+  IO.println s!"Found {proofCount3} proofs "
 
   if proofCount1 != proofCount2 || proofCount2 != proofCount3 then
     IO.eprintln "Example proof count mismatch"
@@ -493,11 +510,35 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
             unless states.contains goalString do
               IO.eprintln s!"Proof state '{name}': expected one of {repr states} but got {repr goalString}"; errors := errors + 1
           else
-            IO.eprintln "Not found: proof state '{name}'"; errors := errors + 1
+            IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
         if errors > 0 then
           IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
           return 1
     IO.println "Proof states for induction/cases alts OK"
+
+  match matchNamesModule myToolchain with
+  | none =>
+    IO.println s!"Skipping async auxiliary-name tests for Lean toolchain {myToolchain}"
+  | some matchNamesMod =>
+    IO.println "Checking auxiliary declaration names and proof states under async elaboration"
+    let items ← loadModuleContentIn "small-tests" matchNamesMod myToolchain demodSrc
+    if items.isEmpty then
+      IO.eprintln s!"No module items found for {matchNamesMod}"
+      return 1
+    let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+    if content.hasError then
+      IO.eprintln s!"Error span in {matchNamesMod}: the generated auxiliary name did not resolve"
+      return 1
+    match content.anchored with
+    | .error e =>
+      IO.eprintln s!"Error loading anchored content: {e}"
+      return 1
+    | .ok {code:=_, anchors:=_, proofStates} =>
+      let some st := proofStates.get? "matchRfl"
+        | IO.eprintln "Not found: proof state 'matchRfl'"; return 1
+      let .tactics _ _ _ _ := st
+        | IO.eprintln s!"Proof state 'matchRfl' not a proof state: {repr st}"; return 1
+    IO.println "Auxiliary declaration names under async elaboration OK"
 
   pure 0
 

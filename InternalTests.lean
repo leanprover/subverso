@@ -305,19 +305,97 @@ Highlights `input` via the module path (`highlightFrontendResult` with `pp.tagAp
 `subverso-extract-mod` does. This produces the tactic-region structure that per-command highlighting
 doesn't, so it exercises comment trivia inside proof tactics.
 -/
-def highlightModuleStyle (input : String) : CommandElabM Highlighting.Highlighted := do
+def highlightModuleStyleSegments (input : String) : CommandElabM (Array Highlighting.Highlighted) := do
   let inputCtx := Parser.mkInputContext input "<input>"
-  let commandState : Command.State := { env := (← getEnv), maxRecDepth := (← get).maxRecDepth }
+  let (headerStx, parserState, msgs) ← Parser.parseHeader inputCtx
+  let commandState : Command.State :=
+    { env := (← getEnv), maxRecDepth := (← get).maxRecDepth, messages := msgs }
   let commandState :=
     let sc := commandState.scopes[0]!
     { commandState with scopes := { sc with opts := sc.opts.setBool `pp.tagAppFns true } :: commandState.scopes.tail! }
-  let (result, _) ← Compat.Frontend.processCommands mkNullNode
-    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let (result, _) ← Compat.Frontend.processCommands headerStx
+    |>.run { inputCtx } |>.run { commandState, parserState, cmdPos := parserState.pos }
   let result := result.updateLeading input
   runTermElabM fun _ =>
     withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
-      let hls ← Highlighting.highlightFrontendResult result
-      return hls.foldl (· ++ ·) .empty
+      Highlighting.highlightFrontendResult result
+
+open Lean Elab Command in
+@[inherit_doc highlightModuleStyleSegments]
+def highlightModuleStyle (input : String) : CommandElabM Highlighting.Highlighted := do
+  return (← highlightModuleStyleSegments input).foldl (· ++ ·) .empty
+
+open Lean Elab Command in
+-- Each frontend item's messages are the command's own parse errors and elaboration messages, even
+-- when the previous command's message range ends exactly where the command starts.
+#eval show CommandElabM Unit from do
+  let inputCtx := Parser.mkInputContext "#check (1)#check (2)" "<input>"
+  let commandState : Command.State := { env := (← getEnv), maxRecDepth := (← get).maxRecDepth }
+  let (result, _) ← Compat.Frontend.processCommands mkNullNode
+    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let items := result.items.filter (·.commandSyntax.getKind != ``Lean.Parser.Command.eoi)
+  let logs ← items.mapM fun i => do
+    let msgs ← Compat.messageLogArray i.messages |>.mapM (·.toString)
+    pure <| String.join msgs.toList
+  unless logs.size == 2 do
+    throwError m!"Expected 2 items, got {logs.size}"
+  let contains (s pat : String) : Bool := (s.splitOn pat).length > 1
+  unless contains logs[0]! "1 : Nat" && !(contains logs[0]! "2 : Nat") do
+    throwError m!"First item's messages are wrong: {logs[0]!}"
+  unless contains logs[1]! "2 : Nat" && !(contains logs[1]! "1 : Nat") do
+    throwError m!"Second item's messages are wrong: {logs[1]!}"
+
+open Lean Elab Command in
+-- A message logged at a synthetic position inside another command's range is rendered on the code
+-- it points at.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle <|
+    "def target := 55\n\n" ++
+    "def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do\n" ++
+    "  let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])\n" ++
+    "  Lean.logInfoAt stx str\n\n" ++
+    "elab \"inject_info\" : command => do\n" ++
+    "  inject 4 10 \"subverso_test_pool\"\n\n" ++
+    "inject_info"
+  let out := hlStringWithMessages hl
+  unless (out.splitOn "[info: subverso_test_pool](target)").length > 1 do
+    throwError m!"Missing pooled message span:\n{out}"
+
+open Lean Elab Command in
+-- Empty and comment-only modules highlight cleanly.
+#eval show CommandElabM Unit from do
+  for input in ["", "\n\n  \n", "-- only a comment\n"] do
+    let hl ← highlightModuleStyle input
+    if hl.hasError then
+      throwError m!"Error span highlighting {repr input}:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- A parse error in a file with no commands is rendered.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle "/- foo"
+  unless hl.hasError do
+    throwError m!"Missing error span:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- A parse error at the end of the file is rendered in the truncated command's segment.
+#eval show CommandElabM Unit from do
+  let hls ← highlightModuleStyleSegments "def foo :="
+  unless hls.size == 3 do
+    throwError m!"Expected header, command, and end-of-input segments, got {hls.size}"
+  unless hls[1]!.hasError do
+    throwError m!"The truncated command lacks its error span"
+  if hls[2]!.hasError then
+    throwError m!"The error span landed on the end-of-input item"
+
+open Lean Elab Command in
+-- A message whose range ends exactly where the next command starts is rendered once, on the
+-- command that produced it.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle "example : Nat := \"hi\"#check 2"
+  let out := hlStringWithMessages hl
+  let errorSpans := (out.splitOn "[error:").length - 1
+  unless errorSpans == 1 do
+    throwError m!"Expected one error span, got {errorSpans}:\n{out}"
 
 /--
 `#evalHighlight inp exp` highlights `inp` using the including-unparsed
@@ -1121,5 +1199,36 @@ elab "#evalNoMatchingExpr" inp:str term:str : command => do
 #evalNoMatchingExpr "def x := 1 -- plus 2\n" "plus 2"
 
 end TermMatching
+
+/-! # Async Elaboration -/
+section AsyncElab
+open SubVerso.Highlighting
+
+open Lean Elab Command in
+-- Under async elaboration, a `match`-using definition's auxiliary declarations get the names the
+-- compiler gives them, so a reference to such a name (as shown in the editor) elaborates cleanly.
+-- The generated names gained an extra suffix in the 4.21 cycle.
+#eval show CommandElabM Unit from do
+  if Compat.Frontend.asyncSupport?.isSome then
+    let auxName :=
+      if Lean.version.major > 4 || (Lean.version.major == 4 && Lean.version.minor >= 21) then
+        "mySubst.match_1_1"
+      else
+        "mySubst.match_1"
+    let hl ← highlightModuleStyle
+      s!"theorem mySubst \{p : Nat → Prop} : x = y → p x → p y\n  | rfl, h => h\n\n#check @{auxName}\n"
+    if hl.hasError then
+      throwError m!"Unexpected error:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- Tactic proof states survive async elaboration: the info trees' lazy holes are resolved before
+-- highlighting.
+#eval show CommandElabM Unit from do
+  if Compat.Frontend.asyncSupport?.isSome then
+    let hl ← highlightModuleStyle "example : 2 + 2 = 4 := by\n  rfl\n"
+    unless hl.hasTactics do
+      throwError "No proof states found under async elaboration"
+
+end AsyncElab
 
 def main : IO Unit := pure ()
