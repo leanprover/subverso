@@ -316,6 +316,11 @@ def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Synta
   return false
 
 open Highlighted in
+/--
+A frame of the highlighter's output stack, which is a `List Output` with the innermost frame first.
+A frame is either an open message span or tactic region, which the code highlighted while it is
+open becomes part of, or the code accumulated at that depth.
+-/
 inductive Output where
   | seq (emitted : Array Highlighted)
   | span (info : Array Highlighted.Message) (startPos : Compat.String.Pos) (endPos : Option Compat.String.Pos)
@@ -434,6 +439,19 @@ def Output.closeSpan (output : List Output) : List Output :=
       go (.seq (left.push acc)) more
   go .empty output
 
+/-- Whether `frame` is an open message span or tactic region. -/
+def Output.isOpenRegion (frame : Output) : Bool :=
+  match frame with
+  | .span .. | .tactics .. => true
+  | .seq _ => false
+
+/-- Whether `frame` is an open region that ends at or before `pos`. -/
+def Output.endedAt (pos : Compat.String.Pos) (frame : Output) : Bool :=
+  match frame with
+  | .span _ _ endPos => endPos.all (· ≤ pos)
+  | .tactics _ _ endPos => endPos ≤ pos
+  | .seq _ => false
+
 def Highlighted.fromOutput (output : List Output) : Highlighted :=
   let rec go (acc : Highlighted) : List Output → Highlighted
     | [] => acc
@@ -441,10 +459,6 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
     | .span info _ _ :: more => go (.span (info.map (fun x => ⟨x.1, x.2⟩)) acc) more
     | .tactics info startPos endPos :: more => go (.tactics info startPos.byteIdx endPos.byteIdx acc) more
   go .empty output
-
-structure OpenTactic where
-  openedAt : Compat.String.Pos
-  closesAt : Compat.String.Pos
 
 structure MessageBundle where
   messages : Array Message
@@ -522,12 +536,8 @@ structure HighlightState where
   /-- Messages not yet displayed -/
   messages : Array MessageBundle
   nextMessage : Option (Fin messages.size)
-  /-- Output so far -/
+  /-- Output so far. Its open `span` and `tactics` frames carry their own end positions. -/
   output : List Output
-  /-- Messages being displayed -/
-  inMessages : List MessageBundle
-  /-- A stack of currently-open tactic regions. -/
-  inTactic : List OpenTactic
   /-- Last source position added to the output -/
   lastPos? : Option Compat.String.Pos := none
   /-- Memoized results of searching for tactic info (by canonical range) -/
@@ -542,14 +552,12 @@ structure HighlightState where
   fmtTerms : Compat.HashMap Expr String := {}
 
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}, {}, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}, {}, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
   nextMessage := none
   output := []
-  inMessages := []
-  inTactic := []
 
 def HighlightState.resetCache (st : HighlightState) : HighlightState :=
   { st with terms := {}, ppTerms := {}, fmtTerms := {} }
@@ -563,8 +571,6 @@ def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     messages := msgs
     nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
     output := [],
-    inMessages := [],
-    inTactic := []
     lastPos? := startPos?
   }
 where
@@ -586,13 +592,11 @@ private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
       some (x' :: xs)
     else (x :: ·) <$> modify? f xs
 
-def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Compat.String.Pos) (_pos : Position) : HighlightState :=
+def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Compat.String.Pos) : HighlightState :=
   if let some out' := modify? update? st.output then
     {st with output := out'}
-  else { st with
-    output := .tactics info startPos endPos :: st.output,
-    inTactic := ⟨startPos, endPos⟩ :: st.inTactic
-  }
+  else
+    { st with output := .tactics info startPos endPos :: st.output }
 where
   update?
     | .tactics info' startPos' endPos' =>
@@ -601,8 +605,8 @@ where
       else none
     | _ => none
 
-def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Compat.String.Pos) (pos : Position) : HighlightM Unit :=
-  modify fun st => st.openTactic info startPos endPos pos
+def HighlightM.openTactic (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Compat.String.Pos) : HighlightM Unit :=
+  modify fun st => st.openTactic info startPos endPos
 
 instance : Inhabited (HighlightM α) where
   default := fun _ _ _ => default
@@ -623,9 +627,6 @@ def advanceMessages : HighlightM Unit := do
 
 def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.pos.notAfter pos
-
-def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
-  message.endPos.map (·.notAfter pos) |>.getD true
 
 private def leanPosToUtf8Pos (text : FileMap) : Position → Compat.String.Pos :=
   text.lspPosToUtf8Pos ∘ text.leanPosToLspPos
@@ -897,38 +898,19 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
           pure ⟨kind, str⟩
 
       modify fun st =>
-    {st with
-        output := Output.openSpan st.output txt (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
-        inMessages := msg :: st.inMessages
-      }
+        {st with
+          output := Output.openSpan st.output txt (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
+        }
       openUntil pos
 
+/-- Closes the message spans and tactic regions that end at or before `pos`, innermost first. -/
 partial def closeUntil (pos : Compat.String.Pos) : HighlightM Unit := do
-  let text ← getFileMap
   let more ← modifyGet fun st =>
-    match st.inMessages, st.inTactic with
-    | [], [] => (false, st)
-    | [], t :: ts =>
-      if t.closesAt ≤ pos then
-        (true, {st with output := Output.closeSpan st.output, inTactic := ts})
+    match st.output.find? Output.isOpenRegion with
+    | some frame =>
+      if Output.endedAt pos frame then (true, {st with output := Output.closeSpan st.output})
       else (false, st)
-    | m :: ms, [] =>
-      if needsClosing (text.toPosition pos) m then
-        (true, {st with output := Output.closeSpan st.output, inMessages := ms})
-      else (false, st)
-    | m :: ms, t :: ts =>
-      if let some e := m.endPos then
-        if text.toPosition t.closesAt |>.notAfter e then
-          -- Close the tactics first, in nesting order
-          if t.closesAt ≤ pos then
-            (true, { st with output := Output.closeSpan st.output, inTactic := ts })
-          else (false, st)
-        else
-          -- Close the message first
-          if needsClosing (text.toPosition pos) m then
-            (true, { st with output := Output.closeSpan st.output, inMessages := ms })
-          else (false, st)
-      else (true, { st with output := Output.closeSpan st.output, inMessages := ms })
+    | none => (false, st)
 
   if more then closeUntil pos
 
@@ -944,14 +926,13 @@ This is used for splitting unparsed regions so that messages appear within the p
 def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
     : HighlightM (Compat.HashSet Compat.String.Pos) := do
   let text ← getFileMap
-  let { messages, nextMessage, inMessages, .. } ← get
+  let { messages, nextMessage, output, .. } ← get
   let mut boundaries : Compat.HashSet Compat.String.Pos := {}
-  -- Add in-range end positions of active messages:
-  for msg in inMessages do
-    if let some msgEndPos := msg.endPos then
-      let msgEndPosUtf8 := leanPosToUtf8Pos text msgEndPos
-      if msgEndPosUtf8 < endPos then
-        boundaries := boundaries.insert msgEndPosUtf8
+  -- Add in-range end positions of open message spans:
+  for frame in output do
+    if let .span _ _ (some e) := frame then
+      if startPos ≤ e && e < endPos then
+        boundaries := boundaries.insert e
   -- Add in-range start and end positions of upcoming messages:
   if let some nextMessage := nextMessage then
     for msg in messages[nextMessage:] do
@@ -969,7 +950,7 @@ def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
           boundaries := boundaries.insert nextWhitespace
       if let some msgEndPos := msg.endPos then
         let msgEndPosUtf8 := leanPosToUtf8Pos text msgEndPos
-        if msgEndPosUtf8 ≤ endPos then
+        if startPos ≤ msgEndPosUtf8 && msgEndPosUtf8 ≤ endPos then
           -- If the message ends where it starts, run to the next whitespace
           if msgEndPosUtf8 == msgPosUtf8 then
             boundaries := boundaries.insert nextWhitespace
@@ -1449,31 +1430,29 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
 def tacticInfoGoals
     (ci : ContextInfo) (tacticInfo : TacticInfo)
     (startPos endPos : Compat.String.Pos)
-    (endPosition : Position)
     (before : Bool := false) :
-    HighlightM (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position) := do
+    HighlightM (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos) := do
   let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
   let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
   let goalView ← highlightGoals ci goals
 
-  return (goalView, startPos, endPos, endPosition)
+  return (goalView, startPos, endPos)
 
 /--
 Finds the tactic info for `stx`, which should be in the indicated span.
 
-If found, returns the goals, the byte indices of the span, and the provided end position.
+If found, returns the goals and the byte indices of the span.
 -/
 partial def findTactics'
     (stx : Syntax)
     (startPos endPos : Compat.String.Pos)
-    (endPosition : Position)
     (before : Bool := false)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) := do
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) := do
 
   if let some res := (← readThe InfoTable).tacticInfo? stx then
     for (ci, tacticInfo) in res.reverse do
       if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
-        return some (#[], startPos, endPos, endPosition)
+        return some (#[], startPos, endPos)
 
       let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
       let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
@@ -1481,21 +1460,20 @@ partial def findTactics'
       let goalView ← highlightGoals ci goals
 
       if !Output.inTacticState (← get).output goalView then
-        return some (goalView, startPos, endPos, endPosition)
+        return some (goalView, startPos, endPos)
 
   return none
 
 /--
 Finds all the tactic info for `stx`, which should be in the indicated span.
 
-If found, returns the goals, the byte indices of the span, and the provided end position.
+If found, returns the goals and the byte indices of the span.
 -/
 partial def findAllTactics'
     (stx : Syntax)
     (startPos endPos : Compat.String.Pos)
-    (endPosition : Position)
     (before : Bool := false)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) := do
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) := do
 
   let mut found := #[]
 
@@ -1513,7 +1491,7 @@ partial def findAllTactics'
         found := found ++ goalView
 
   if found.isEmpty then return none
-  else return some (found, startPos, endPos, endPosition)
+  else return some (found, startPos, endPos)
 
 /--
 Finds the proof state _after_ a single rewrite rule `stx` (one entry of a `rw`/`rewrite` rule list).
@@ -1521,8 +1499,7 @@ This gives each step of `rw [h₁, …, hₙ]` its own intermediate proof state.
 -/
 partial def rwRuleGoals
     (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
-    HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) := do
-  let text ← getFileMap
+    HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) := do
   let some ruleStart := stx.getPos? (canonicalOnly := true)
     | return none
   for t in trees do
@@ -1531,7 +1508,7 @@ partial def rwRuleGoals
         if let some regionStart := ti.stx.getPos? (canonicalOnly := true) then
           if let some regionEnd := ti.stx.getTailPos? (canonicalOnly := true) then
             if regionStart == ruleStart then
-              return some (← tacticInfoGoals ci ti regionStart regionEnd (text.toPosition regionEnd) (before := false))
+              return some (← tacticInfoGoals ci ti regionStart regionEnd (before := false))
   return none
 
 /-- Tactics which should show inner tactic scripts' states as well as the full final state -/
@@ -1541,14 +1518,12 @@ partial def findTactics
     (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
     (before : Bool := false)
-    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos × Position)) :=
+    : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) :=
   withTraceNode `SubVerso.Highlighting.Code (fun x => pure m!"findTactics {stx} ==> {match x with | .error _ => "err" | .ok v => v.map (fun _ => "yes") |>.getD "no"}") <| do
-  let text ← getFileMap
   let some startPos := stx.getPos?
     | return none
   let some endPos := stx.getTailPos?
     | return none
-  let endPosition := text.toPosition endPos
 
   -- Blacklisted tactics. TODO: make into an extensible table.
   -- `;` is blacklisted  - no need to highlight states identically
@@ -1564,7 +1539,7 @@ partial def findTactics
           | `(Lean.Parser.Term.byTactic| by%$tk $tactics)
           | `(Lean.Parser.Term.byTactic'| by%$tk $tactics) =>
             if tk == stx then
-              let ts ← findTactics' tactics startPos endPos endPosition (before := true)
+              let ts ← findTactics' tactics startPos endPos (before := true)
               -- Macro tactics that embed a `by` (e.g. `have h := by …`) record the byTactic's
               -- tacticSeq with the *enclosing* goal as its `goalsBefore`, so the `by` token here
               -- would be labelled with the surrounding state rather than the subproof's. Such an
@@ -1585,7 +1560,7 @@ partial def findTactics
           if tacticInfo.stx.getKind == nullKind then
             if let some tacStx := tacticInfo.stx.getArgs.back? then
               if tacStx == stx then
-                return some (← tacticInfoGoals ci tacticInfo startPos endPos endPosition (before := true))
+                return some (← tacticInfoGoals ci tacticInfo startPos endPos (before := true))
 
           match tacticInfo.stx with
           | `(Lean.Parser.Tactic.inductionAlt| $_lhs =>%$tk $rhs )
@@ -1596,7 +1571,7 @@ partial def findTactics
           | `(tactic| case $_ $_* =>%$tk $rhs )
           | `(tactic| case' $_ $_* =>%$tk $rhs ) =>
             if tk == stx then
-              return (← findTactics' rhs startPos endPos endPosition (before := true))
+              return (← findTactics' rhs startPos endPos (before := true))
           | _ => continue
 
   -- Only show tactic output for the most specific source spans possible, with a few exceptions:
@@ -1616,7 +1591,7 @@ partial def findTactics
   if stx.getKind == ``Lean.Parser.Tactic.rwRule then
     return ← rwRuleGoals trees stx
 
-  findTactics' stx startPos endPos endPosition (before := before)
+  findTactics' stx startPos endPos (before := before)
 
 partial def highlightLevel (u : TSyntax `level) : HighlightM Unit := do
   match u with
@@ -1676,12 +1651,9 @@ where
 Get the goals before a piece of syntax.
 -/
 def beforeGoals (stx : Syntax) : HighlightM (Option (Array (Highlighted.Goal Highlighted))) := do
-  let text ← getFileMap
   if let some rstartPos := stx.getPos? then
     if let some rendPos := stx.getTailPos? then
-      let rendPosition := text.toPosition rendPos
-
-      if let some (goals, _, _, _) ← findAllTactics' stx rstartPos rendPos rendPosition (before := true) then
+      if let some (goals, _, _) ← findAllTactics' stx rstartPos rendPos (before := true) then
         return if !goals.isEmpty then some goals else none
   return none
 
@@ -1693,14 +1665,12 @@ def highlightArrowLike
     (lookingAt : Option (Name × Compat.String.Pos) := none) :
     HighlightM Unit := do
   let mut lhsTactics := tactics
-  let text ← getFileMap
   let rhsGoals ← beforeGoals rhs
 
   if let some goals := rhsGoals then
     if let some startPos := lhs.getPos? then
       if let some endPos := arr.getTailPos? then
-        let endPosition := text.toPosition endPos
-        HighlightM.openTactic goals startPos endPos endPosition
+        HighlightM.openTactic goals startPos endPos
         lhsTactics := false
 
   hl trees lhsTactics lookingAt lhs
@@ -1753,7 +1723,6 @@ def highlightSpecial
   | `(Lean.Parser.Tactic.inductionAlt|$lhs* =>%$arr $rhs) =>
     let mut lhsTactics := tactics
     -- Get the before state of the RHS
-    let text ← getFileMap
     let rhsGoals ← beforeGoals rhs
 
     -- Special handling for cases/induction alternatives. When there's one alt prior to =>, show the
@@ -1766,8 +1735,7 @@ def highlightSpecial
       if let some goals := rhsGoals then
         if let some startPos := lhs.raw.getPos? then
           if let some endPos := arr.getTailPos? then
-            let endPosition := text.toPosition endPos
-            HighlightM.openTactic goals startPos endPos endPosition
+            HighlightM.openTactic goals startPos endPos
             lhsTactics := false
 
       hl trees lhsTactics none lhs
@@ -1776,7 +1744,6 @@ def highlightSpecial
       for l in lhs do
         if let some startPos := l.raw.getPos? then
           if let some endPos := l.raw.getTailPos? then
-            let endPosition := text.toPosition endPos
             -- Starting in Lean 4.14, each case/tactic alt gets its own TacticInfo. This will
             -- highlight them appropriately. Older Lean versions will have less information here.
             for t in trees do
@@ -1786,9 +1753,9 @@ def highlightSpecial
                   if ti.stx.getKind == nullKind then
                     let preArr := i.stx[0]
                     if preArr.getKind == nullKind && preArr[0] == l then
-                      let (goals, _, _, _) ← tacticInfoGoals ci ti startPos endPos endPosition (before := true)
+                      let (goals, _, _) ← tacticInfoGoals ci ti startPos endPos (before := true)
                       if !goals.isEmpty then
-                        HighlightM.openTactic goals startPos endPos endPosition
+                        HighlightM.openTactic goals startPos endPos
                         lhsTactics := false
         hl trees lhsTactics none l
 
@@ -1796,8 +1763,7 @@ def highlightSpecial
       if let some goals := rhsGoals then
         if let some startPos := arr.getPos? then
           if let some endPos := arr.getTailPos? then
-          let endPosition := text.toPosition endPos
-          HighlightM.openTactic goals startPos endPos endPosition
+          HighlightM.openTactic goals startPos endPos
           hl trees false none arr
       else hl trees tactics none arr
 
@@ -1911,11 +1877,11 @@ partial def highlight'
   withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Highlighting {stx}") do
   let mut tactics := tactics
   if tactics then
-    if let some (tacticInfo, startPos, endPos, position) ← findTactics trees stx then
+    if let some (tacticInfo, startPos, endPos) ← findTactics trees stx then
       -- Drop a region that would just duplicate an enclosing region's state at its tail (e.g. the
       -- closing `]` of a `rw`, nested in a tactic region with the same final state).
       unless Output.tailDuplicatesOpen (← get).output tacticInfo endPos do
-        HighlightM.openTactic tacticInfo startPos endPos position
+        HighlightM.openTactic tacticInfo startPos endPos
         -- Tactic regions are normally leaves, so disable further search in the subtree. The
         -- exceptions are not leaves and keep their nested states:
         -- * `rw`/`rewrite`: each rewrite rule nests its own intermediate state inside the region.
