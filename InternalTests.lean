@@ -258,7 +258,7 @@ elab \"inject_info\" : command => do
   inject 33 43 \"subverso_test: 5\"
 
 inject_info"
-  "[info: subverso_test: 1](deriving )[info: subverso_test: 1](a bunch) of [info: subverso_test: 4]([info: subverso_test: 2](other) [info: subverso_test: 3](filler) [info: subverso_test: 5](text def b)) := true
+  "[info: subverso_test: 1](deriving a bunch) of [info: subverso_test: 4]([info: subverso_test: 2](other) [info: subverso_test: 3](filler) [info: subverso_test: 5](text def b)) := true
 
 def inject (start fin : Nat) (str : String) : Lean.Elab.Command.CommandElabM Unit := do
   let stx := Lean.Syntax.atom (.synthetic ⟨start⟩ ⟨fin⟩) (String.mk [])
@@ -1230,5 +1230,175 @@ open Lean Elab Command in
       throwError "No proof states found under async elaboration"
 
 end AsyncElab
+
+/-!
+# Splitting and substitution preserve nesting
+
+`Highlighted.split` and `Highlighted.substM` walk into `span` and `tactics` wrappers. Each
+fragment is wrapped in the wrappers that enclose it, and each of those wrappers occurs exactly
+once in the fragment.
+-/
+
+section SplitNesting
+
+open SubVerso.Highlighting
+
+private def tokA : Highlighted := .token ⟨.keyword none none none, "a"⟩
+private def tokB : Highlighted := .token ⟨.keyword none none none, "b"⟩
+private def tokC : Highlighted := .token ⟨.keyword none none none, "c"⟩
+
+private def msg (k : Highlighted.Span.Kind) (s : String) :
+    Highlighted.Span.Kind × Highlighted.MessageContents Highlighted :=
+  (k, .text s)
+
+private def nested : Highlighted :=
+  .span #[msg .info "outer"] (.seq #[tokA, .span #[msg .warning "inner"] tokB, tokC])
+
+private def nested3 : Highlighted :=
+  .span #[msg .info "o"] (.span #[msg .warning "m"] (.span #[msg .info "i"] tokB))
+
+/-- The number of span wrappers in the tree. -/
+private partial def countSpans : Highlighted → Nat
+  | .seq xs => xs.foldl (fun n x => n + countSpans x) 0
+  | .span _ c => 1 + countSpans c
+  | .tactics _ _ _ c => countSpans c
+  | _ => 0
+
+/-- The number of tactic-state wrappers in the tree. -/
+private def countTactics (hl : Highlighted) : Nat := hl.stateTree.size
+
+/-- The highlighted parts of a substitution, with the substituted values discarded. -/
+private def substParts (values : String → Option Unit) (hl : Highlighted) : Array Highlighted :=
+  hl.subst values |>.filterMap fun p =>
+    match p with
+    | .inl h => some h
+    | .inr () => none
+
+private def noMatch : String → Option Unit := fun _ => none
+
+private def substSpans (hl : Highlighted) : Nat :=
+  substParts noMatch hl |>.foldl (fun n h => n + countSpans h) 0
+
+private def substString (hl : Highlighted) : String :=
+  substParts noMatch hl |>.foldl (fun s h => s ++ h.asString) ""
+
+-- Substitution without matches keeps each span exactly once, and all the content.
+#evalString "2\n" (substSpans nested)
+#evalString "\"abc\"\n" (substString nested)
+#evalString "3\n" (substSpans nested3)
+#evalString "\"b\"\n" (substString nested3)
+
+-- A substitution match outside the spans does not affect them.
+#evalString "3\n" ((substParts (fun s => if s == "a" then some () else none)
+    (.seq #[tokA, nested3, tokC])).foldl (fun n h => n + countSpans h) 0)
+
+-- Splitting without matches keeps each span exactly once.
+#evalString "2\n" ((nested.split (fun _ => false)).foldl (fun n h => n + countSpans h) 0)
+#evalString "3\n" ((nested3.split (fun _ => false)).foldl (fun n h => n + countSpans h) 0)
+
+private def nestedTactics : Highlighted :=
+  .tactics #[] 0 0 (.seq #[tokA, .tactics #[] 0 0 tokB, tokC])
+
+-- Tactic-state wrappers behave like spans when there is nothing to split on.
+#evalString "2\n" ((nestedTactics.split (fun _ => false)).foldl (fun n h => n + countTactics h) 0)
+#evalString "2\n" ((substParts noMatch nestedTactics).foldl (fun n h => n + countTactics h) 0)
+#evalString "\"abc\"\n" ((substParts noMatch nestedTactics).foldl (fun s h => s ++ h.asString) "")
+
+-- `lines` repeats a wrapper on each line of its content, and only there.
+#evalString "2\n" ((Highlighted.span #[msg .info "o"] (.text "x\ny")).lines.foldl
+  (fun n h => n + countSpans h) 0)
+
+private def mark : Highlighted := .token ⟨.keyword none none none, "MARK"⟩
+
+private def atMark (s : String) : Bool := s == "MARK"
+
+private def atMark? (s : String) : Option Unit := if s == "MARK" then some () else none
+
+/-- A marker in the outer wrapper, reached after the inner wrapper has closed. -/
+private def markAfterInner : Highlighted :=
+  .span #[msg .info "outer"] (.seq #[.span #[msg .warning "inner"] tokA, mark, tokB])
+
+/-- A marker in the inner wrapper, with content before the inner wrapper opened. -/
+private def markInsideInner : Highlighted :=
+  .span #[msg .info "outer"]
+    (.seq #[tokA, .span #[msg .warning "inner"] (.seq #[tokB, mark, tokC])])
+
+/-- `markAfterInner` with tactic states in place of spans. -/
+private def tacticsMarkAfterInner : Highlighted :=
+  .tactics #[] 0 0 (.seq #[.tactics #[] 0 0 tokA, mark, tokB])
+
+-- Each fragment carries every wrapper that encloses it in the source.
+#evalString "#[2, 1]\n" ((markAfterInner.split atMark).map countSpans)
+#evalString "#[2, 1]\n" ((substParts atMark? markAfterInner).map countSpans)
+#evalString "#[2, 1]\n" ((tacticsMarkAfterInner.split atMark).map countTactics)
+#evalString "#[2, 2]\n" ((markInsideInner.split atMark).map countSpans)
+#evalString "#[2, 2]\n" ((substParts atMark? markInsideInner).map countSpans)
+
+-- The fragments partition the content in source order.
+#evalString "#[\"a\", \"b\"]\n" ((markAfterInner.split atMark).map (·.asString))
+#evalString "#[\"ab\", \"c\"]\n" ((markInsideInner.split atMark).map (·.asString))
+#evalString "#[\"ab\", \"c\"]\n" ((substParts atMark? markInsideInner).map (·.asString))
+
+/-- A marker as the only content of a wrapper. -/
+private def markAlone : Highlighted :=
+  .span #[msg .info "outer"] mark
+
+/-- A marker as the first content of a wrapper. -/
+private def markAtStart : Highlighted :=
+  .span #[msg .info "outer"] (.seq #[mark, tokA])
+
+/-- A marker as the last content of a wrapper. -/
+private def markAtEnd : Highlighted :=
+  .span #[msg .info "outer"] (.seq #[tokA, mark])
+
+/-- A marker as the first content of the inner wrapper. -/
+private def markAtInnerStart : Highlighted :=
+  .span #[msg .info "outer"]
+    (.seq #[tokA, .span #[msg .warning "inner"] (.seq #[mark, tokB])])
+
+/-- A marker as the last content of the inner wrapper. -/
+private def markAtInnerEnd : Highlighted :=
+  .span #[msg .info "outer"]
+    (.seq #[.span #[msg .warning "inner"] (.seq #[tokA, mark]), tokB])
+
+/-- `markAtEnd` with a tactic state in place of the span. -/
+private def tacticsMarkAtEnd : Highlighted :=
+  .tactics #[] 0 0 (.seq #[tokA, mark])
+
+-- A wrapper left with no content carries no messages or proof states.
+#evalString "#[0, 0]\n" ((markAlone.split atMark).map countSpans)
+#evalString "#[0, 1]\n" ((markAtStart.split atMark).map countSpans)
+#evalString "#[1, 0]\n" ((markAtEnd.split atMark).map countSpans)
+#evalString "#[1, 0]\n" ((tacticsMarkAtEnd.split atMark).map countTactics)
+#evalString "#[1, 2]\n" ((markAtInnerStart.split atMark).map countSpans)
+#evalString "#[2, 1]\n" ((markAtInnerEnd.split atMark).map countSpans)
+#evalString "#[0, 1]\n" ((substParts atMark? markAtStart).map countSpans)
+#evalString "#[1, 0]\n" ((substParts atMark? markAtEnd).map countSpans)
+
+#evalString "#[\"\", \"\"]\n" ((markAlone.split atMark).map (·.asString))
+#evalString "#[\"\", \"a\"]\n" ((markAtStart.split atMark).map (·.asString))
+#evalString "#[\"a\", \"\"]\n" ((markAtEnd.split atMark).map (·.asString))
+#evalString "#[\"a\", \"b\"]\n" ((markAtInnerStart.split atMark).map (·.asString))
+#evalString "#[\"a\", \"b\"]\n" ((markAtInnerEnd.split atMark).map (·.asString))
+
+/-- A marker with content on either side of it inside one wrapper. -/
+private def markInMiddle : Highlighted :=
+  .span #[msg .info "outer"] (.seq #[tokA, mark, tokB])
+
+/-- `markInMiddle` with a tactic state in place of the span. -/
+private def tacticsMarkInMiddle : Highlighted :=
+  .tactics #[] 0 0 (.seq #[tokA, mark, tokB])
+
+private def rejoin (parts : Array Highlighted) : Highlighted :=
+  parts.foldl (· ++ ·) .empty
+
+-- Rejoining the fragments recovers the wrappers and the content of the original.
+#evalString "1\n" (countSpans (rejoin (markInMiddle.split atMark)))
+#evalString "\"ab\"\n" ((rejoin (markInMiddle.split atMark)).asString)
+#evalString "1\n" (countTactics (rejoin (tacticsMarkInMiddle.split atMark)))
+#evalString "1\n" (countSpans (rejoin (substParts atMark? markInMiddle)))
+#evalString "2\n" (countSpans (rejoin (markInsideInner.split atMark)))
+
+end SplitNesting
 
 def main : IO Unit := pure ()
