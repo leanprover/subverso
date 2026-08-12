@@ -442,10 +442,6 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
     | .tactics info startPos endPos :: more => go (.tactics info startPos.byteIdx endPos.byteIdx acc) more
   go .empty output
 
-structure OpenTactic where
-  openedAt : Compat.String.Pos
-  closesAt : Compat.String.Pos
-
 structure MessageBundle where
   messages : Array Message
   non_empty : messages.size > 0
@@ -522,12 +518,8 @@ structure HighlightState where
   /-- Messages not yet displayed -/
   messages : Array MessageBundle
   nextMessage : Option (Fin messages.size)
-  /-- Output so far -/
+  /-- Output so far. Its open `span` and `tactics` frames carry their own end positions. -/
   output : List Output
-  /-- Messages being displayed -/
-  inMessages : List MessageBundle
-  /-- A stack of currently-open tactic regions. -/
-  inTactic : List OpenTactic
   /-- Last source position added to the output -/
   lastPos? : Option Compat.String.Pos := none
   /-- Memoized results of searching for tactic info (by canonical range) -/
@@ -542,14 +534,12 @@ structure HighlightState where
   fmtTerms : Compat.HashMap Expr String := {}
 
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, default, default, {}, {}, {}, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}, {}, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
   nextMessage := none
   output := []
-  inMessages := []
-  inTactic := []
 
 def HighlightState.resetCache (st : HighlightState) : HighlightState :=
   { st with terms := {}, ppTerms := {}, fmtTerms := {} }
@@ -563,8 +553,6 @@ def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     messages := msgs
     nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
     output := [],
-    inMessages := [],
-    inTactic := []
     lastPos? := startPos?
   }
 where
@@ -589,10 +577,8 @@ private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
 def HighlightState.openTactic (st : HighlightState) (info : Array (Highlighted.Goal Highlighted)) (startPos endPos : Compat.String.Pos) (_pos : Position) : HighlightState :=
   if let some out' := modify? update? st.output then
     {st with output := out'}
-  else { st with
-    output := .tactics info startPos endPos :: st.output,
-    inTactic := ⟨startPos, endPos⟩ :: st.inTactic
-  }
+  else
+    { st with output := .tactics info startPos endPos :: st.output }
 where
   update?
     | .tactics info' startPos' endPos' =>
@@ -623,9 +609,6 @@ def advanceMessages : HighlightM Unit := do
 
 def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
   message.pos.notAfter pos
-
-def needsClosing (pos : Lean.Position) (message : MessageBundle) : Bool :=
-  message.endPos.map (·.notAfter pos) |>.getD true
 
 private def leanPosToUtf8Pos (text : FileMap) : Position → Compat.String.Pos :=
   text.lspPosToUtf8Pos ∘ text.leanPosToLspPos
@@ -897,38 +880,31 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
           pure ⟨kind, str⟩
 
       modify fun st =>
-    {st with
-        output := Output.openSpan st.output txt (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
-        inMessages := msg :: st.inMessages
-      }
+        {st with
+          output := Output.openSpan st.output txt (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
+        }
       openUntil pos
 
+/--
+Closes the message spans and tactic regions that end at or before `pos`.
+
+`Output.closeSpan` always closes the innermost open frame, so frames close in nesting order:
+a region that has reached its end position while another region is still open inside it
+stays open until the inner one closes, which keeps overlapping regions properly nested. A
+message span with no end position closes as soon as it is the innermost open frame.
+-/
 partial def closeUntil (pos : Compat.String.Pos) : HighlightM Unit := do
-  let text ← getFileMap
   let more ← modifyGet fun st =>
-    match st.inMessages, st.inTactic with
-    | [], [] => (false, st)
-    | [], t :: ts =>
-      if t.closesAt ≤ pos then
-        (true, {st with output := Output.closeSpan st.output, inTactic := ts})
+    match st.output.find? (fun | .span .. | .tactics .. => true | _ => false) with
+    | some (.span _ _ endPos) =>
+      if endPos.map (fun e => (e ≤ pos : Bool)) |>.getD true then
+        (true, {st with output := Output.closeSpan st.output})
       else (false, st)
-    | m :: ms, [] =>
-      if needsClosing (text.toPosition pos) m then
-        (true, {st with output := Output.closeSpan st.output, inMessages := ms})
+    | some (.tactics _ _ endPos) =>
+      if endPos ≤ pos then
+        (true, {st with output := Output.closeSpan st.output})
       else (false, st)
-    | m :: ms, t :: ts =>
-      if let some e := m.endPos then
-        if text.toPosition t.closesAt |>.notAfter e then
-          -- Close the tactics first, in nesting order
-          if t.closesAt ≤ pos then
-            (true, { st with output := Output.closeSpan st.output, inTactic := ts })
-          else (false, st)
-        else
-          -- Close the message first
-          if needsClosing (text.toPosition pos) m then
-            (true, { st with output := Output.closeSpan st.output, inMessages := ms })
-          else (false, st)
-      else (true, { st with output := Output.closeSpan st.output, inMessages := ms })
+    | _ => (false, st)
 
   if more then closeUntil pos
 
@@ -944,14 +920,13 @@ This is used for splitting unparsed regions so that messages appear within the p
 def collectMessageBoundariesBetween (startPos endPos : Compat.String.Pos)
     : HighlightM (Compat.HashSet Compat.String.Pos) := do
   let text ← getFileMap
-  let { messages, nextMessage, inMessages, .. } ← get
+  let { messages, nextMessage, output, .. } ← get
   let mut boundaries : Compat.HashSet Compat.String.Pos := {}
-  -- Add in-range end positions of active messages:
-  for msg in inMessages do
-    if let some msgEndPos := msg.endPos then
-      let msgEndPosUtf8 := leanPosToUtf8Pos text msgEndPos
-      if msgEndPosUtf8 < endPos then
-        boundaries := boundaries.insert msgEndPosUtf8
+  -- Add in-range end positions of open message spans:
+  for frame in output do
+    if let .span _ _ (some e) := frame then
+      if e < endPos then
+        boundaries := boundaries.insert e
   -- Add in-range start and end positions of upcoming messages:
   if let some nextMessage := nextMessage then
     for msg in messages[nextMessage:] do

@@ -1231,4 +1231,148 @@ open Lean Elab Command in
 
 end AsyncElab
 
+/-!
+# Messages that overlap tactic regions
+
+Messages nest around and interleave with tactic regions. The highlighter keeps the two kinds
+of region properly nested: a message that covers a whole proof contains the message regions
+logged inside it, and a message that ends partway into a tactic region leaves the region
+intact rather than cutting it off at the message boundary.
+-/
+
+section MessageTacticNesting
+
+open SubVerso.Highlighting
+
+open Lean Elab Tactic in
+/-- Runs a tactic sequence, first logging an informational note that covers all of it. -/
+elab "with_note " ts:Lean.Parser.Tactic.tacticSeq : tactic => do
+  logInfo "Noted"
+  evalTactic ts
+
+open Lean Elab Tactic in
+/-- Runs a tactic, first logging a warning that covers it. -/
+elab "flag_tac " t:tactic : tactic => do
+  logWarningAt t "Flagged"
+  evalTactic t
+
+open Lean Elab Tactic in
+/--
+Runs two tactics, first logging a warning whose range starts at the first tactic and ends
+partway into the second, producing a message region that overlaps the second tactic's region.
+-/
+elab "overlap_note " t1:tactic " overlapping " t2:tactic : tactic => do
+  let some b := t1.raw.getPos? | throwUnsupportedSyntax
+  let some c := t2.raw[0].getTailPos? | throwUnsupportedSyntax
+  logWarningAt (Syntax.node (.synthetic b c) nullKind #[]) "Partially covered"
+  evalTactic t1
+  evalTactic t2
+
+open Lean Elab Tactic in
+/--
+Runs two tactics, first logging a warning whose range starts partway into the first tactic
+and ends at the second tactic's end, producing a message region that overlaps the first
+tactic's region.
+-/
+elab "overlap_note' " t1:tactic " overlapping " t2:tactic : tactic => do
+  let some b := t1.raw[1].getPos? | throwUnsupportedSyntax
+  let some c := t2.raw.getTailPos? | throwUnsupportedSyntax
+  logWarningAt (Syntax.node (.synthetic b c) nullKind #[]) "Partially covered"
+  evalTactic t1
+  evalTactic t2
+
+/-- Whether the tree contains a span with a message of the given kind. -/
+partial def hasSpanKind (k : Highlighted.Span.Kind) : Highlighted → Bool
+  | .seq xs => xs.any (hasSpanKind k)
+  | .span infos content => infos.any (·.1 == k) || hasSpanKind k content
+  | .tactics _ _ _ content => hasSpanKind k content
+  | _ => false
+
+/-- Whether the tree contains a span of kind `outer` with a span of kind `inner` inside it. -/
+partial def hasNestedSpans (outer inner : Highlighted.Span.Kind) : Highlighted → Bool
+  | .seq xs => xs.any (hasNestedSpans outer inner)
+  | .span infos content =>
+    (infos.any (·.1 == outer) && hasSpanKind inner content) || hasNestedSpans outer inner content
+  | .tactics _ _ _ content => hasNestedSpans outer inner content
+  | _ => false
+
+/-- Whether the tree contains a proof state region. -/
+partial def hasTacticsNode : Highlighted → Bool
+  | .seq xs => xs.any hasTacticsNode
+  | .span _ content => hasTacticsNode content
+  | .tactics .. => true
+  | _ => false
+
+/-- Whether the tree contains a span of kind `k` with a proof state region inside it. -/
+partial def hasSpanWithTactics (k : Highlighted.Span.Kind) : Highlighted → Bool
+  | .seq xs => xs.any (hasSpanWithTactics k)
+  | .span infos content =>
+    (infos.any (·.1 == k) && hasTacticsNode content) || hasSpanWithTactics k content
+  | .tactics _ _ _ content => hasSpanWithTactics k content
+  | _ => false
+
+/-- The code covered by each span with a message of kind `k`, outermost first. -/
+partial def spanTexts (k : Highlighted.Span.Kind) : Highlighted → List String
+  | .seq xs => xs.toList.flatMap (spanTexts k)
+  | .span infos content =>
+    (if infos.any (·.1 == k) then [content.asString] else []) ++ spanTexts k content
+  | .tactics _ _ _ content => spanTexts k content
+  | _ => []
+
+open Lean Elab Command in
+-- A message that covers a whole proof contains the message regions logged inside it.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle <| String.intercalate "\n" [
+    "theorem nestedMessages (n : Nat) : n + 0 = n := by",
+    "  with_note",
+    "    induction n with",
+    "    | zero => flag_tac rfl",
+    "    | succ k ih => rfl",
+    ""]
+  unless hasNestedSpans .info .warning hl do
+    throwError m!"Expected a warning span nested in an info span:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- A message that ends partway into a tactic region leaves the region intact.
+#eval show CommandElabM Unit from do
+  let input := String.intercalate "\n" [
+    "theorem overlappedRegion : 1 + 1 = 2 := by",
+    "  overlap_note skip overlapping exact rfl",
+    ""]
+  let hl ← highlightModuleStyle input
+  let regions := hl.proofStates.toList.map (·.fst)
+  unless regions.any (·.startsWith "exact rfl") do
+    throwError s!"Expected an intact `exact rfl` region, got: {toString regions}"
+  unless hl.asString == input do
+    throwError s!"Expected the highlighted code to round-trip, got: {hl.asString}"
+
+open Lean Elab Command in
+-- A message that starts partway into a tactic region and ends after it keeps its tail.
+#eval show CommandElabM Unit from do
+  let input := String.intercalate "\n" [
+    "theorem overlappedRegionTail : 1 + 1 = 2 := by",
+    "  overlap_note' exact rfl overlapping skip",
+    ""]
+  let hl ← highlightModuleStyle input
+  let texts := spanTexts .warning hl
+  unless texts.any (fun s => (s.splitOn "skip").length > 1) do
+    throwError s!"Expected a warning span that reaches `skip`, got: {toString texts}"
+  unless hl.asString == input do
+    throwError s!"Expected the highlighted code to round-trip, got: {hl.asString}"
+
+open Lean Elab Command in
+-- A message whose range is exactly a tactic's region wraps that region.
+#eval show CommandElabM Unit from do
+  let input := String.intercalate "\n" [
+    "theorem sameExtent : 1 + 1 = 2 := by",
+    "  flag_tac rfl",
+    ""]
+  let hl ← highlightModuleStyle input
+  unless hasSpanWithTactics .warning hl do
+    throwError m!"Expected a warning span containing a proof state region:\n{hlStringWithMessages hl}"
+  unless hl.asString == input do
+    throwError s!"Expected the highlighted code to round-trip, got: {hl.asString}"
+
+end MessageTacticNesting
+
 def main : IO Unit := pure ()
