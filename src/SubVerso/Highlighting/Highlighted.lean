@@ -430,7 +430,10 @@ partial def Highlighted.append (hl1 hl2 : Highlighted) : Highlighted :=
   | .seq xs, x => .seq (pushHl xs x)
   | x, .seq xs =>
     xs.foldl (init := x) Highlighted.append
-  | x, y => .seq #[x, y]
+  | x, y =>
+    match pushHl #[x] y with
+    | #[merged] => merged
+    | xs => .seq xs
 where
   -- Merge subsequent info regions. This is necessary when highlighted code has been split (e.g.
   -- into lines), processed, and is then recombined.
