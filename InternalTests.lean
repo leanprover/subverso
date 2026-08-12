@@ -1234,10 +1234,10 @@ end AsyncElab
 /-!
 # Messages that overlap tactic regions
 
-Messages nest around and interleave with tactic regions. The highlighter keeps the two kinds
-of region properly nested: a message that covers a whole proof contains the message regions
-logged inside it, and a message that ends partway into a tactic region leaves the region
-intact rather than cutting it off at the message boundary.
+Messages nest around and interleave with tactic regions. Both kinds of region close in nesting
+order: a message that covers a whole proof contains the message regions logged inside it, and a
+region that reaches its end while another is still open inside it stays open until the inner one
+closes, so it extends to the inner region's end.
 -/
 
 section MessageTacticNesting
@@ -1258,15 +1258,25 @@ elab "flag_tac " t:tactic : tactic => do
 
 open Lean Elab Tactic in
 /--
+Logs a warning that covers the source from `start` to `stop`, then runs `t1` followed by `t2`. The
+warning's range is chosen by the caller so that it partially overlaps one tactic's region.
+-/
+def overlappingWarning (start stop : Option Compat.String.Pos) (t1 t2 : TSyntax `tactic) :
+    TacticM Unit := do
+  let some start := start | throwError m!"No start position in {t1}"
+  let some stop := stop | throwError m!"No end position in {t2}"
+  logWarningAt (Syntax.node (.synthetic start stop) nullKind #[]) "Partially covered"
+  evalTactic t1
+  evalTactic t2
+
+open Lean Elab Tactic in
+/--
 Runs two tactics, first logging a warning whose range starts at the first tactic and ends
 partway into the second, producing a message region that overlaps the second tactic's region.
 -/
-elab "overlap_note " t1:tactic " overlapping " t2:tactic : tactic => do
-  let some b := t1.raw.getPos? | throwUnsupportedSyntax
-  let some c := t2.raw[0].getTailPos? | throwUnsupportedSyntax
-  logWarningAt (Syntax.node (.synthetic b c) nullKind #[]) "Partially covered"
-  evalTactic t1
-  evalTactic t2
+elab "overlap_note " t1:tactic " overlapping " t2:tactic : tactic =>
+  -- The warning ends at the head of `t2` (the `exact` of `exact rfl`), inside `t2`'s region
+  overlappingWarning t1.raw.getPos? t2.raw[0].getTailPos? t1 t2
 
 open Lean Elab Tactic in
 /--
@@ -1274,10 +1284,24 @@ Runs two tactics, first logging a warning whose range starts partway into the fi
 and ends at the second tactic's end, producing a message region that overlaps the first
 tactic's region.
 -/
-elab "overlap_note' " t1:tactic " overlapping " t2:tactic : tactic => do
-  let some b := t1.raw[1].getPos? | throwUnsupportedSyntax
-  let some c := t2.raw.getTailPos? | throwUnsupportedSyntax
-  logWarningAt (Syntax.node (.synthetic b c) nullKind #[]) "Partially covered"
+elab "overlap_note' " t1:tactic " overlapping " t2:tactic : tactic =>
+  -- The warning starts at the argument of `t1` (the `rfl` of `exact rfl`), inside `t1`'s region
+  overlappingWarning t1.raw[1].getPos? t2.raw.getTailPos? t1 t2
+
+open Lean Elab Tactic in
+/--
+Runs two tactics, first logging a warning that reaches partway into the second tactic and a note
+that starts there, so that the two message ranges overlap each other as well as the second
+tactic's region.
+-/
+elab "crossed_notes " t1:tactic " with " t2:tactic : tactic => do
+  let some start := t1.raw.getPos? | throwError m!"No start position in {t1}"
+  let some noteStart := t2.raw.getPos? | throwError m!"No start position in {t2}"
+  -- The warning ends at the head of `t2` (the `exact` of `exact rfl`), inside `t2`'s region
+  let some warnStop := t2.raw[0].getTailPos? | throwError m!"No end position in {t2}"
+  let some stop := t2.raw.getTailPos? | throwError m!"No end position in {t2}"
+  logWarningAt (Syntax.node (.synthetic start warnStop) nullKind #[]) "Warned"
+  logInfoAt (Syntax.node (.synthetic noteStart stop) nullKind #[]) "Noted"
   evalTactic t1
   evalTactic t2
 
@@ -1313,27 +1337,35 @@ partial def hasSpanWithTactics (k : Highlighted.Span.Kind) : Highlighted → Boo
 
 /-- The code covered by each span with a message of kind `k`, outermost first. -/
 partial def spanTexts (k : Highlighted.Span.Kind) : Highlighted → List String
-  | .seq xs => xs.toList.flatMap (spanTexts k)
+  | .seq xs => Compat.List.flatMap xs.toList (spanTexts k)
   | .span infos content =>
     (if infos.any (·.1 == k) then [content.asString] else []) ++ spanTexts k content
   | .tactics _ _ _ content => spanTexts k content
   | _ => []
 
 open Lean Elab Command in
+/-- Checks that `hl` reproduces `input`. -/
+def checkRoundTrip (input : String) (hl : Highlighted) : CommandElabM Unit := do
+  unless hl.asString == input do
+    throwError s!"Expected the highlighted code to round-trip, got: {hl.asString}"
+
+open Lean Elab Command in
 -- A message that covers a whole proof contains the message regions logged inside it.
 #eval show CommandElabM Unit from do
-  let hl ← highlightModuleStyle <| String.intercalate "\n" [
+  let input := String.intercalate "\n" [
     "theorem nestedMessages (n : Nat) : n + 0 = n := by",
     "  with_note",
     "    induction n with",
     "    | zero => flag_tac rfl",
     "    | succ k ih => rfl",
     ""]
+  let hl ← highlightModuleStyle input
   unless hasNestedSpans .info .warning hl do
     throwError m!"Expected a warning span nested in an info span:\n{hlStringWithMessages hl}"
+  checkRoundTrip input hl
 
 open Lean Elab Command in
--- A message that ends partway into a tactic region leaves the region intact.
+-- A message that ends partway into a tactic region stays open until the region closes.
 #eval show CommandElabM Unit from do
   let input := String.intercalate "\n" [
     "theorem overlappedRegion : 1 + 1 = 2 := by",
@@ -1341,24 +1373,26 @@ open Lean Elab Command in
     ""]
   let hl ← highlightModuleStyle input
   let regions := hl.proofStates.toList.map (·.fst)
-  unless regions.any (·.startsWith "exact rfl") do
-    throwError s!"Expected an intact `exact rfl` region, got: {toString regions}"
-  unless hl.asString == input do
-    throwError s!"Expected the highlighted code to round-trip, got: {hl.asString}"
+  unless regions.contains "exact rfl" && regions.contains "skip" do
+    throwError s!"Expected intact `skip` and `exact rfl` regions, got: {toString regions}"
+  unless spanTexts .warning hl == ["skip overlapping exact rfl"] do
+    throwError s!"Expected one warning span reaching the region's end, got: {toString (spanTexts .warning hl)}"
+  checkRoundTrip input hl
 
 open Lean Elab Command in
--- A message that starts partway into a tactic region and ends after it keeps its tail.
+-- A tactic region that reaches its end inside a message stays open until the message closes.
 #eval show CommandElabM Unit from do
   let input := String.intercalate "\n" [
     "theorem overlappedRegionTail : 1 + 1 = 2 := by",
     "  overlap_note' exact rfl overlapping skip",
     ""]
   let hl ← highlightModuleStyle input
-  let texts := spanTexts .warning hl
-  unless texts.any (fun s => (s.splitOn "skip").length > 1) do
-    throwError s!"Expected a warning span that reaches `skip`, got: {toString texts}"
-  unless hl.asString == input do
-    throwError s!"Expected the highlighted code to round-trip, got: {hl.asString}"
+  let regions := hl.proofStates.toList.map (·.fst)
+  unless regions.contains "exact rfl overlapping skip" do
+    throwError s!"Expected a region reaching the warning's end, got: {toString regions}"
+  unless spanTexts .warning hl == ["rfl overlapping skip"] do
+    throwError s!"Expected one warning span covering `rfl overlapping skip`, got: {toString (spanTexts .warning hl)}"
+  checkRoundTrip input hl
 
 open Lean Elab Command in
 -- A message whose range is exactly a tactic's region wraps that region.
@@ -1370,8 +1404,25 @@ open Lean Elab Command in
   let hl ← highlightModuleStyle input
   unless hasSpanWithTactics .warning hl do
     throwError m!"Expected a warning span containing a proof state region:\n{hlStringWithMessages hl}"
-  unless hl.asString == input do
-    throwError s!"Expected the highlighted code to round-trip, got: {hl.asString}"
+  unless spanTexts .warning hl == ["rfl"] do
+    throwError s!"Expected the warning to cover `rfl`, got: {toString (spanTexts .warning hl)}"
+  checkRoundTrip input hl
+
+open Lean Elab Command in
+-- Message ranges that overlap each other and a tactic region close in nesting order.
+#eval show CommandElabM Unit from do
+  let input := String.intercalate "\n" [
+    "theorem crossedMessages : 1 + 1 = 2 := by",
+    "  crossed_notes skip with exact rfl",
+    ""]
+  let hl ← highlightModuleStyle input
+  unless hasNestedSpans .warning .info hl do
+    throwError m!"Expected a note span nested in a warning span:\n{hlStringWithMessages hl}"
+  unless spanTexts .warning hl == ["skip with exact rfl"] do
+    throwError s!"Expected one warning span reaching the region's end, got: {toString (spanTexts .warning hl)}"
+  unless spanTexts .info hl == ["exact rfl"] do
+    throwError s!"Expected one note span covering `exact rfl`, got: {toString (spanTexts .info hl)}"
+  checkRoundTrip input hl
 
 end MessageTacticNesting
 
