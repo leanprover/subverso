@@ -2163,32 +2163,59 @@ Highlights a sequence of syntaxes, each with its own info tree. Typically used f
 module, where each command has its own corresponding tree.
 
 The work of constructing the alias table is performed once, with all the trees together.
+
+When `includeUnparsed` is `true`, source text within the highlighted region that is not covered by
+the given syntaxes (e.g. text skipped by parse-error recovery) is included verbatim in the output.
+Such text is attributed to the syntax that follows it, and text after the final syntax to the final
+one. `startPos?` and `endPos?` delimit the region, defaulting to the span of the syntaxes.
 -/
 def highlightMany (stxs : Array Syntax) (messages : Array Message)
     (trees : Array (Option Lean.Elab.InfoTree))
     (suppressNamespaces : List Name := [])
-    (collectFormat := false) : TermElabM (Array Highlighted) := do
+    (collectFormat := false)
+    (includeUnparsed := false)
+    (startPos? endPos? : Option Compat.String.Pos := none) : TermElabM (Array Highlighted) := do
   let trees' := trees.filterMap id
   let infoTable : InfoTable := .ofInfoTrees trees'
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
   let ids := build modrefs
-  let st ← HighlightState.ofMessages (mkNullNode stxs) messages
+  let blame := mkNullNode stxs
+  let startPos? := startPos? <|> blame.getPos?
+  let endPos? := endPos? <|> Internal.getTrailingOrTailPos? blame
+  let st ← HighlightState.ofMessages blame messages startPos? endPos?
 
   if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
   let sigCache ← IO.mkRef {}
   let ctxt := {
     ids,
     definitionsPossible := true,
-    includeUnparsed := false,
+    includeUnparsed,
     suppressNamespaces := sortSuppress suppressNamespaces,
     collectFormat,
     sigCache
   }
-  let (hls, _) ← (trees.zip stxs).mapM (fun (x, y) => go x y) |>.run ctxt |>.run infoTable |>.run st
+  let act : HighlightM (Array Highlighted) := do
+    let mut hls := #[]
+    for (t, stx) in trees.zip stxs do
+      hls := hls.push (← go t stx)
+    if includeUnparsed then
+      if let some e := endPos? then
+        fillMissingSourceUpTo e
+        let tail ← modifyGet fun (st : HighlightState) =>
+          (Highlighted.fromOutput st.output, { st with output := [] })
+        if hls.isEmpty then
+          hls := #[tail]
+        else
+          hls := hls.modify (hls.size - 1) (· ++ tail)
+    pure hls
+  let (hls, _) ← act.run ctxt |>.run infoTable |>.run st
   pure hls
 where
   go t stx : HighlightM Highlighted := withCurrHeartbeats do
     let _ ← highlight' (Option.map (#[·]) t |>.getD #[]) stx true
+    if (← read).includeUnparsed then
+      if let some e := Internal.getTrailingOrTailPos? stx then
+        fillMissingSourceUpTo e
     modifyGet fun (st : HighlightState) =>
       let st := st.resetCache
       (Highlighted.fromOutput st.output, { st with output := [] })
