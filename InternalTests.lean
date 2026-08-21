@@ -1596,4 +1596,67 @@ open Lean Elab Command in
 
 end MessageTacticNesting
 
+/-! # Variable Hover Types -/
+section VarHoverTypes
+
+open SubVerso.Highlighting
+
+/-- The `(content, hover type)` of each variable token, in source order. -/
+partial def SubVerso.Highlighting.Highlighted.varTokens (hl : Highlighted) : Array (String × String) := Id.run do
+  let mut out := #[]
+  match hl with
+  | .seq hls =>
+    for x in hls.map varTokens do
+      out := out ++ x
+  | .span _ hl' => out := out ++ hl'.varTokens
+  | .tactics _ _ _ hl' => out := out ++ hl'.varTokens
+  | .token ⟨.var _ ty _, s⟩ => out := out.push (s, ty)
+  | _ => pure ()
+  out
+
+open Lean Elab Command in
+/--
+Asserts that highlighting `src` module-style gives the variable tokens whose content is `name`
+exactly the hover types `expected`, in source order. Does nothing when `skip` is true — used for
+tactic syntax that doesn't exist on this toolchain.
+-/
+def assertVarHoverTypes (src : String) (name : String) (expected : List String)
+    (skip : Bool := false) : CommandElabM Unit := do
+  if skip then return
+  let found := (← highlightModuleStyle src).varTokens.toList.filter (·.1 == name) |>.map (·.2)
+  unless found == expected do
+    throwError m!"hover types for '{name}':\n{repr found}\nexpected:\n{repr expected}"
+
+-- A binder can be linked across elaboration contexts that give it different types: in
+-- `if h : c then _ else _`, `h` is `c` in the then branch and `¬c` in the else branch. Each
+-- occurrence hovers with the type from its own context.
+#eval assertVarHoverTypes
+  (String.intercalate "\n" [
+    "example (n k : Nat) : Decidable (n = k) :=",
+    "  if h : n = k then Decidable.isTrue h else Decidable.isFalse h"])
+  "h" ["n = k", "n = k", "¬n = k"]
+
+-- Same variable, same type, but the printed form depends on the names in scope at each
+-- occurrence: renaming another hypothesis changes how this one's type renders.
+#eval assertVarHoverTypes
+  (String.intercalate "\n" [
+    "example (x : Nat) (h : x = x) : True := by",
+    "  have _ : x = x := h",
+    "  rename Nat => y",
+    "  have _ : y = y := h",
+    "  trivial"])
+  "h" ["x = x", "x = x", "y = y"]
+
+-- The pretty printer options in force at an occurrence affect its rendering.
+#eval assertVarHoverTypes
+  (String.intercalate "\n" [
+    "example (x : Nat) (h : x = x) : True := by",
+    "  have _ : x = x := h",
+    "  set_option pp.explicit true in",
+    "    have _ : x = x := h",
+    "  trivial"])
+  "h" ["x = x", "x = x", "@Eq Nat x x"]
+
+end VarHoverTypes
+
 def main : IO Unit := pure ()
