@@ -71,10 +71,36 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
     | .ofTacticInfo ti => if ti.stx == stx then some (ci, ti) else none
     | _ => none
 
+/--
+Identifies a rendering of a local variable's type by everything the rendered string depends on:
+the type itself (fully instantiated), the local context's entries (an fvar in the type prints by
+its user name at this occurrence, and inaccessible-name daggers are positional), and the
+pretty-printing context (options, current namespace, and open declarations, folded into a hash).
+-/
+structure VarTypeKey where
+  type : ExprStructEq
+  localNames : List (FVarId × Name)
+  ppCtxHash : UInt64
+
+instance : BEq VarTypeKey where
+  beq a b := a.type == b.type && a.ppCtxHash == b.ppCtxHash && a.localNames == b.localNames
+
+instance : Hashable VarTypeKey where
+  hash k :=
+    mixHash (hash k.type) <| mixHash k.ppCtxHash <|
+      k.localNames.foldl (fun h (x, n) => mixHash h (mixHash (hash x.name) (hash n))) 7
+
+def VarTypeKey.forOccurrence (ty : Expr) (lctx : LocalContext) (ci : ContextInfo) : VarTypeKey where
+  type := ⟨ty⟩
+  localNames := lctx.foldl (fun xs d => (d.fvarId, d.userName) :: xs) []
+  ppCtxHash :=
+    mixHash (hash (toString ci.options)) <|
+      mixHash (hash ci.currNamespace) (hash (toString ci.openDecls))
+
 structure SigCache where
   signatures : (NameMap (String × FormatWithInfos × ContextInfo))
-  /-- Pretty-printed types of local variables, keyed by their `FVarId` name. -/
-  varTypes : NameMap String := {}
+  /-- Pretty-printed types of local variable occurrences. -/
+  varTypes : HashMap VarTypeKey String := {}
 
 instance : EmptyCollection SigCache := ⟨⟨{}, {}⟩⟩
 
@@ -674,35 +700,50 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
         pure (sigStr, sig, ci)
     if doCollect then return (sigStr, some (sig, ci)) else return (sigStr, none)
 
-  -- Pretty-print the inferred type of `expr` (a variable, or any expression whose kind is otherwise
-  -- unknown).
-  let ppTermType : m (String × Option (FormatWithInfos × ContextInfo)) := do
+  -- Pretty-print `ty` in this occurrence's context.
+  let ppType (ty : Expr) : m (String × Option (FormatWithInfos × ContextInfo)) := do
     try
       if doCollect then
-        let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
-          let ty ← instantiateMVars (← Meta.inferType expr)
+        let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) <|
           PrettyPrinter.ppExprWithInfos ty
         pure (toString fi.fmt, some (fi, ci))
       else
-        let fmt ← runMeta do
-          let ty ← instantiateMVars (← Meta.inferType expr)
-          Meta.ppExpr ty
+        let fmt ← runMeta <| Meta.ppExpr ty
         pure (toString fmt, none)
     catch _ => pure ("", none)
 
-  -- Cache the rendered type per variable: every occurrence of a local variable re-renders the
-  -- same type. Skip when collecting format data (the cached string has no format payload) and
-  -- when the rendering still mentions metavariables (a later occurrence may print further
-  -- instantiated).
-  let ppVarType (key : Name) : m (String × Option (FormatWithInfos × ContextInfo)) := do
-    if doCollect then ppTermType
-    else if let some tyStr := Compat.NameMap.get? (← (cache.get : IO _)).varTypes key then
-      pure (tyStr, none)
-    else
-      let (tyStr, prettySig) ← ppTermType
-      unless tyStr.contains '?' do
-        (cache.modify (fun c => { c with varTypes := c.varTypes.insert key tyStr }) : IO _)
-      pure (tyStr, prettySig)
+  -- The fully instantiated inferred type of `expr`, or `none` if inference fails.
+  let typeOf : m (Option Expr) := do
+    try
+      runMeta do pure (some (← instantiateMVars (← Meta.inferType expr)))
+    catch _ => pure none
+
+  -- Pretty-print the inferred type of `expr` (a variable, or any expression whose kind is otherwise
+  -- unknown).
+  let ppTermType : m (String × Option (FormatWithInfos × ContextInfo)) := do
+    match ← typeOf with
+    | some ty => ppType ty
+    | none => pure ("", none)
+
+  -- Cache the rendered types of variables: occurrences of local variables with the same type,
+  -- local names, and pretty-printing context render identically, so the delaboration work can be
+  -- shared. Types that still contain metavariables render fresh each time (a later occurrence may
+  -- print further instantiated), as does everything when collecting format data (the cached
+  -- string has no format payload).
+  let ppVarType : m (String × Option (FormatWithInfos × ContextInfo)) := do
+    match ← typeOf with
+    | none => pure ("", none)
+    | some ty =>
+      if doCollect || ty.hasMVar || ty.hasLevelMVar then
+        ppType ty
+      else
+        let key := VarTypeKey.forOccurrence ty lctx ci
+        match Compat.HashMap.get? (← (cache.get : IO _)).varTypes key with
+        | some tyStr => pure (tyStr, none)
+        | none =>
+          let (tyStr, prettySig) ← ppType ty
+          (cache.modify (fun c => { c with varTypes := c.varTypes.insert key tyStr }) : IO _)
+          pure (tyStr, prettySig)
 
   let rec findKind e := do
     match e with
@@ -710,7 +751,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
       if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
         Compat.refIdentCase y
           (onFVar := fun x => do
-            let (tyStr, prettySig) ← ppVarType x.name
+            let (tyStr, prettySig) ← ppVarType
             if let some localDecl := lctx.find? x then
               if localDecl.isAuxDecl then
                 let e ← runMeta <| Meta.ppExpr expr
@@ -725,7 +766,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
             let docs ← findDocString? (← getEnv) x
             return some (.const x sig docs false none, prettySig))
       else
-        let (tyStr, prettySig) ← ppVarType id.name
+        let (tyStr, prettySig) ← ppVarType
         return some (.var id tyStr none, prettySig)
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
@@ -2242,8 +2283,8 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   pure hls
 where
   go t stx : HighlightM Highlighted := withCurrHeartbeats do
-    -- `FVarId`s are unique only within a single elaboration thread, and each syntax may come with
-    -- its own, so cached variable types never carry over from one syntax to the next.
+    -- The variable-type cache is scoped to a single syntax: its keys don't capture the
+    -- environment, and separate elaboration threads can reuse `FVarId`s.
     ((← read).sigCache.modify fun c => { c with varTypes := {} } : IO _)
     let _ ← highlight' (Option.map (#[·]) t |>.getD #[]) stx true
     if (← read).includeUnparsed then

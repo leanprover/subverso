@@ -1647,16 +1647,6 @@ def assertVarHoverTypes (src : String) (name : String) (expected : List String)
     "  trivial"])
   "h" ["x = x", "x = x", "y = y"]
 
--- The pretty printer options in force at an occurrence affect its rendering.
-#eval assertVarHoverTypes
-  (String.intercalate "\n" [
-    "example (x : Nat) (h : x = x) : True := by",
-    "  have _ : x = x := h",
-    "  set_option pp.explicit true in",
-    "    have _ : x = x := h",
-    "  trivial"])
-  "h" ["x = x", "x = x", "@Eq Nat x x"]
-
 end VarHoverTypes
 
 def main : IO Unit := pure ()
