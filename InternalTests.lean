@@ -197,7 +197,7 @@ section HighlightUnparsed
 
 partial def hlStringWithMessages : Highlighting.Highlighted → String
   | .seq xs => xs.foldl (init := "") (fun s hl => s ++ hlStringWithMessages hl)
-  | .point .. => ""
+  | .point k s => s!"[point {k}: {s.toString}]"
   | .tactics _ _ _ x => hlStringWithMessages x
   | .span info x =>
     let labels := info.map fun (k, s) => s!"{k}: {s.toString}"
@@ -1648,5 +1648,79 @@ def assertVarHoverTypes (src : String) (name : String) (expected : List String)
   "h" ["x = x", "x = x", "y = y"]
 
 end VarHoverTypes
+
+/-! # Point Diagnostic Extents -/
+section PointDiagnosticExtents
+
+open SubVerso.Highlighting
+
+open Lean in
+/-- An error at `pos` with no end position, as Lean reports e.g. `unknown tactic`. -/
+def pointError (pos : Position) (text : String) : Message :=
+  { fileName := "<input>", pos, endPos := none, severity := .error,
+    data := toMessageData text }
+
+open Lean Elab Command in
+/--
+Highlights `input` the way batched code blocks are highlighted (`highlightMany` with unparsed
+regions included), passing `messages` directly. `keepCommands` limits how many parsed commands are
+given to the highlighter; the text of the rest becomes an unparsed region.
+-/
+def highlightManyWithMessages (input : String) (messages : Array Message)
+    (keepCommands : Option Nat := none) : CommandElabM Highlighting.Highlighted := do
+  let inputCtx := Parser.mkInputContext input "<input>"
+  let commandState : Command.State := { env := (← getEnv), maxRecDepth := (← get).maxRecDepth }
+  let (result, _) ← Compat.Frontend.processCommands mkNullNode
+    |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
+  let items := result.items.filter (·.commandSyntax.getKind != ``Lean.Parser.Command.eoi)
+  let items := match keepCommands with
+    | some n => items.extract 0 n
+    | none => items
+  let cmds := items.map (·.commandSyntax)
+  let trees := items.map (·.info.toArray[0]?)
+  runTermElabM fun _ =>
+    withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
+      let hls ← Highlighting.highlightMany cmds messages trees (includeUnparsed := true)
+        (startPos? := cmds[0]!.getPos?) (endPos? := some (Compat.String.endPos input))
+      return hls.foldl (init := Highlighting.Highlighted.empty) (· ++ ·)
+
+open Lean Elab Command in
+def assertMessageSpans (input : String) (messages : Array Message) (expected : String)
+    (keepCommands : Option Nat := none) : CommandElabM Unit := do
+  let hl ← highlightManyWithMessages input messages keepCommands
+  let found := hlStringWithMessages hl
+  unless found == expected do
+    throwError m!"Mismatched output\n---Found:---\n{found}\n---Expected:---\n{expected}"
+
+-- A point diagnostic inside a token annotates that token.
+#eval assertMessageSpans
+  "def one : Nat := 11111\nexample : Nat := one\n"
+  #[pointError ⟨1, 19⟩ "subverso_test: point"]
+  "def one : Nat := [error: subverso_test: point](11111)\nexample : Nat := one\n"
+
+-- The same when the rest of the input is an unparsed region: the annotation stays on the token
+-- rather than covering the region.
+#eval assertMessageSpans
+  "def one : Nat := 11111\nexample : Nat := one\n"
+  #[pointError ⟨1, 19⟩ "subverso_test: point"]
+  "def one : Nat := [error: subverso_test: point](11111)\nexample : Nat := one\n"
+  (keepCommands := some 1)
+
+-- A point diagnostic inside an unparsed region annotates the whitespace-delimited word at its
+-- position.
+#eval assertMessageSpans
+  "def one : Nat := 11111\nexample : Nat := one\n"
+  #[pointError ⟨2, 0⟩ "subverso_test: point"]
+  "def one : Nat := 11111\n[error: subverso_test: point](example) : Nat := one\n"
+  (keepCommands := some 1)
+
+-- A point diagnostic past its command's last token has no content in that command to annotate, and
+-- becomes a point at the command's end rather than annotating a later command.
+#eval assertMessageSpans
+  "def one : Nat := 11111\nexample : Nat := one\n"
+  #[pointError ⟨1, 22⟩ "subverso_test: point"]
+  "def one : Nat := 11111\n[point error: subverso_test: point]example : Nat := one\n"
+
+end PointDiagnosticExtents
 
 def main : IO Unit := pure ()

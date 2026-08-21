@@ -72,23 +72,16 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
     | _ => none
 
 /--
-Identifies a rendering of a local variable's type by everything the rendered string depends on:
-the type itself (fully instantiated), the local context's entries (an fvar in the type prints by
-its user name at this occurrence, and inaccessible-name daggers are positional), and the
-pretty-printing context (options, current namespace, and open declarations, folded into a hash).
+A cache key for the rendered types of local variables that tracks the inputs to the rendering process.
 -/
 structure VarTypeKey where
+  /-- The variable's type, fully instantiated -/
   type : ExprStructEq
-  localNames : List (FVarId × Name)
+  /-- A hash of the current options, namespace, and open decls -/
   ppCtxHash : UInt64
-
-instance : BEq VarTypeKey where
-  beq a b := a.type == b.type && a.ppCtxHash == b.ppCtxHash && a.localNames == b.localNames
-
-instance : Hashable VarTypeKey where
-  hash k :=
-    mixHash (hash k.type) <| mixHash k.ppCtxHash <|
-      k.localNames.foldl (fun h (x, n) => mixHash h (mixHash (hash x.name) (hash n))) 7
+  /-- The local context (needed for daggering names) -/
+  localNames : List (FVarId × Name)
+deriving BEq, Hashable
 
 def VarTypeKey.forOccurrence (ty : Expr) (lctx : LocalContext) (ci : ContextInfo) : VarTypeKey where
   type := ⟨ty⟩
@@ -398,22 +391,22 @@ def Output.addToken (output : List Output) (token : Token) : List Output :=
   Output.add output (.token token)
 
 /--
-Adds a comment token from token *trivia*. Unlike `addToken`, this keeps the token *outside* an
-open tactic region (like `addText` does for whitespace), so a comment in a token's leading trivia
+Adds a comment token from the whitespace range. Unlike `addToken`, this keeps the token _outside_ an
+open tactic region (like `addText` does for whitespace), so a comment in a token's leading whitespace
 stays adjacent to its surrounding whitespace rather than being pulled into the tactic content. This
 matters for indented directive comments (`-- ANCHOR:`/`--^ PROOF_STATE:`), whose indentation must
 stay on the same line as the comment for the extractor.
 -/
-def Output.addTriviaToken (output : List Output) (token : Token) : List Output :=
+def Output.addWhitespaceToken (output : List Output) (token : Token) : List Output :=
   match output with
   | [] => [.seq #[.token token]]
   | .seq left :: more =>
     if left.all (·.isEmpty) then
-      Output.addTriviaToken more token
+      Output.addWhitespaceToken more token
     else
       .seq (left.push (.token token)) :: more
   | .span .. :: _ => .seq #[.token token] :: output
-  | t@(.tactics ..) :: more => t :: Output.addTriviaToken more token
+  | t@(.tactics ..) :: more => t :: Output.addWhitespaceToken more token
 
 def Output.addUnparsed (output : List Output) (text : String) : List Output :=
   Output.add output (.unparsed text)
@@ -956,10 +949,10 @@ where
         (onWidget := fun _wi alt => convert alt)
 end Compat
 
-partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
+partial def openWhile (shouldOpen : MessageBundle → Bool) : HighlightM Unit := do
   let text ← getFileMap
   if let some msg ← nextMessage? then
-    if needsOpening pos msg then
+    if shouldOpen msg then
       advanceMessages
       let txt ← msg.messages.mapM fun m => do
           let kind : Highlighted.Span.Kind :=
@@ -974,7 +967,33 @@ partial def openUntil (pos : Lean.Position) : HighlightM Unit := do
         {st with
           output := Output.openSpan st.output txt (leanPosToUtf8Pos text msg.pos) (msg.endPos.map (leanPosToUtf8Pos text))
         }
-      openUntil pos
+      openWhile shouldOpen
+
+/-- Opens the message spans that begin at or before `pos`. -/
+def openUntil (pos : Lean.Position) : HighlightM Unit :=
+  openWhile (needsOpening pos)
+
+/--
+Opens the message spans for a content item that spans `pos` (inclusive) to `stop` (exclusive): a
+message that begins inside the item annotates the whole item.
+-/
+def openFor (pos stop : Lean.Position) : HighlightM Unit :=
+  openWhile (fun msg => needsOpening pos msg || msg.pos.before stop)
+
+/--
+Renders the pending messages that begin before `pos` as  points at the current output position.
+
+This should be used only in unparsed regions.
+-/
+partial def emitPointsBefore (pos : Lean.Position) : HighlightM Unit := do
+  if let some msg ← nextMessage? then
+    if msg.pos.before pos then
+      advanceMessages
+      for m in msg.messages do
+        let kind := Highlighted.Span.Kind.ofSeverity (SubVerso.Highlighting.Messages.severity m)
+        let str ← withReader ({ · with definitionsPossible := false}) (messageContents m)
+        modify fun st => { st with output := Output.add st.output (.point kind str) }
+      emitPointsBefore pos
 
 /-- Closes the message spans and tactic regions that end at or before `pos`, innermost first. -/
 partial def closeUntil (pos : Compat.String.Pos) : HighlightM Unit := do
@@ -1036,15 +1055,15 @@ private def peekChar (iter : Compat.String.Iterator) : Option Char :=
   if h : iter.hasNext then some (iter.curr' h) else none
 
 /-- Emits an accumulated whitespace run as text. -/
-private def emitTriviaText (s : String) : HighlightM Unit :=
+private def emitWhitespaceText (s : String) : HighlightM Unit :=
   unless s.isEmpty do
     modify fun st => { st with output := Output.addText st.output s }
 
-/-- Emits a non-empty comment token, keeping it outside any open tactic region (see `addTriviaToken`). -/
-private def emitTriviaToken (k : Token.Kind) (s : String) : HighlightM Unit :=
+/-- Emits a non-empty comment token, keeping it outside any open tactic region. -/
+private def emitWhitespaceToken (k : Token.Kind) (s : String) : HighlightM Unit :=
   unless s.isEmpty do
     modify fun st => { st with
-      output := Output.addTriviaToken st.output ⟨k, s⟩
+      output := Output.addWhitespaceToken st.output ⟨k, s⟩
     }
 
 /-- Returns the iterator at the newline ending a line comment, or at end of string. -/
@@ -1092,7 +1111,7 @@ private def emitTriviaRun (strict : Bool)
   let run := runStart.extract iter
   if strict && !run.all (·.isWhitespace) then
     return false
-  emitTriviaText run
+  emitWhitespaceText run
   return true
 
 /-- Implementation loop for `emitTriviaCore`, scanning once while emitting accepted trivia pieces. -/
@@ -1104,17 +1123,17 @@ private partial def emitTriviaCoreLoop (strict : Bool)
     if c == '-' && peekChar next == some '-' then
       if !(← emitTriviaRun strict runStart iter) then
         return false
-      emitTriviaToken .commentDelim "--"
+      emitWhitespaceToken .commentDelim "--"
       let iter' := scanLineCommentEnd next.next
-      emitTriviaToken .lineComment (next.next.extract iter')
+      emitWhitespaceToken .lineComment (next.next.extract iter')
       emitTriviaCoreLoop strict iter' iter'
     else if c == '/' && peekChar next == some '-' then
       if !(← emitTriviaRun strict runStart iter) then
         return false
       if let some (bodyEnd, iter') := scanBlockCommentEnd next.next then
-        emitTriviaToken .commentDelim "/-"
-        emitTriviaToken .blockComment (next.next.extract bodyEnd)
-        emitTriviaToken .commentDelim "-/"
+        emitWhitespaceToken .commentDelim "/-"
+        emitWhitespaceToken .blockComment (next.next.extract bodyEnd)
+        emitWhitespaceToken .commentDelim "-/"
         emitTriviaCoreLoop strict iter' iter'
       else if strict then
         return false
@@ -1144,7 +1163,7 @@ private def emitTriviaCore (s : String) (strict : Bool) : HighlightM Bool := do
   if !s.any (fun c => c == '-' || c == '/') then
     if strict && !s.all (·.isWhitespace) then
       return false
-    emitTriviaText s
+    emitWhitespaceText s
     return true
   let iter := s.compatIter
   emitTriviaCoreLoop strict iter iter
@@ -1192,7 +1211,7 @@ def fillMissingSourceUpTo (pos : Compat.String.Pos) : HighlightM Unit := do
 def emitString (pos endPos : Compat.String.Pos) (string : String) : HighlightM Unit := do
   if (← read).includeUnparsed then fillMissingSourceUpTo pos
   let text ← getFileMap
-  openUntil <| text.toPosition pos
+  openFor (text.toPosition pos) (text.toPosition endPos)
   modify fun st => {st with output := Output.addText st.output string}
   closeUntil endPos
   setLastPos endPos
@@ -1214,8 +1233,9 @@ def emitToken (blame : Syntax) (info : SourceInfo) (token : Token) : HighlightM 
       | _ => throwError "Syntax {blame} not original, can't highlight: {repr info}"
 
   emitTrivia leading.toString
-  openUntil <| text.toPosition pos
-  modify fun st => {st with output := Output.addToken st.output token}
+  let stop : Compat.String.Pos := pos + token.content
+  openFor (text.toPosition pos) (text.toPosition stop)
+  modify fun st => { st with output := Output.addToken st.output token }
   closeUntil endPos
   emitTrivia trailing.toString
   let trailingPos := Internal.getTrailingOrTailPos? blame
@@ -2290,6 +2310,10 @@ where
     if (← read).includeUnparsed then
       if let some e := Internal.getTrailingOrTailPos? stx then
         fillMissingSourceUpTo e
+    -- A message that found nothing to annotate in its own command becomes a point at the command's
+    -- end.
+    if let some e := Internal.getTrailingOrTailPos? stx then
+      emitPointsBefore ((← getFileMap).toPosition e)
     modifyGet fun (st : HighlightState) =>
       let st := st.resetCache
       (Highlighted.fromOutput st.output, { st with output := [] })
