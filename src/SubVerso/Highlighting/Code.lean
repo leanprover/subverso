@@ -31,47 +31,78 @@ A table that maps source regions to info.
 SubVerso has very different access patterns from the language server, and was needing to re-traverse
 the info tree in ways that took too much time while finding proof states. This solution
 pre-processes it once, saving the info in an easier-to-query form for this use case.
-
-Other info types may be added as needed for performance in the future.
 -/
 structure InfoTable where
-  tacticInfo : Compat.HashMap Compat.Syntax.Range (Array (ContextInfo × TacticInfo)) := {}
+  /--
+  All info nodes, indexed by the canonical range of their syntax. Node arrays preserve the order
+  produced by `InfoTree.collectNodesBottomUp` (per tree, trees in order):
+
+  * Parents before children
+
+  * Siblings left to right
+
+  This means that range lookups see nodes in the same order as a filtering traversal would.
+  -/
+  nodesByRange : Compat.HashMap Compat.Syntax.Range (Array (ContextInfo × Info)) := {}
 
 instance : Inhabited InfoTable := ⟨⟨{}⟩⟩
 
-/--
-Adds info to the table, doing nothing if it's not a type that the table supports.
--/
-def InfoTable.add (ctx : ContextInfo) (i : Info) (table : InfoTable) : InfoTable :=
-  match i with
-  | .ofTacticInfo ti =>
-    if let some rng := ti.stx.getRange? (canonicalOnly := true) then
-      { table with tacticInfo := table.tacticInfo.insert rng <|
-        ((Compat.HashMap.get? table.tacticInfo rng).getD #[]).push (ctx, ti)
-      }
-    else table
-  | _ => table
-
-partial def InfoTable.ofInfoTree (t : InfoTree) (init : InfoTable := {}) : InfoTable := go none t init
-where
-  go (ctx? : Option ContextInfo) (t : InfoTree) (table : InfoTable) : InfoTable :=
-    match ctx?, t with
-    | ctx?, .context ctx t => go (ctx.mergeIntoOuter? ctx?) t table
-    | some ctx, .node i cs => cs.foldl (init := table.add ctx i) fun tbl' t' => go (some ctx) t' tbl'
-    | none, .node .. => panic! "Unexpected contextless node"
-    | _, .hole _ => table
+/-- Indexes every info node of the tree by its syntax's canonical range. -/
+partial def InfoTable.indexNodes (t : InfoTree) (table : InfoTable) : InfoTable :=
+  let nodes := t.collectNodesBottomUp fun ci info _ soFar =>
+    match info.stx.getRange? (canonicalOnly := true) with
+    | some rng => (rng, ci, info) :: soFar
+    | none => soFar
+  nodes.foldl (init := table) fun tbl (rng, ci, info) =>
+    let bucket := ((Compat.HashMap.get? tbl.nodesByRange rng).getD #[]).push (ci, info)
+    { tbl with nodesByRange := tbl.nodesByRange.insert rng bucket }
 
 def InfoTable.ofInfoTrees (ts : Array InfoTree) (init : InfoTable := {}) : InfoTable :=
-  ts.foldl (init := init) (fun tbl t => .ofInfoTree t (init := tbl))
+  ts.foldl (init := init) (fun tbl t => InfoTable.indexNodes t tbl)
+
+/-- All info nodes whose syntax has the given canonical range, in traversal order. -/
+def InfoTable.nodesFor (table : InfoTable) (rng : Compat.Syntax.Range) : Array (ContextInfo × Info) :=
+  (Compat.HashMap.get? table.nodesByRange rng).getD #[]
 
 def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (ContextInfo × TacticInfo)) := do
   let rng ← stx.getRange? (canonicalOnly := true)
-  Compat.HashMap.get? table.tacticInfo rng |>.map (·.filter (·.2.stx == stx))
+  pure <| table.nodesFor rng |>.filterMap fun (ci, i) =>
+    match i with
+    | .ofTacticInfo ti => if ti.stx == stx then some (ci, ti) else none
+    | _ => none
+
+/--
+Identifies a rendering of a local variable's type by everything the rendered string depends on:
+the type itself (fully instantiated), the local context's entries (an fvar in the type prints by
+its user name at this occurrence, and inaccessible-name daggers are positional), and the
+pretty-printing context (options, current namespace, and open declarations, folded into a hash).
+-/
+structure VarTypeKey where
+  type : ExprStructEq
+  localNames : List (FVarId × Name)
+  ppCtxHash : UInt64
+
+instance : BEq VarTypeKey where
+  beq a b := a.type == b.type && a.ppCtxHash == b.ppCtxHash && a.localNames == b.localNames
+
+instance : Hashable VarTypeKey where
+  hash k :=
+    mixHash (hash k.type) <| mixHash k.ppCtxHash <|
+      k.localNames.foldl (fun h (x, n) => mixHash h (mixHash (hash x.name) (hash n))) 7
+
+def VarTypeKey.forOccurrence (ty : Expr) (lctx : LocalContext) (ci : ContextInfo) : VarTypeKey where
+  type := ⟨ty⟩
+  localNames := lctx.foldl (fun xs d => (d.fvarId, d.userName) :: xs) []
+  ppCtxHash :=
+    mixHash (hash (toString ci.options)) <|
+      mixHash (hash ci.currNamespace) (hash (toString ci.openDecls))
 
 structure SigCache where
   signatures : (NameMap (String × FormatWithInfos × ContextInfo))
+  /-- Pretty-printed types of local variable occurrences. -/
+  varTypes : HashMap VarTypeKey String := {}
 
-instance : EmptyCollection SigCache := ⟨⟨{}⟩⟩
+instance : EmptyCollection SigCache := ⟨⟨{}, {}⟩⟩
 
 structure Context where
   ids : HashMap Lsp.RefIdent Lsp.RefIdent
@@ -309,11 +340,15 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
   let docs ← findDocString? (← getEnv) fieldInfo.projName
   return .const fieldInfo.projName tyStr docs false none
 
-def infoExists [Monad m] [MonadLiftT IO m] (trees : Array InfoTree) (stx : Syntax) : m Bool := do
-  for t in trees do
-    for _ in infoForSyntax t stx do
-      return true
-  return false
+def infoExists [Monad m] [MonadLiftT IO m] (table : InfoTable) (trees : Array InfoTree)
+    (stx : Syntax) : m Bool := do
+  match stx.getRange? (canonicalOnly := true) with
+  | some rng => return !(table.nodesFor rng).isEmpty
+  | none =>
+    for t in trees do
+      for _ in infoForSyntax t stx do
+        return true
+    return false
 
 open Highlighted in
 /--
@@ -661,25 +696,54 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
           pure (sig, { ci with env := env })
 
         let sigStr := toString (← stripNamespaces sig)
-        (cache.modify (fun ⟨s⟩ => ⟨s.insert x (sigStr, sig, ci)⟩) : IO _)
+        (cache.modify (fun c => { c with signatures := c.signatures.insert x (sigStr, sig, ci) }) : IO _)
         pure (sigStr, sig, ci)
     if doCollect then return (sigStr, some (sig, ci)) else return (sigStr, none)
+
+  -- Pretty-print `ty` in this occurrence's context.
+  let ppType (ty : Expr) : m (String × Option (FormatWithInfos × ContextInfo)) := do
+    try
+      if doCollect then
+        let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) <|
+          PrettyPrinter.ppExprWithInfos ty
+        pure (toString fi.fmt, some (fi, ci))
+      else
+        let fmt ← runMeta <| Meta.ppExpr ty
+        pure (toString fmt, none)
+    catch _ => pure ("", none)
+
+  -- The fully instantiated inferred type of `expr`, or `none` if inference fails.
+  let typeOf : m (Option Expr) := do
+    try
+      runMeta do pure (some (← instantiateMVars (← Meta.inferType expr)))
+    catch _ => pure none
 
   -- Pretty-print the inferred type of `expr` (a variable, or any expression whose kind is otherwise
   -- unknown).
   let ppTermType : m (String × Option (FormatWithInfos × ContextInfo)) := do
-    try
-      if doCollect then
-        let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
-          let ty ← instantiateMVars (← Meta.inferType expr)
-          PrettyPrinter.ppExprWithInfos ty
-        pure (toString fi.fmt, some (fi, ci))
+    match ← typeOf with
+    | some ty => ppType ty
+    | none => pure ("", none)
+
+  -- Cache the rendered types of variables: occurrences of local variables with the same type,
+  -- local names, and pretty-printing context render identically, so the delaboration work can be
+  -- shared. Types that still contain metavariables render fresh each time (a later occurrence may
+  -- print further instantiated), as does everything when collecting format data (the cached
+  -- string has no format payload).
+  let ppVarType : m (String × Option (FormatWithInfos × ContextInfo)) := do
+    match ← typeOf with
+    | none => pure ("", none)
+    | some ty =>
+      if doCollect || ty.hasMVar || ty.hasLevelMVar then
+        ppType ty
       else
-        let fmt ← runMeta do
-          let ty ← instantiateMVars (← Meta.inferType expr)
-          Meta.ppExpr ty
-        pure (toString fmt, none)
-    catch _ => pure ("", none)
+        let key := VarTypeKey.forOccurrence ty lctx ci
+        match Compat.HashMap.get? (← (cache.get : IO _)).varTypes key with
+        | some tyStr => pure (tyStr, none)
+        | none =>
+          let (tyStr, prettySig) ← ppType ty
+          (cache.modify (fun c => { c with varTypes := c.varTypes.insert key tyStr }) : IO _)
+          pure (tyStr, prettySig)
 
   let rec findKind e := do
     match e with
@@ -687,7 +751,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
       if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
         Compat.refIdentCase y
           (onFVar := fun x => do
-            let (tyStr, prettySig) ← ppTermType
+            let (tyStr, prettySig) ← ppVarType
             if let some localDecl := lctx.find? x then
               if localDecl.isAuxDecl then
                 let e ← runMeta <| Meta.ppExpr expr
@@ -702,7 +766,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
             let docs ← findDocString? (← getEnv) x
             return some (.const x sig docs false none, prettySig))
       else
-        let (tyStr, prettySig) ← ppTermType
+        let (tyStr, prettySig) ← ppVarType
         return some (.var id tyStr none, prettySig)
     | Expr.const name _ =>
       let docs ← findDocString? (← getEnv) name
@@ -756,15 +820,24 @@ def infoKind [Monad m] [MonadReaderOf Context m]
     | _ =>
       pure none
 
+/--
+All info nodes whose canonical span matches `stx`, via the pre-built range index when `stx` has a
+canonical range, in the same order that filtering traversals of `trees` would produce.
+-/
+def infoNodesFor (trees : Array InfoTree) (stx : Syntax) :
+    HighlightM (Array (ContextInfo × Info)) := do
+  match stx.getRange? (canonicalOnly := true) with
+  | some rng => return (← readThe InfoTable).nodesFor rng
+  | none => return trees.flatMap fun t => (infoForSyntax t stx).toArray
+
 def anonCtorKind
     (trees : Array InfoTree) (stx : Syntax) :
     HighlightM (Option Token.Kind) := do
   let mut kind : Token.Kind := .unknown
-  for t in trees do
-    for (ci, info) in infoForSyntax t stx do
-      if let some (seen, _) ← infoKind ci info then
-        if seen.priority > kind.priority then kind := seen
-      else continue
+  for (ci, info) in (← infoNodesFor trees stx) do
+    if let some (seen, _) ← infoKind ci info then
+      if seen.priority > kind.priority then kind := seen
+    else continue
   return match kind with
   | .const n sig doc? _ ppSig? => some <| .anonCtor n sig doc? ppSig?
   | .anonCtor .. => some kind
@@ -1320,13 +1393,12 @@ def identKind
   let mut kind : Token.Kind := .unknown
   -- Formatted signature or type from the winning exprKind call, to be resolved after the loop.
   let mut kindSig : Option (FormatWithInfos × ContextInfo) := none
-  for t in trees do
-    for (ci, info) in infoForSyntax t stx do
-      if let some (seen, prettySig) ← infoKind ci info (allowUnknownTyped := allowUnknownTyped) then
-        if seen.priority > kind.priority then
-          kind := seen
-          kindSig := prettySig
-      else continue
+  for (ci, info) in (← infoNodesFor trees stx) do
+    if let some (seen, prettySig) ← infoKind ci info (allowUnknownTyped := allowUnknownTyped) then
+      if seen.priority > kind.priority then
+        kind := seen
+        kindSig := prettySig
+    else continue
   match kind with
   | .const name sig docs isDef none =>
     return .const name sig docs isDef (← resolveFormatWithInfos kindSig)
@@ -1341,12 +1413,11 @@ than classifying it. A numeral should never be treated as, say, the `OfNat.ofNat
 -/
 def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
     HighlightM (Option String × Option String) := do
-  for t in trees do
-    for (ci, info) in infoForSyntax t stx do
-      -- `exprKind` (with `allowUnknownTyped`) reports a non-`const`/`var`/`sort`/`str` expression —
-      -- which a numeral's `OfNat.ofNat …`/literal application is — as `.withType <type>`.
-      if let some (.withType ty, prettySig) ← infoKind ci info (allowUnknownTyped := true) then
-        return (some ty, ← resolveFormatWithInfos prettySig)
+  for (ci, info) in (← infoNodesFor trees stx) do
+    -- `exprKind` (with `allowUnknownTyped`) reports a non-`const`/`var`/`sort`/`str` expression —
+    -- which a numeral's `OfNat.ofNat …`/literal application is — as `.withType <type>`.
+    if let some (.withType ty, prettySig) ← infoKind ci info (allowUnknownTyped := true) then
+      return (some ty, ← resolveFormatWithInfos prettySig)
   return (none, none)
 
 /-- Returns the format data JSON for `key` from the cache, or computes and caches it. -/
@@ -1902,7 +1973,7 @@ partial def highlight'
           match stx.identComponents (nFields? := some 1) with
           | [y, field] =>
             withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Perhaps a field? {y} {field}") do
-            if (← infoExists trees field) then
+            if (← infoExists (← readThe InfoTable) trees field) then
               withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Yes, a field!") do
               highlight' trees y tactics
               emitToken' <| fakeToken (.delim none none none) "."
@@ -2212,6 +2283,9 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   pure hls
 where
   go t stx : HighlightM Highlighted := withCurrHeartbeats do
+    -- The variable-type cache is scoped to a single syntax: its keys don't capture the
+    -- environment, and separate elaboration threads can reuse `FVarId`s.
+    ((← read).sigCache.modify fun c => { c with varTypes := {} } : IO _)
     let _ ← highlight' (Option.map (#[·]) t |>.getD #[]) stx true
     if (← read).includeUnparsed then
       if let some e := Internal.getTrailingOrTailPos? stx then
