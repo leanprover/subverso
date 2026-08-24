@@ -1744,14 +1744,20 @@ partial def SubVerso.Highlighting.Highlighted.constTokens (hl : Highlighted) : A
 open Lean Elab Command in
 /--
 Asserts that batch-highlighting `input` gives the constant tokens whose content is `name` exactly
-the signatures `expected`, in source order.
+the signatures `expected`, in source order. Does nothing when `skip` is true.
 -/
-def assertConstSigs (input : String) (name : String) (expected : List String) :
-    CommandElabM Unit := do
+def assertConstSigs (input : String) (name : String) (expected : List String)
+    (skip : Bool := false) : CommandElabM Unit := do
+  if skip then return
   let hl ← highlightManyWithMessages input #[]
   let found := hl.constTokens.toList.filter (·.1 == name) |>.map (·.2)
   unless found == expected do
     throwError m!"signatures for '{name}':\n{repr found}\nexpected:\n{repr expected}"
+
+-- On toolchains up to and including 4.5, `PrettyPrinter.ppSignature` renders only a declaration's
+-- type, without its name and binders, so the signature strings expected below appear from 4.6 on.
+def oldSignatureFormat : Bool :=
+  Lean.version.major == 4 && Lean.version.minor <= 5
 
 -- A constant's hover signature renders the names in its type as abbreviated by the namespace and
 -- open declarations in force at each occurrence: `N.T` appears as `T` inside `namespace N` and as
@@ -1766,6 +1772,7 @@ def assertConstSigs (input : String) (name : String) (expected : List String) :
     "def baz : N.T := N.foo",
     ""])
   "foo" ["N.foo : T"]
+  (skip := oldSignatureFormat)
 
 #eval assertConstSigs
   (String.intercalate "\n" [
@@ -1777,6 +1784,7 @@ def assertConstSigs (input : String) (name : String) (expected : List String) :
     "def baz : N.T := N.foo",
     ""])
   "N.foo" ["N.foo : N.T"]
+  (skip := oldSignatureFormat)
 
 end ConstSignatures
 
