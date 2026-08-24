@@ -71,6 +71,11 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
     | .ofTacticInfo ti => if ti.stx == stx then some (ci, ti) else none
     | _ => none
 
+/-- A hash of the pretty-printing context of `ci`: its options, namespace, and open declarations. -/
+def ppContextHash (ci : ContextInfo) : UInt64 :=
+  mixHash (hash (toString ci.options)) <|
+    mixHash (hash ci.currNamespace) (hash (toString ci.openDecls))
+
 /--
 A cache key for the rendered types of local variables that tracks the inputs to the rendering process.
 -/
@@ -86,12 +91,20 @@ deriving BEq, Hashable
 def VarTypeKey.forOccurrence (ty : Expr) (lctx : LocalContext) (ci : ContextInfo) : VarTypeKey where
   type := ⟨ty⟩
   localNames := lctx.foldl (fun xs d => (d.fvarId, d.userName) :: xs) []
-  ppCtxHash :=
-    mixHash (hash (toString ci.options)) <|
-      mixHash (hash ci.currNamespace) (hash (toString ci.openDecls))
+  ppCtxHash := ppContextHash ci
+
+/--
+A cache key for rendered constant signatures that tracks the inputs to the rendering process.
+-/
+structure SigKey where
+  /-- The constant -/
+  name : Name
+  /-- A hash of the current options, namespace, and open decls -/
+  ppCtxHash : UInt64
+deriving BEq, Hashable
 
 structure SigCache where
-  signatures : (NameMap (String × FormatWithInfos × ContextInfo))
+  signatures : HashMap SigKey (String × FormatWithInfos × ContextInfo)
   /-- Pretty-printed types of local variable occurrences. -/
   varTypes : HashMap VarTypeKey String := {}
 
@@ -679,8 +692,9 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
   -- qualifiers. Returns (sigString, sigOrType?) — the second projection is a pretty-printed
   -- signature for later resolution by identKind.
   let ppSig (x : Name) (env := ci.env) :  m (String × Option (FormatWithInfos × ContextInfo)) := do
+    let key : SigKey := ⟨x, ppContextHash ci⟩
     let (sigStr, sig, ci) ←
-      if let some sigDoc := Compat.NameMap.get? (← (cache.get : IO _)).signatures x then
+      if let some sigDoc := Compat.HashMap.get? (← (cache.get : IO _)).signatures key then
         pure sigDoc
       else
         let (sig, ci) ← do
@@ -689,7 +703,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
           pure (sig, { ci with env := env })
 
         let sigStr := toString (← stripNamespaces sig)
-        (cache.modify (fun c => { c with signatures := c.signatures.insert x (sigStr, sig, ci) }) : IO _)
+        (cache.modify (fun c => { c with signatures := c.signatures.insert key (sigStr, sig, ci) }) : IO _)
         pure (sigStr, sig, ci)
     if doCollect then return (sigStr, some (sig, ci)) else return (sigStr, none)
 
