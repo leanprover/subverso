@@ -1723,4 +1723,61 @@ def assertMessageSpans (input : String) (messages : Array Message) (expected : S
 
 end PointDiagnosticExtents
 
+/-! # Constant Signature Rendering -/
+section ConstSignatures
+
+open SubVerso.Highlighting
+
+/-- The `(content, signature)` of each constant token, in source order. -/
+partial def SubVerso.Highlighting.Highlighted.constTokens (hl : Highlighted) : Array (String × String) := Id.run do
+  let mut out := #[]
+  match hl with
+  | .seq hls =>
+    for x in hls.map constTokens do
+      out := out ++ x
+  | .span _ hl' => out := out ++ hl'.constTokens
+  | .tactics _ _ _ hl' => out := out ++ hl'.constTokens
+  | .token ⟨.const _ sig _ _ _, s⟩ => out := out.push (s, sig)
+  | _ => pure ()
+  out
+
+open Lean Elab Command in
+/--
+Asserts that batch-highlighting `input` gives the constant tokens whose content is `name` exactly
+the signatures `expected`, in source order.
+-/
+def assertConstSigs (input : String) (name : String) (expected : List String) :
+    CommandElabM Unit := do
+  let hl ← highlightManyWithMessages input #[]
+  let found := hl.constTokens.toList.filter (·.1 == name) |>.map (·.2)
+  unless found == expected do
+    throwError m!"signatures for '{name}':\n{repr found}\nexpected:\n{repr expected}"
+
+-- A constant's hover signature renders the names in its type as abbreviated by the namespace and
+-- open declarations in force at each occurrence: `N.T` appears as `T` inside `namespace N` and as
+-- `N.T` outside it.
+#eval assertConstSigs
+  (String.intercalate "\n" [
+    "namespace N",
+    "inductive T where",
+    "  | mk",
+    "def foo : T := T.mk",
+    "end N",
+    "def baz : N.T := N.foo",
+    ""])
+  "foo" ["N.foo : T"]
+
+#eval assertConstSigs
+  (String.intercalate "\n" [
+    "namespace N",
+    "inductive T where",
+    "  | mk",
+    "def foo : T := T.mk",
+    "end N",
+    "def baz : N.T := N.foo",
+    ""])
+  "N.foo" ["N.foo : N.T"]
+
+end ConstSignatures
+
 def main : IO Unit := pure ()
