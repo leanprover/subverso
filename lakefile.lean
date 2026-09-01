@@ -14,8 +14,7 @@ open Lean Elab Command in
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let addSetupArg := mkIdent `addSetupArg
-  -- Feature-probe Lake's setup-file support instead of version-gating it, so older Lake keeps the
-  -- original extractor CLI while newer Lake passes the module setup file it already computes.
+  -- On Lake versions without module setup files, preserve the extractor's existing arguments.
   if (← getEnv).contains `Lake.Module.setupFile then
     elabCommand <| ← `(
       def $addSetupArg:ident (mod : Lake.Module) (args : Array String) : Lake.JobM (Array String) := do

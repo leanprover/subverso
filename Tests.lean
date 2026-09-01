@@ -344,8 +344,9 @@ Turns a toolchain string (e.g. `leanprover/lean4:v4.8.0`) into a safe single pat
 def sanitizeToolchain (toolchain : String) : String :=
   toolchain.map fun c => if c.isAlphanum || c == '.' then c else '-'
 
--- The fixture's `lp_ffi_answer` symbol uses package-aware module names, so probe the corresponding
--- setup features rather than inferring them from the Lean version.
+-- `#eval` resolves an extern through the package-qualified Lean declaration name rather than the
+-- explicit `@[extern]` string. This fixture exports only `lp_ffi_answer`, so it requires setup files
+-- that carry a package ID and environments that can install it.
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let env ← getEnv
@@ -353,7 +354,7 @@ open Lean Elab Command in
     env.contains `Lean.ModuleSetup.package? &&
     env.contains `Lean.Environment.setModulePackage
   elabCommand <| ← `(
-    def $(mkIdent `supportsModuleSetupFixture) : Bool := $(quote supports)
+    def $(mkIdent `supportsPackageAwareModuleSetup) : Bool := $(quote supports)
   )
 
 /--
@@ -399,8 +400,8 @@ def prepareProject (project : System.FilePath) (toolchain : String) (demodSrc : 
   -- artifacts or a previously-generated dependency source — those are managed below / kept warm.
   copyRecursively project buildDir
     (fun f => f != ".lake" && f != "no-mod" && f != "lake-manifest.json")
-  -- The prepared copy must run under the matrix/fixed toolchain, not under a fixture's checked-in
-  -- toolchain, because Lake may inspect or rewrite this file while building the project.
+  -- Record the explicit toolchain in the copied workspace so its cache directory, the surrounding
+  -- `elan run`, and Lake's own dependency/toolchain handling all agree.
   IO.FS.writeFile (buildDir / "lean-toolchain") toolchain
   -- Refresh the path-dependency source in place, leaving any existing `no-mod/.lake` untouched.
   copyRecursively demodSrc (buildDir / "no-mod") (fun _ => true)
@@ -533,7 +534,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
 
   let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
 
-  if supportsModuleSetupFixture then
+  if supportsPackageAwareModuleSetup then
     IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
     let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
     runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)

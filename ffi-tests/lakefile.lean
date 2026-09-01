@@ -10,17 +10,13 @@ package «ffi» where
 target ffi.o pkg : FilePath := do
   let srcJob ← inputFile (pkg.dir / "ffi.c") true
   let picArgs := if System.Platform.isWindows then #[] else #["-fPIC"]
-  buildLeanO (pkg.buildDir / "native" / "ffi.o") srcJob picArgs
+  buildLeanO (pkg.buildDir / "native" / "ffi.o") srcJob picArgs #["-DLEAN_EXPORTING"]
 
-target ffiShared pkg : Dynlib := do
+extern_lib subversoFfiTest pkg := do
   let oJob ← fetch <| pkg.target `ffi.o
-  let libFile := pkg.sharedLibDir / nameToSharedLib "subverso_ffi_test"
-  let keepSymbolArgs :=
-    if System.Platform.isWindows then #[]
-    else if System.Platform.isOSX then #["-Wl,-u,_lp_ffi_answer"]
-    else #["-Wl,-u,lp_ffi_answer"]
-  buildLeanSharedLib "subverso_ffi_test" libFile #[oJob] #[] #[] keepSymbolArgs
+  let libFile := pkg.staticLibDir / nameToStaticLib "subverso_ffi_test"
+  buildStaticLib libFile #[oJob]
 
 @[default_target]
 lean_lib Ffi where
-  dynlibs := #[`@/ffiShared]
+  dynlibs := #[`@/subversoFfiTest:dynlib]
