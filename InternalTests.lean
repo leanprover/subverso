@@ -637,6 +637,19 @@ elab "#assertCharValue" inp:str expected:str : command => do
 
 open Lean Elab Command in
 /--
+Checks that every listed name is among the names that highlighting `inp` marks as defined. This
+uses the info-recording path, in an ambient environment that predates the code.
+-/
+elab "#assertDefines" inp:str names:str* : command => do
+  let hl ← highlightWithPrefixedMessages inp.getString
+  let defined := hl.definedNames
+  for n in names do
+    let name := n.getString.toName
+    unless defined.contains name do
+      throwError m!"{name} is not marked as defined. Defined names: {defined.toList}"
+
+open Lean Elab Command in
+/--
 Like `#assertKind`, but highlights through the info-recording (Compat-frontend, includes-unparsed)
 path so that semantic info — e.g. an applied constructor in `⟨1, 2⟩` — is available, mirroring real
 extraction (`subverso-extract-mod`).
@@ -1149,6 +1162,18 @@ open Lean Elab Command in
 -- Checks that we correctly register projection function info for fields/methods
 #assertKindRich "structure S where\n  x : Nat" "x" "const"
 #assertKindRich "class C (a : Type) where\n  f : a → a" "f" "const"
+
+-- Declaration ranges are registered as a command ends, so definition sites must be recognized in
+-- the command's final environment.
+#assertDefines "def foo := 1" "foo"
+#assertDefines "theorem bar : True := trivial" "bar"
+#assertDefines "structure S where\n  x : Nat" "S"
+#assertDefines "inductive T where\n  | a\n  | b" "T" "T.a" "T.b"
+#assertDefines "def f := helper\nwhere helper := 1" "f" "f.helper"
+-- Local definitions from `let rec` and `where` blocks are definition sites too, across a sequence of
+-- top-level definitions.
+#assertDefines "def one (n : Nat) : Nat :=\n  let rec loop : Nat → Nat\n    | 0 => 0\n    | k + 1 => loop k\n  loop n\ndef two (n : Nat) : Nat := helper n\nwhere helper (k : Nat) : Nat := k + 1\ndef three (n : Nat) : Nat :=\n  let rec up (k : Nat) : Nat := k + 1\n  let rec down (k : Nat) : Nat := k - 1\n  up (down n)\ndef four (n : Nat) : Nat := aux n + other n\nwhere\n  aux (k : Nat) : Nat := k\n  other (k : Nat) : Nat := k * 2"
+  "one" "one.loop" "two" "two.helper" "three" "three.up" "three.down" "four" "four.aux" "four.other"
 
 -- `:=` stays a `.delim` across contexts even on the info-recording path, where `identKind` could
 -- otherwise match its span: a structure-instance field, an `instance … where` field, and a tactic
