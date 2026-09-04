@@ -636,17 +636,18 @@ elab "#assertCharValue" inp:str expected:str : command => do
     throwError m!"char tokens decoded to {repr chars.toList}, expected to contain {repr expected.getString}"
 
 open Lean Elab Command in
-/--
-Checks that every listed name is among the names that highlighting `inp` marks as defined. This
-uses the info-recording path, in an ambient environment that predates the code.
--/
-elab "#assertDefines" inp:str names:str* : command => do
-  let hl ← highlightWithPrefixedMessages inp.getString
+/-- Checks that every name in `names` is among the names that highlighting `input` marks as defined. -/
+def assertDefines (input : String) (names : List Name) : CommandElabM Unit := do
+  let hl ← highlightWithPrefixedMessages input
   let defined := hl.definedNames
-  for n in names do
-    let name := n.getString.toName
+  for name in names do
     unless defined.contains name do
       throwError m!"{name} is not marked as defined. Defined names: {defined.toList}"
+
+open Lean Elab Command in
+@[inherit_doc assertDefines]
+elab "#assertDefines" inp:str names:str* : command => do
+  assertDefines inp.getString (names.toList.map (·.getString.toName))
 
 open Lean Elab Command in
 /--
@@ -1169,11 +1170,34 @@ open Lean Elab Command in
 #assertDefines "theorem bar : True := trivial" "bar"
 #assertDefines "structure S where\n  x : Nat" "S"
 #assertDefines "inductive T where\n  | a\n  | b" "T" "T.a" "T.b"
-#assertDefines "def f := helper\nwhere helper := 1" "f" "f.helper"
--- Local definitions from `let rec` and `where` blocks are definition sites too, across a sequence of
--- top-level definitions.
-#assertDefines "def one (n : Nat) : Nat :=\n  let rec loop : Nat → Nat\n    | 0 => 0\n    | k + 1 => loop k\n  loop n\ndef two (n : Nat) : Nat := helper n\nwhere helper (k : Nat) : Nat := k + 1\ndef three (n : Nat) : Nat :=\n  let rec up (k : Nat) : Nat := k + 1\n  let rec down (k : Nat) : Nat := k - 1\n  up (down n)\ndef four (n : Nat) : Nat := aux n + other n\nwhere\n  aux (k : Nat) : Nat := k\n  other (k : Nat) : Nat := k * 2"
-  "one" "one.loop" "two" "two.helper" "three" "three.up" "three.down" "four" "four.aux" "four.other"
+
+-- Local definitions from `let rec` and `where` blocks are marked as definition sites from Lean 4.7
+-- on. Their enclosing top-level definitions are marked on every toolchain.
+def localDefinitionSites : Bool :=
+  Lean.version.major > 4 || (Lean.version.major == 4 && Lean.version.minor >= 7)
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let locals (names : List Name) : List Name := if localDefinitionSites then names else []
+  assertDefines "def f := helper\nwhere helper := 1" ([`f] ++ locals [`f.helper])
+  assertDefines (String.intercalate "\n" [
+      "def one (n : Nat) : Nat :=",
+      "  let rec loop : Nat → Nat",
+      "    | 0 => 0",
+      "    | k + 1 => loop k",
+      "  loop n",
+      "def two (n : Nat) : Nat := helper n",
+      "where helper (k : Nat) : Nat := k + 1",
+      "def three (n : Nat) : Nat :=",
+      "  let rec up (k : Nat) : Nat := k + 1",
+      "  let rec down (k : Nat) : Nat := k - 1",
+      "  up (down n)",
+      "def four (n : Nat) : Nat := aux n + other n",
+      "where",
+      "  aux (k : Nat) : Nat := k",
+      "  other (k : Nat) : Nat := k * 2"])
+    ([`one, `two, `three, `four] ++
+      locals [`one.loop, `two.helper, `three.up, `three.down, `four.aux, `four.other])
 
 -- `:=` stays a `.delim` across contexts even on the info-recording path, where `identKind` could
 -- otherwise match its span: a structure-instance field, an `instance … where` field, and a tactic
