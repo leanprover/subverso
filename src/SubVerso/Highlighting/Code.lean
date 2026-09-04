@@ -348,7 +348,7 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
   if !((← getEnv).isConstructor name || (← getEnv).isProjectionFn name || stx.getKind == ``Parser.Command.declId || stx.getKind == identKind) then return false
   if let .none := stx.getHeadInfo then return false
   let ranges :=
-    if let some r := (← findDeclarationRangesCore? name) then
+    if let some r := (← Compat.findDeclarationRangesCore? name) then
       some r
     else (← builtinDeclRanges.get (m := IO)).find? name
   if let some declRanges := ranges then

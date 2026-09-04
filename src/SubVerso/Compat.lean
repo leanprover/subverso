@@ -599,6 +599,23 @@ def rwTacticRightBracket? (stx : Syntax) : Option Syntax := Id.run do
 def getDeclarationRange? [Monad m] [MonadFileMap m] (stx : Syntax) : m (Option DeclarationRange) :=
   %first_succeeding [Lean.Elab.getDeclarationRange? stx, some <$> Lean.Elab.getDeclarationRange stx]
 
+/--
+Finds the declaration ranges that were registered for `declName`.
+
+On Lean 4.19 through 4.22, the ranges of an asynchronously elaborated theorem are recorded in the
+main environment branch's state, while the toolchain's lookup consults the theorem's own branch.
+
+To work around this, if the first lookup is empty, the main branch is checked on toolchains that support async.
+-/
+def findDeclarationRangesCore? [Monad m] [MonadEnv m] (declName : Name) :
+    m (Option DeclarationRanges) := do
+  if let some ranges ← Lean.findDeclarationRangesCore? declName then return some ranges
+  let env ← getEnv
+  return %if_version_at_least 4 19 then
+      (%if_version_at_least 4 23 then none
+       else (Lean.declRangeExt.getState (asyncMode := .mainOnly) env).find? declName)
+    else none
+
 def messageLogArray (msgs : Lean.MessageLog) : Array Lean.Message := %first_succeeding [msgs.toArray, msgs.msgs.toArray]
 
 def mapMessages (msgLog : Lean.MessageLog) (f : Lean.Message → Lean.Message) : Lean.MessageLog :=
