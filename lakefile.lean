@@ -13,6 +13,22 @@ open Lean Elab Command in
 
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
+  let addSetupArg := mkIdent `addSetupArg
+  -- On Lake versions without module setup files, preserve the extractor's existing arguments.
+  if (← getEnv).contains `Lake.Module.setupFile then
+    elabCommand <| ← `(
+      def $addSetupArg:ident (mod : Lake.Module) (args : Array String) : Lake.JobM (Array String) := do
+        Lake.addTrace (← Lake.computeTrace (Lake.TextFilePath.mk mod.setupFile))
+        pure (args ++ #["--setup", mod.setupFile.toString])
+    )
+  else
+    elabCommand <| ← `(
+      def $addSetupArg:ident (_mod : Lake.Module) (args : Array String) : Lake.JobM (Array String) :=
+        pure args
+    )
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
   let env ← getEnv
   let oldMixArray := `Lake.BuildJob.mixArray
   let useOld := (env.contains oldMixArray) && !Linter.isDeprecated env oldMixArray
@@ -150,6 +166,8 @@ lean_exe «subverso-helper» where
   root := `Helper
   supportInterpreter := true
 
+-- Lake's job-binding API changed, so the old and modern implementations remain separate. Module
+-- setup files were introduced after that change and are handled only by the modern branch.
 meta if Compat.useOldBind then
   module_facet highlighted mod : FilePath := do
     let ws ← getWorkspace
@@ -206,10 +224,11 @@ else
         addTrace (← computeTrace oleanFile)
         addTrace (← computeTrace (TextFilePath.mk nsFile))
 
+        let args ← Compat.addSetupArg mod #["--suppress-namespaces", nsFile.toString]
         buildFileUnlessUpToDate' (text := true) hlFile <|
           proc {
             cmd := exeFile.toString
-            args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
+            args := args ++ #[mod.name.toString, hlFile.toString]
             env := ← getAugmentedEnv
           }
         pure hlFile

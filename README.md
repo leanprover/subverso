@@ -101,7 +101,9 @@ objects have the following keys:
    using the `FromJson Highlighted` instance from SubVerso.
    
 The `highlighted` facet for a package, library, or module builds
-highlighted sources.
+highlighted sources. When Lake provides a module setup file, the facet
+passes it to `subverso-extract-mod` so extraction sees the same imports,
+options, plugins, and dynamic libraries as Lake's own module build.
 
 ### Helper Process
 
