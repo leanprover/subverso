@@ -26,6 +26,21 @@ open SubVerso.Compat (HashMap HashSet)
 namespace SubVerso.Highlighting
 
 /--
+An info node together with its context and the final environment of the command that produced it.
+
+In some cases, elaborators record terminfo for definitions of names that aren't in the environment at the time
+they add them. For these cases, the final command environment is the lookup site.
+-/
+structure InfoNode where
+  /-- The innermost context that surrounds the node. -/
+  ci : ContextInfo
+  info : Info
+  /--
+  The environment after the command that produced the node finished elaborating.
+  -/
+  commandEnv : Environment
+
+/--
 A table that maps source regions to info.
 
 SubVerso has very different access patterns from the language server, and was needing to re-traverse
@@ -43,32 +58,44 @@ structure InfoTable where
 
   This means that range lookups see nodes in the same order as a filtering traversal would.
   -/
-  nodesByRange : Compat.HashMap Compat.Syntax.Range (Array (ContextInfo × Info)) := {}
+  nodesByRange : Compat.HashMap Compat.Syntax.Range (Array InfoNode) := {}
 
 instance : Inhabited InfoTable := ⟨⟨{}⟩⟩
 
+/--
+The environment of the outermost context of an info tree. For a command's info tree, this is the
+environment after the command finished elaborating.
+-/
+def infoTreeCommandEnv? (t : InfoTree) : Option Environment :=
+  -- Throwing from `preNode` at the root ends the visit before any child is entered.
+  match t.visitM (m := Except ContextInfo) (preNode := fun ci _ _ => throw ci) (postNode := fun _ _ _ _ => pure ()) with
+  | .error ci => some ci.env
+  | .ok _ => none
+
 /-- Indexes every info node of the tree by its syntax's canonical range. -/
 partial def InfoTable.indexNodes (t : InfoTree) (table : InfoTable) : InfoTable :=
+  let commandEnv? := infoTreeCommandEnv? t
   let nodes := t.collectNodesBottomUp fun ci info _ soFar =>
     match info.stx.getRange? (canonicalOnly := true) with
     | some rng => (rng, ci, info) :: soFar
     | none => soFar
   nodes.foldl (init := table) fun tbl (rng, ci, info) =>
-    let bucket := ((Compat.HashMap.get? tbl.nodesByRange rng).getD #[]).push (ci, info)
+    let node : InfoNode := { ci, info, commandEnv := commandEnv?.getD ci.env }
+    let bucket := ((Compat.HashMap.get? tbl.nodesByRange rng).getD #[]).push node
     { tbl with nodesByRange := tbl.nodesByRange.insert rng bucket }
 
 def InfoTable.ofInfoTrees (ts : Array InfoTree) (init : InfoTable := {}) : InfoTable :=
   ts.foldl (init := init) (fun tbl t => InfoTable.indexNodes t tbl)
 
 /-- All info nodes whose syntax has the given canonical range, in traversal order. -/
-def InfoTable.nodesFor (table : InfoTable) (rng : Compat.Syntax.Range) : Array (ContextInfo × Info) :=
+def InfoTable.nodesFor (table : InfoTable) (rng : Compat.Syntax.Range) : Array InfoNode :=
   (Compat.HashMap.get? table.nodesByRange rng).getD #[]
 
 def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (ContextInfo × TacticInfo)) := do
   let rng ← stx.getRange? (canonicalOnly := true)
-  pure <| table.nodesFor rng |>.filterMap fun (ci, i) =>
-    match i with
-    | .ofTacticInfo ti => if ti.stx == stx then some (ci, ti) else none
+  pure <| table.nodesFor rng |>.filterMap fun node =>
+    match node.info with
+    | .ofTacticInfo ti => if ti.stx == stx then some (node.ci, ti) else none
     | _ => none
 
 /-- A hash of the pretty-printing context of `ci`: its options, namespace, and open declarations. -/
@@ -329,10 +356,19 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
     return range == declRanges.range || range == declRanges.selectionRange
   return false
 
+/--
+In some cases, constants are recorded in info before they are added to the info node's environment.
+When this happens, they can be found in the command's resulting environment. This function returns
+`nodeEnv` if it contains `name`, or `commandEnv` otherwise.
+-/
+def constEnv (nodeEnv commandEnv : Environment) (name : Name) : Environment :=
+  if nodeEnv.contains name then nodeEnv else commandEnv
+
 def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
     (ci : ContextInfo) (fieldInfo : FieldInfo) :
     m Token.Kind := do
   let runMeta {α} (act : MetaM α) : m α := ci.runMetaM fieldInfo.lctx act
+  let env := constEnv ci.env (← getEnv) fieldInfo.projName
   let ty ← runMeta
     try
       let valTy ← instantiateMVars (← Meta.inferType fieldInfo.val)
@@ -340,10 +376,10 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
     catch
       | _ =>
         try
-          PrettyPrinter.ppSignature fieldInfo.projName <&> (·.fmt)
+          withEnv env <| PrettyPrinter.ppSignature fieldInfo.projName <&> (·.fmt)
         catch _ => pure <| .nil
   let tyStr := toString ty
-  let docs ← findDocString? (← getEnv) fieldInfo.projName
+  let docs ← findDocString? env fieldInfo.projName
   return .const fieldInfo.projName tyStr docs false none
 
 def infoExists [Monad m] [MonadLiftT IO m] (table : InfoTable) (trees : Array InfoTree)
@@ -541,7 +577,7 @@ where
   lt_succ_of_lt {n k : Nat} : n < k → n < k + 1 := by
     intro lt
     induction lt <;> apply Compat.Nat.lt_step
-    . constructor
+    . exact Nat.le.refl
     . assumption
 
   cmp (m1 m2 : Message) :=
@@ -691,7 +727,8 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
   -- qualifiers. Returns (sigString, sigOrType?) — the second projection is a pretty-printed
   -- signature for later resolution by identKind.
-  let ppSig (x : Name) (env := ci.env) :  m (String × Option (FormatWithInfos × ContextInfo)) := do
+  let ppSig (x : Name) :  m (String × Option (FormatWithInfos × ContextInfo)) := do
+    let env := constEnv ci.env (← getEnv) x
     let key : SigKey := ⟨x, ppContextHash ci⟩
     let (sigStr, sig, ci) ←
       if let some sigDoc := Compat.HashMap.get? (← (cache.get : IO _)).signatures key then
@@ -766,17 +803,14 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
                 return some (.const (.mkSimple (toString e)) tyStr none false none, none)
             return some (.var x tyStr none, prettySig))
           (onConst := fun x => do
-            -- This is a bit of a hack. The environment in the ContextInfo may not have some
-            -- helper constants from where blocks yet, so we retry in the final environment if the
-            -- first one fails.
-            let (sig, prettySig) ← ppSig x <|> ppSig (env := (← getEnv)) x
-            let docs ← findDocString? (← getEnv) x
+            let (sig, prettySig) ← ppSig x
+            let docs ← findDocString? (constEnv ci.env (← getEnv) x) x
             return some (.const x sig docs false none, prettySig))
       else
         let (tyStr, prettySig) ← ppVarType
         return some (.var id tyStr none, prettySig)
     | Expr.const name _ =>
-      let docs ← findDocString? (← getEnv) name
+      let docs ← findDocString? (constEnv ci.env (← getEnv) name) name
       let (sig, prettySig) ← ppSig name
       return some (.const name sig docs false none, prettySig)
     | Expr.sort _ =>
@@ -799,18 +833,18 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
 
 def termInfoKind
     [Monad m] [MonadReaderOf Context m]
-    [MonadFileMap m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+    [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
   let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
     if let some (.const name sig docs _isDef pp?, prettySig) := k then
-      let isDef ← isDefinition name termInfo.stx
+      let isDef ← withEnv (constEnv ci.env (← getEnv) name) <| isDefinition name termInfo.stx
       return some (.const name sig docs isDef pp?, prettySig)
   return k
 
 def infoKind [Monad m] [MonadReaderOf Context m]
-    [MonadFileMap m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+    [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
   match info with
@@ -832,17 +866,20 @@ All info nodes whose canonical span matches `stx`, via the pre-built range index
 canonical range, in the same order that filtering traversals of `trees` would produce.
 -/
 def infoNodesFor (trees : Array InfoTree) (stx : Syntax) :
-    HighlightM (Array (ContextInfo × Info)) := do
+    HighlightM (Array InfoNode) := do
   match stx.getRange? (canonicalOnly := true) with
   | some rng => return (← readThe InfoTable).nodesFor rng
-  | none => return trees.flatMap fun t => (infoForSyntax t stx).toArray
+  | none => return trees.flatMap fun t =>
+    let commandEnv? := infoTreeCommandEnv? t
+    (infoForSyntax t stx).toArray.map fun (ci, info) =>
+      { ci, info, commandEnv := commandEnv?.getD ci.env }
 
 def anonCtorKind
     (trees : Array InfoTree) (stx : Syntax) :
     HighlightM (Option Token.Kind) := do
   let mut kind : Token.Kind := .unknown
-  for (ci, info) in (← infoNodesFor trees stx) do
-    if let some (seen, _) ← infoKind ci info then
+  for node in (← infoNodesFor trees stx) do
+    if let some (seen, _) ← withEnv node.commandEnv (infoKind node.ci node.info) then
       if seen.priority > kind.priority then kind := seen
     else continue
   return match kind with
@@ -851,7 +888,7 @@ def anonCtorKind
   | _ => none
 
 partial def renderTagged [Monad m] [MonadReaderOf Context m]
-    [MonadFileMap m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+    [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (outer : Option Token.Kind) (doc : CodeWithInfos) :
     m Highlighted := do
   match doc with
@@ -1427,8 +1464,9 @@ def identKind
   let mut kind : Token.Kind := .unknown
   -- Formatted signature or type from the winning exprKind call, to be resolved after the loop.
   let mut kindSig : Option (FormatWithInfos × ContextInfo) := none
-  for (ci, info) in (← infoNodesFor trees stx) do
-    if let some (seen, prettySig) ← infoKind ci info (allowUnknownTyped := allowUnknownTyped) then
+  for { ci, commandEnv, info } in (← infoNodesFor trees stx) do
+    if let some (seen, prettySig) ←
+        withEnv commandEnv (infoKind ci info (allowUnknownTyped := allowUnknownTyped)) then
       if seen.priority > kind.priority then
         kind := seen
         kindSig := prettySig
@@ -1447,10 +1485,11 @@ than classifying it. A numeral should never be treated as, say, the `OfNat.ofNat
 -/
 def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
     HighlightM (Option String × Option String) := do
-  for (ci, info) in (← infoNodesFor trees stx) do
+  for { ci, info, commandEnv } in (← infoNodesFor trees stx) do
     -- `exprKind` (with `allowUnknownTyped`) reports a non-`const`/`var`/`sort`/`str` expression —
     -- which a numeral's `OfNat.ofNat …`/literal application is — as `.withType <type>`.
-    if let some (.withType ty, prettySig) ← infoKind ci info (allowUnknownTyped := true) then
+    if let some (.withType ty, prettySig) ←
+        withEnv commandEnv (infoKind ci info (allowUnknownTyped := true)) then
       return (some ty, ← resolveFormatWithInfos prettySig)
   return (none, none)
 
