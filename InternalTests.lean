@@ -636,6 +636,20 @@ elab "#assertCharValue" inp:str expected:str : command => do
     throwError m!"char tokens decoded to {repr chars.toList}, expected to contain {repr expected.getString}"
 
 open Lean Elab Command in
+/-- Checks that every name in `names` is among the names that highlighting `input` marks as defined. -/
+def assertDefines (input : String) (names : List Name) : CommandElabM Unit := do
+  let hl ← highlightWithPrefixedMessages input
+  let defined := hl.definedNames
+  for name in names do
+    unless defined.contains name do
+      throwError m!"{name} is not marked as defined. Defined names: {defined.toList}"
+
+open Lean Elab Command in
+@[inherit_doc assertDefines]
+elab "#assertDefines" inp:str names:str* : command => do
+  assertDefines inp.getString (names.toList.map (·.getString.toName))
+
+open Lean Elab Command in
 /--
 Like `#assertKind`, but highlights through the info-recording (Compat-frontend, includes-unparsed)
 path so that semantic info — e.g. an applied constructor in `⟨1, 2⟩` — is available, mirroring real
@@ -1149,6 +1163,41 @@ open Lean Elab Command in
 -- Checks that we correctly register projection function info for fields/methods
 #assertKindRich "structure S where\n  x : Nat" "x" "const"
 #assertKindRich "class C (a : Type) where\n  f : a → a" "f" "const"
+
+-- Declaration ranges are registered as a command ends, so definition sites must be recognized in
+-- the command's final environment.
+#assertDefines "def foo := 1" "foo"
+#assertDefines "theorem bar : True := trivial" "bar"
+#assertDefines "structure S where\n  x : Nat" "S"
+#assertDefines "inductive T where\n  | a\n  | b" "T" "T.a" "T.b"
+
+-- Local definitions from `let rec` and `where` blocks are marked as definition sites from Lean 4.7
+-- on. Their enclosing top-level definitions are marked on every toolchain.
+def localDefinitionSites : Bool :=
+  Lean.version.major > 4 || (Lean.version.major == 4 && Lean.version.minor >= 7)
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let locals (names : List Name) : List Name := if localDefinitionSites then names else []
+  assertDefines "def f := helper\nwhere helper := 1" ([`f] ++ locals [`f.helper])
+  assertDefines (String.intercalate "\n" [
+      "def one (n : Nat) : Nat :=",
+      "  let rec loop : Nat → Nat",
+      "    | 0 => 0",
+      "    | k + 1 => loop k",
+      "  loop n",
+      "def two (n : Nat) : Nat := helper n",
+      "where helper (k : Nat) : Nat := k + 1",
+      "def three (n : Nat) : Nat :=",
+      "  let rec up (k : Nat) : Nat := k + 1",
+      "  let rec down (k : Nat) : Nat := k - 1",
+      "  up (down n)",
+      "def four (n : Nat) : Nat := aux n + other n",
+      "where",
+      "  aux (k : Nat) : Nat := k",
+      "  other (k : Nat) : Nat := k * 2"])
+    ([`one, `two, `three, `four] ++
+      locals [`one.loop, `two.helper, `three.up, `three.down, `four.aux, `four.other])
 
 -- `:=` stays a `.delim` across contexts even on the info-recording path, where `identKind` could
 -- otherwise match its span: a structure-instance field, an `instance … where` field, and a tactic

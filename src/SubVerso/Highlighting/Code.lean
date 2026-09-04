@@ -348,7 +348,7 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
   if !((← getEnv).isConstructor name || (← getEnv).isProjectionFn name || stx.getKind == ``Parser.Command.declId || stx.getKind == identKind) then return false
   if let .none := stx.getHeadInfo then return false
   let ranges :=
-    if let some r := (← findDeclarationRangesCore? name) then
+    if let some r := (← Compat.findDeclarationRangesCore? name) then
       some r
     else (← builtinDeclRanges.get (m := IO)).find? name
   if let some declRanges := ranges then
@@ -357,12 +357,16 @@ def isDefinition [Monad m] [MonadEnv m] [MonadLiftT IO m] [MonadFileMap m] (name
   return false
 
 /--
-In some cases, constants are recorded in info before they are added to the info node's environment.
-When this happens, they can be found in the command's resulting environment. This function returns
-`nodeEnv` if it contains `name`, or `commandEnv` otherwise.
+The environment in which to look up the constant `name` for an occurrence recorded in an info node
+whose own environment is `nodeEnv`, within a command whose final environment is `commandEnv`.
+
+The command's final environment is preferred. Some constants are recorded in info before they are
+added to the environment, and declaration ranges and docstrings are registered as the command ends,
+so only the final environment has all of them. Constants that exist only while their command is
+elaborated, such as the helpers of an `example`, are found in the node's environment.
 -/
 def constEnv (nodeEnv commandEnv : Environment) (name : Name) : Environment :=
-  if nodeEnv.contains name then nodeEnv else commandEnv
+  if commandEnv.contains name then commandEnv else nodeEnv
 
 def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
     (ci : ContextInfo) (fieldInfo : FieldInfo) :
