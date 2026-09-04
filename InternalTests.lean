@@ -1146,6 +1146,10 @@ open Lean Elab Command in
 #assertKindRich "notation \"ℕ\" => Nat\ndef m : ℕ := 0" "ℕ" "const"
 #assertKindRich "def f (a b : Nat) := a + b" "+" "operator"
 
+-- Checks that we correctly register projection function info for fields/methods
+#assertKindRich "structure S where\n  x : Nat" "x" "const"
+#assertKindRich "class C (a : Type) where\n  f : a → a" "f" "const"
+
 -- `:=` stays a `.delim` across contexts even on the info-recording path, where `identKind` could
 -- otherwise match its span: a structure-instance field, an `instance … where` field, and a tactic
 -- `have` all keep it a delim (it is peeled off before `identKind` is consulted).
