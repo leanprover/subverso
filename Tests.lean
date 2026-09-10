@@ -43,6 +43,16 @@ def Highlighting.Highlighted.countProofStates (hl : Highlighting.Highlighted) : 
     hl'.countProofStates + 1
   | _ => 0
 
+partial def Highlighting.Highlighted.hasInfoMessage (expected : String) :
+    Highlighting.Highlighted → Bool
+  | .span info hl =>
+    info.any (fun (kind, msg) => kind == .info && Compat.String.trim msg.toString == expected) ||
+      hl.hasInfoMessage expected
+  | .point kind msg => kind == .info && Compat.String.trim msg.toString == expected
+  | .seq hls => hls.any (·.hasInfoMessage expected)
+  | .tactics _ _ _ hl => hl.hasInfoMessage expected
+  | _ => false
+
 namespace Examples
 
 def Example.countProofStates (e : Example) : Nat :=
@@ -116,6 +126,38 @@ def lakeVars :=
     "LEAN_SYSROOT", "LEAN_AR", "LEAN_PATH", "LEAN_SRC_PATH",
     "LEAN_GITHASH",
     "ELAN_TOOLCHAIN", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"]
+
+def runLake
+    (projectDir : String) (args : Array String)
+    (overrideToolchain : Option String := none) :
+    IO Unit := do
+
+  let projectDir : System.FilePath := projectDir
+  let toolchain ←
+    match overrideToolchain with
+    | none =>
+      let toolchainfile := projectDir / "lean-toolchain"
+      if !(← toolchainfile.pathExists) then
+        throw <| .userError s!"File {toolchainfile} doesn't exist, couldn't load project"
+      pure <| Compat.String.trim (← IO.FS.readFile toolchainfile)
+    | some override => pure override
+
+  let cmd := "elan"
+  let args := #["run", "--install", toolchain, "lake"] ++ args
+  let res ← IO.Process.output {
+    cmd, args, cwd := projectDir
+    env := lakeVars.map (·, none)
+  }
+  if res.exitCode != 0 then
+    IO.eprintln <|
+      "Lake process failed." ++
+      "\nCWD: " ++ projectDir.toString ++
+      "\nCommand: " ++ cmd ++
+      "\nArgs: " ++ repr args ++
+      "\nExit code: " ++ toString res.exitCode ++
+      "\nstdout: " ++ res.stdout ++
+      "\nstderr: " ++ res.stderr
+    throw <| .userError "Lake process failed"
 
 -- Loads a module. To work well, it really should lock the toolchain file, but that's not available
 -- in all targeted versions, so it's just part of these tests. See Verso for a version to use in
@@ -312,6 +354,18 @@ Turns a toolchain string (e.g. `leanprover/lean4:v4.8.0`) into a safe single pat
 def sanitizeToolchain (toolchain : String) : String :=
   toolchain.map fun c => if c.isAlphanum || c == '.' then c else '-'
 
+-- Limit the native-library fixture to the package-aware setup format (Lean 4.27 and newer).
+-- Earlier toolchains remain outside this fixture's test scope.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  let supports :=
+    env.contains `Lean.ModuleSetup.package? &&
+    env.contains `Lean.Environment.setModulePackage
+  elabCommand <| ← `(
+    def $(mkIdent `supportsPackageAwareModuleSetup) : Bool := $(quote supports)
+  )
+
 /--
 Reads a project's pinned toolchain from its `lean-toolchain` file.
 -/
@@ -334,7 +388,10 @@ def prepareDemodulizedSource : IO System.FilePath := do
   if ← src.pathExists then IO.FS.removeDirAll src
   IO.FS.createDirAll src
   copyRecursively "." src
-    (fun f => !f.startsWith "." && !(f.startsWith "demo" || f.startsWith "small-tests") && f != "lake-manifest.json")
+    (fun f =>
+      !f.startsWith "." &&
+      !(f.startsWith "demo" || f.startsWith "small-tests" || f.startsWith "ffi-tests") &&
+      f != "lake-manifest.json")
   discard <| IO.Process.run {cmd := "python3", args := #["demodulize.py", src.toString]}
   pure src
 
@@ -352,6 +409,9 @@ def prepareProject (project : System.FilePath) (toolchain : String) (demodSrc : 
   -- artifacts or a previously-generated dependency source — those are managed below / kept warm.
   copyRecursively project buildDir
     (fun f => f != ".lake" && f != "no-mod" && f != "lake-manifest.json")
+  -- Record the explicit toolchain in the copied workspace so its cache directory, the surrounding
+  -- `elan run`, and Lake's own dependency/toolchain handling all agree.
+  IO.FS.writeFile (buildDir / "lean-toolchain") toolchain
   -- Refresh the path-dependency source in place, leaving any existing `no-mod/.lake` untouched.
   copyRecursively demodSrc (buildDir / "no-mod") (fun _ => true)
   pure buildDir
@@ -481,10 +541,26 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.eprintln "Example proof count mismatch"
     return 1
 
+  let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
+
+  if supportsPackageAwareModuleSetup then
+    IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
+    let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
+    runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
+    for testMod in ["FfiTest", "FfiSharedTest"] do
+      let output ← IO.FS.readFile (ffiDir / ".lake" / "build" / "highlighted" / s!"{testMod}.json")
+      let .ok json := Lean.Json.parse output
+        | throw <| IO.userError s!"Invalid JSON from {testMod}:highlighted"
+      let .ok mod := Module.Module.fromJson? json
+        | throw <| IO.userError s!"Invalid module from {testMod}:highlighted"
+      if mod.items.any (·.code.hasError) || !mod.items.any (·.code.hasInfoMessage "37") then
+        IO.eprintln s!"Expected {testMod}:highlighted to evaluate the foreign function to 37 without errors"
+        return 1
+  else
+    IO.println s!"Skipping Lake module setup dynlib fixture for Lean toolchain {myToolchain}"
 
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
   let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
-  let myToolchain := Compat.String.trim (← IO.FS.readFile "lean-toolchain")
   if oldest.contains (Compat.String.trim myToolchain) then
     IO.println s!"Skipping induction/cases alts tests for old Lean toolchain {Compat.String.trim myToolchain}"
   else
