@@ -116,4 +116,45 @@ protocol reminiscent of JSON-RPC, but this is an implementation
 detail - it should be used via the API in `SubVerso.Helper`. It can
 presently be used to elaborate and highlight terms in the context of a
 module.
- 
+
+### Docstring lookup (staging API)
+
+`SubVerso.DocString` provides `SubVerso.findDocString`, intended for Verso to consume before
+upstreaming to Lean. It returns `.found doc`, `.absent`, or `.unavailable moduleName`;
+`toOption` recovers the usual optional docstring.
+
+Successful lookups preserve Lean's rendering, builtin documentation, tactic aliases, and inherited
+documentation. The API accepts the same `includeBuiltin`, `options`, `currNamespace`, and `openDecls`
+arguments as Lean 4.34's `findDocString?`; arguments unsupported by older versions are ignored.
+
+On failure, lookup follows loaded `inherit_doc` references and checks the defining module's effective
+import mode, including transitive imports. `.unavailable M` means documentation might exist but its
+metadata is unavailable; a batch build can load it with `import all M`. Lookup itself loads no extra
+metadata. Local declarations can return `.unavailable` through inherited documentation.
+
+Available server metadata is currently detected using declaration ranges from the same module as
+conservative evidence. Missing ranges can cause a false `.unavailable`; an authoritative environment
+query belongs in Lean. Versions without the module system return only `.found` or `.absent`.
+
+### Highlighting diagnostics
+
+All highlighting entrypoints return the output and a diagnostic summary, separate from Lean messages:
+
+```lean
+let (hl, diagnostics) ← SubVerso.Highlighting.highlight stx messages trees
+```
+
+`diagnostics.missingDocStringModules` is a `Lean.NameSet` of modules reported as unavailable for
+retained hovers. Merge summaries with `++` when combining results. JSON encodes the set as a sorted
+array, and decoding restores uniqueness. Individual token lookup statuses and locations are not kept.
+
+The summary covers the entire result. Slicing highlighted output or selecting module items does not
+narrow it. For warnings specific to an excerpt, collect diagnostics at that excerpt's boundary and
+merge only the included pieces.
+
+A suitable warning is “Documentation metadata is unavailable for these modules. If these names are
+documented, use `import all M` to include their docstrings.” `.found` and `.absent` results produce no
+suggestions, and older Lean versions without the module system return an empty summary.
+
+Helper results, extracted modules, and saved examples include a `diagnostics` JSON field. Their
+decoders accept older payloads that omit it, defaulting to empty diagnostics.

@@ -179,7 +179,7 @@ private meta def saveExample
     (name : Ident) (hl : Highlighted)
     (original : String) (start stop : Position)
     (messages : List (MessageSeverity × String))
-    (kind : Option Name) : m Unit := do
+    (kind : Option Name) (diagnostics : Diagnostics) : m Unit := do
   let mod ← getMainModule
   if let some forMod := (highlighted.getState (← getEnv)).find? mod then
     if let some ex := forMod.find? name.getId then
@@ -187,7 +187,7 @@ private meta def saveExample
 
   let ex := {
     highlighted := hl, original := original, start := start, stop := stop,
-    messages := messages, kind := kind
+    messages := messages, kind := kind, diagnostics
   }
   modifyEnv fun ρ =>
     highlighted.addEntry ρ (mod, name.getId, ex)
@@ -260,11 +260,14 @@ meta def elabExample
   let trees ← getInfoTrees
   let allNewMessages := newMessages ++ linterMessages
   let suppressedNS ← getSuppressed
-  let hl ←
-    if config.embeddedOnly then
-      pure #[]
-    else
-      allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees suppressedNS)
+  let mut hls := #[]
+  let mut allDiagnostics : Diagnostics := {}
+  unless config.embeddedOnly do
+    for c in allCommands do
+      let (commandHl, commandDiagnostics) ←
+        liftTermElabM (highlight c allNewMessages.toList.toArray trees suppressedNS)
+      hls := hls.push commandHl
+      allDiagnostics := allDiagnostics ++ commandDiagnostics
   let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
   let some b := allCommands[0]!.getPos?
     | throwErrorAt allCommands[0]! "Failed to get source position"
@@ -278,10 +281,11 @@ meta def elabExample
   let text ← getFileMap
   let str := Compat.String.Pos.extract text.source b' e'
   if config.error || !config.keep then set initSt
-  saveExample name (.seq hl) str (text.toPosition b) (text.toPosition e) freshMsgs config.kind
+  saveExample name (.seq hls) str (text.toPosition b) (text.toPosition e) freshMsgs config.kind allDiagnostics
 
   for (tmName, term) in termExamples do
-    let hl ← liftTermElabM (highlight term allNewMessages.toList.toArray trees suppressedNS)
+    let (hl, diagnostics) ←
+      liftTermElabM (highlight term allNewMessages.toList.toArray trees suppressedNS)
     let .original leading startPos _ _ := term.getHeadInfo
       | throwErrorAt term "Failed to get source position"
     let .original _ _ trailing stopPos := term.getTailInfo
@@ -289,7 +293,7 @@ meta def elabExample
     let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     saveExample (mkIdentFrom term <| name.getId ++ tmName) hl str
       (text.toPosition startPos) (text.toPosition stopPos)
-      freshMsgs (config.kind.map (· ++ `inner))
+      freshMsgs (config.kind.map (· ++ `inner)) diagnostics
 
   -- If there's an unexpected error, always report output. Otherwise, follow the config.
   if (newMessages.hasErrors && !config.error) || config.output then
@@ -405,8 +409,9 @@ elab_rules : command
       | throwErrorAt x "Failed to get source position"
     let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     let suppressedNS ← getSuppressed
-    let hl ← liftTermElabM <| highlight x #[] trees suppressedNS
-    saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none
+    let (hl, diagnostics) ←
+      liftTermElabM <| highlight x #[] trees suppressedNS
+    saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none diagnostics
 
 scoped syntax "%show_term " ("(" &"kind" " := " ident ")")? ident (":" term)? " := " term : command
 elab_rules : command
@@ -424,19 +429,21 @@ elab_rules : command
       | throwErrorAt x "Failed to get source position"
     let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     let suppressedNS ← getSuppressed
-    let hl ← liftTermElabM <| highlight tm #[] trees suppressedNS
+    let (hl, diagnostics) ←
+      liftTermElabM <| highlight tm #[] trees suppressedNS
     let kind? := kind?.map (·.getId.eraseMacroScopes)
 
-    saveExample x hl str (text.toPosition startPos) (text.toPosition stopPos) [] kind?
+    saveExample x hl str (text.toPosition startPos) (text.toPosition stopPos) [] kind? diagnostics
 
     for (tmName, term) in termExamples do
-      let hl ← liftTermElabM (highlight term #[] trees suppressedNS)
+      let (hl, diagnostics) ←
+        liftTermElabM (highlight term #[] trees suppressedNS)
       let .original leading startPos _ _ := term.getHeadInfo
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo
         | throwErrorAt term "Failed to get source position"
       let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
-      saveExample (mkIdentFrom term (x.getId ++ tmName)) hl str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner))
+      saveExample (mkIdentFrom term (x.getId ++ tmName)) hl str (text.toPosition startPos) (text.toPosition stopPos) [] (kind?.map (· ++ `inner)) diagnostics
 
 scoped syntax (name := signature) "%signature" ident declId declSig : command
 elab_rules : command
@@ -444,19 +451,20 @@ elab_rules : command
     let text ← getFileMap
     let (sig, termExamples) := extractExamples sig .empty
     let sig : TSyntax `Lean.Parser.Command.declSig := ⟨sig⟩
-    let (hl, str, startPos, stopPos, trees) ← checkSignature sigName sig
+    let (hl, diagnostics, str, startPos, stopPos, trees) ← checkSignature sigName sig
     let suppressedNS ← getSuppressed
     let declName ← declNameOfId sigName
     for (tmName, term) in termExamples do
-        let hl ← liftTermElabM (highlight term #[] trees suppressedNS)
+        let (hl, diagnostics) ←
+          liftTermElabM (highlight term #[] trees suppressedNS)
         let .original leading startPos _ _ := term.getHeadInfo
           | throwErrorAt term "Failed to get source position"
         let .original _ _ trailing stopPos := term.getTailInfo
           | throwErrorAt term "Failed to get source position"
         let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
         saveExample (mkIdentFrom term (declName.getId ++ tmName)) hl str (text.toPosition startPos)
-          (text.toPosition stopPos) [] none
-    saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none
+          (text.toPosition stopPos) [] none diagnostics
+    saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none diagnostics
 
 open System in
 meta partial def loadExamples

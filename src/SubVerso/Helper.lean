@@ -42,8 +42,8 @@ deriving Repr
 Replies that the helper may return.
 -/
 inductive Result where
-  /-- Highlighted Lean code -/
-  | highlighted (code : Highlighted)
+  /-- Highlighted Lean code with a diagnostic summary for the whole result. -/
+  | highlighted (code : Highlighted) (diagnostics : Diagnostics)
 deriving Repr
 
 section
@@ -101,13 +101,15 @@ instance : FromJson Request where
 
 instance : ToJson Result where
   toJson
-    | .highlighted hl => .mkObj [("highlighted", toJson hl)]
+    | .highlighted hl diagnostics =>
+      .mkObj [("highlighted", toJson hl), ("diagnostics", toJson diagnostics)]
 
 instance : FromJson Result where
   fromJson? v := do
     let hl := v.getObjValD "highlighted"
     if hl != .null then
-      return (← .highlighted <$> fromJson? hl)
+      let diagnostics ← Diagnostics.fromJsonField? v
+      return .highlighted (← fromJson? hl) diagnostics
 
     throw "Expected key 'highlighted'"
 

@@ -12,6 +12,8 @@ import Lean.Elab.Term
 
 public import SubVerso.Compat
 public import SubVerso.Highlighting.Highlighted
+public import SubVerso.Highlighting.Diagnostics
+public import SubVerso.DocString
 import SubVerso.Highlighting.Messages
 public section
 
@@ -368,9 +370,24 @@ elaborated, such as the helpers of an `example`, are found in the node's environ
 def constEnv (nodeEnv commandEnv : Environment) (name : Name) : Environment :=
   if commandEnv.contains name then commandEnv else nodeEnv
 
+/--
+A token kind, optional pretty-printer output, and an optional unavailable docstring module.
+Lookup happens during classification; only retained hovers contribute to the diagnostic summary.
+This transient data is not stored in `Highlighted` or exported to clients.
+-/
+abbrev KindWithPPSig := Token.Kind × Option (FormatWithInfos × ContextInfo) × Option Name
+
+private def tokenWithDocString [Monad m] [MonadLiftT IO m]
+    (env : Environment) (declName : Name) (kind : Option String → Token.Kind)
+    (prettySig? : Option (FormatWithInfos × ContextInfo) := none) : m KindWithPPSig := do
+  let result ← SubVerso.findDocString env declName
+  return (kind result.toOption, prettySig?, match result with
+    | .unavailable mod => some mod
+    | _ => none)
+
 def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
     (ci : ContextInfo) (fieldInfo : FieldInfo) :
-    m Token.Kind := do
+    m KindWithPPSig := do
   let runMeta {α} (act : MetaM α) : m α := ci.runMetaM fieldInfo.lctx act
   let env := constEnv ci.env (← getEnv) fieldInfo.projName
   let ty ← runMeta
@@ -383,8 +400,7 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
           withEnv env <| PrettyPrinter.ppSignature fieldInfo.projName <&> (·.fmt)
         catch _ => pure <| .nil
   let tyStr := toString ty
-  let docs ← findDocString? env fieldInfo.projName
-  return .const fieldInfo.projName tyStr docs false none
+  tokenWithDocString env fieldInfo.projName (.const fieldInfo.projName tyStr · false none)
 
 def infoExists [Monad m] [MonadLiftT IO m] (table : InfoTable) (trees : Array InfoTree)
     (stx : Syntax) : m Bool := do
@@ -631,9 +647,11 @@ structure HighlightState where
   ppTerms : Compat.HashMap Expr CodeWithInfos := {}
   /-- Cached format data for terms (when `collectFormat` is true). -/
   fmtTerms : Compat.HashMap Expr String := {}
+  /-- Modules whose documentation metadata was unavailable during highlighting. -/
+  missingDocStringModules : NameSet := {}
 
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}, {}, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}, {}, {}, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -665,6 +683,18 @@ where
       pure <| !(msg.pos.before s) && !(e.before msg.pos)
 
 abbrev HighlightM (α : Type) : Type := ReaderT Context (ReaderT InfoTable (StateRefT HighlightState TermElabM)) α
+
+private def HighlightState.diagnostics (st : HighlightState) : Diagnostics :=
+  { missingDocStringModules := st.missingDocStringModules }
+
+/-- Commit the diagnostic only when retaining this candidate's hover. -/
+private def retainKind [Monad m] [MonadStateOf HighlightState m]
+    (candidate : KindWithPPSig) : m Token.Kind := do
+  let (kind, _, missingModule?) := candidate
+  if let some mod := missingModule? then
+    modifyThe HighlightState fun st =>
+      { st with missingDocStringModules := st.missingDocStringModules.insert mod }
+  return kind
 
 private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
   | [] => none
@@ -712,13 +742,10 @@ def needsOpening (pos : Lean.Position) (message : MessageBundle) : Bool :=
 private def leanPosToUtf8Pos (text : FileMap) : Position → Compat.String.Pos :=
   text.lspPosToUtf8Pos ∘ text.leanPosToLspPos
 
-/-- A token kind paired with optional pretty-printer output. -/
-abbrev KindWithPPSig := Token.Kind × Option (FormatWithInfos × ContextInfo)
-
 /--
 Finds the appropriate token kind for a token whose meaning is the expression `expr`. When
 `collectFormat` is true, also returns the `FormatWithInfos` to be saved as a reflowable type or
-signature.
+signature. Documentation diagnostics are returned with the candidate, without changing the summary.
 -/
 def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
@@ -804,32 +831,31 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
               if localDecl.isAuxDecl then
                 let e ← runMeta <| Meta.ppExpr expr
                 -- FIXME the mkSimple is a bit of a kludge
-                return some (.const (.mkSimple (toString e)) tyStr none false none, none)
-            return some (.var x tyStr none, prettySig))
+                return some (.const (.mkSimple (toString e)) tyStr none false none, none, none)
+            return some (.var x tyStr none, prettySig, none))
           (onConst := fun x => do
             let (sig, prettySig) ← ppSig x
-            let docs ← findDocString? (constEnv ci.env (← getEnv) x) x
-            return some (.const x sig docs false none, prettySig))
+            return some (← tokenWithDocString (constEnv ci.env (← getEnv) x) x
+              (.const x sig · false none) prettySig))
       else
         let (tyStr, prettySig) ← ppVarType
-        return some (.var id tyStr none, prettySig)
+        return some (.var id tyStr none, prettySig, none)
     | Expr.const name _ =>
-      let docs ← findDocString? (constEnv ci.env (← getEnv) name) name
       let (sig, prettySig) ← ppSig name
-      return some (.const name sig docs false none, prettySig)
+      return some (← tokenWithDocString (constEnv ci.env (← getEnv) name) name
+        (.const name sig · false none) prettySig)
     | Expr.sort _ =>
       if let some stx := stx? then
         let k := stx.getKind
-        let docs? ← findDocString? (← getEnv) k
-        return some (.sort docs?, none)
-      else return some (.sort none, none)
-    | Expr.lit (.strVal s) => return some (.str (some s) false, none)
+        return some (← tokenWithDocString (← getEnv) k .sort)
+      else return some (.sort none, none, none)
+    | Expr.lit (.strVal s) => return some (.str (some s) false, none, none)
     | Expr.mdata _ e =>
       findKind e
     | _other =>
       if allowUnknownTyped then
         let (tyStr, prettySig) ← ppTermType
-        if tyStr.isEmpty then return none else return some (.withType tyStr, prettySig)
+        if tyStr.isEmpty then return none else return some (.withType tyStr, prettySig, none)
       else
         return none
 
@@ -842,9 +868,9 @@ def termInfoKind
     m (Option KindWithPPSig) := do
   let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
   if (← read).definitionsPossible then
-    if let some (.const name sig docs _isDef pp?, prettySig) := k then
+    if let some (.const name sig docs _isDef pp?, prettySig, missingModule?) := k then
       let isDef ← withEnv (constEnv ci.env (← getEnv) name) <| isDefinition name termInfo.stx
-      return some (.const name sig docs isDef pp?, prettySig)
+      return some (.const name sig docs isDef pp?, prettySig, missingModule?)
   return k
 
 def infoKind [Monad m] [MonadReaderOf Context m]
@@ -853,10 +879,10 @@ def infoKind [Monad m] [MonadReaderOf Context m]
     m (Option KindWithPPSig) := do
   match info with
     | .ofTermInfo termInfo => termInfoKind ci termInfo (allowUnknownTyped := allowUnknownTyped)
-    | .ofFieldInfo fieldInfo => return some (← fieldInfoKind ci fieldInfo, none)
+    | .ofFieldInfo fieldInfo => return some (← fieldInfoKind ci fieldInfo)
     | .ofOptionInfo oi =>
       let doc := (← getOptionDecls).find? oi.optionName |>.map (·.descr)
-      pure <| some (.option oi.optionName oi.declName doc, none)
+      pure <| some (.option oi.optionName oi.declName doc, none, none)
     | .ofCompletionInfo _ => pure none
     | .ofTacticInfo _ => pure none
     | .ofCommandInfo _ => pure none
@@ -878,22 +904,29 @@ def infoNodesFor (trees : Array InfoTree) (stx : Syntax) :
     (infoForSyntax t stx).toArray.map fun (ci, info) =>
       { ci, info, commandEnv := commandEnv?.getD ci.env }
 
+/-- Select a meaning without committing diagnostics for discarded candidates. -/
+private def identCandidate (trees : Array InfoTree) (stx : Syntax)
+    (allowUnknownTyped := false) : HighlightM KindWithPPSig := do
+  let mut candidate : KindWithPPSig := (.unknown, none, none)
+  for node in (← infoNodesFor trees stx) do
+    if let some seen ← withEnv node.commandEnv
+        (infoKind node.ci node.info (allowUnknownTyped := allowUnknownTyped)) then
+      if seen.1.priority > candidate.1.priority then candidate := seen
+  return candidate
+
 def anonCtorKind
     (trees : Array InfoTree) (stx : Syntax) :
     HighlightM (Option Token.Kind) := do
-  let mut kind : Token.Kind := .unknown
-  for node in (← infoNodesFor trees stx) do
-    if let some (seen, _) ← withEnv node.commandEnv (infoKind node.ci node.info) then
-      if seen.priority > kind.priority then kind := seen
-    else continue
-  return match kind with
-  | .const n sig doc? _ ppSig? => some <| .anonCtor n sig doc? ppSig?
-  | .anonCtor .. => some kind
-  | _ => none
+  let candidate@(kind, prettySig, missingModule?) ← identCandidate trees stx
+  match kind with
+  | .const n sig doc? _ ppSig? =>
+    return some (← retainKind (.anonCtor n sig doc? ppSig?, prettySig, missingModule?))
+  | .anonCtor .. => return some (← retainKind candidate)
+  | _ => return none
 
-partial def renderTagged [Monad m] [MonadReaderOf Context m]
+partial def renderTagged [Monad m] [MonadReaderOf Context m] [MonadStateOf HighlightState m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
-    (outer : Option Token.Kind) (doc : CodeWithInfos) :
+    (outer : Option KindWithPPSig) (doc : CodeWithInfos) :
     m Highlighted := do
   match doc with
   | .text txt => do
@@ -921,7 +954,7 @@ partial def renderTagged [Monad m] [MonadReaderOf Context m]
       -- pretty printer output.
       let tok := Compat.String.takeWhile todo (!·.isWhitespace)
       unless tok.isEmpty do
-        toks := toks ++ .token ⟨outer.getD .unknown, tok⟩
+        toks := toks ++ .token ⟨← retainKind (outer.getD (.unknown, none, none)), tok⟩
         todo := Compat.String.drop todo tok.length
 
     pure toks
@@ -930,10 +963,12 @@ partial def renderTagged [Monad m] [MonadReaderOf Context m]
     if let .text tok := doc' then
       let wsPre := Compat.String.takeWhile tok (·.isWhitespace)
       let wsPost := Compat.String.takeRightWhile tok (·.isWhitespace)
-      let k := ((← infoKind ctx info).map (·.1)).getD .unknown
-      pure <| .seq #[.text wsPre, .token ⟨k, Compat.String.trim tok⟩, .text wsPost]
+      let candidate := (← infoKind ctx info).getD (.unknown, none, none)
+      let tok := Compat.String.trim tok
+      let k ← if tok.isEmpty then pure candidate.1 else retainKind candidate
+      pure <| .seq #[.text wsPre, .token ⟨k, tok⟩, .text wsPost]
     else
-      let k? := (← infoKind ctx info).map (·.1)
+      let k? ← infoKind ctx info
       renderTagged k? doc'
   | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
 where
@@ -1428,7 +1463,8 @@ private partial def cleanFormatTags
   match f with
   | .tag n (.text s) =>
     if let some info := Compat.InfoPerPos.get? infos n then
-      if let some (kind, _) ← infoKind ci info then
+      if let some (kind, _, _) ← infoKind ci info then
+        -- Format annotations retain styling and binding identity, not a documentation hover.
         modify (·.push (n, Token.Kind.toAnnotation kind))
     return liftTagWhitespace n s
   | .tag _ sub =>
@@ -1461,26 +1497,20 @@ private def resolveFormatWithInfos (prettySig : Option (FormatWithInfos × Conte
     return some (formatDataToJson fmt' annots)
   catch _ => return none
 
+/-- Retain the selected hover and resolve its optional signature formatting. -/
+private def resolveKind (candidate : KindWithPPSig) : HighlightM Token.Kind := do
+  match ← retainKind candidate with
+  | .const name sig docs isDef none =>
+    return .const name sig docs isDef (← resolveFormatWithInfos candidate.2.1)
+  | .var id tyStr none =>
+    return .var id tyStr (← resolveFormatWithInfos candidate.2.1)
+  | kind => pure kind
+
 def identKind
     (trees : Array InfoTree) (stx : TSyntax `ident)
     (allowUnknownTyped : Bool := false) :
     HighlightM Token.Kind := do
-  let mut kind : Token.Kind := .unknown
-  -- Formatted signature or type from the winning exprKind call, to be resolved after the loop.
-  let mut kindSig : Option (FormatWithInfos × ContextInfo) := none
-  for { ci, commandEnv, info } in (← infoNodesFor trees stx) do
-    if let some (seen, prettySig) ←
-        withEnv commandEnv (infoKind ci info (allowUnknownTyped := allowUnknownTyped)) then
-      if seen.priority > kind.priority then
-        kind := seen
-        kindSig := prettySig
-    else continue
-  match kind with
-  | .const name sig docs isDef none =>
-    return .const name sig docs isDef (← resolveFormatWithInfos kindSig)
-  | .var id tyStr none =>
-    return .var id tyStr (← resolveFormatWithInfos kindSig)
-  | _ => pure kind
+  resolveKind (← identCandidate trees stx (allowUnknownTyped := allowUnknownTyped))
 
 /--
 The inferred type of a literal (e.g. a numeral), as a pretty-printed string and optional reflowable
@@ -1492,7 +1522,7 @@ def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
   for { ci, info, commandEnv } in (← infoNodesFor trees stx) do
     -- `exprKind` (with `allowUnknownTyped`) reports a non-`const`/`var`/`sort`/`str` expression —
     -- which a numeral's `OfNat.ofNat …`/literal application is — as `.withType <type>`.
-    if let some (.withType ty, prettySig) ←
+    if let some (.withType ty, prettySig, _) ←
         withEnv commandEnv (infoKind ci info (allowUnknownTyped := true)) then
       return (some ty, ← resolveFormatWithInfos prettySig)
   return (none, none)
@@ -1544,7 +1574,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       match decl with
       | .cdecl _index fvar name type _ _
       | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
-        let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
+        let nk ← (← exprKind ci lctx none (.fvar fvar)).mapM retainKind
         let type ← runMeta <| instantiateMVars type
         let tyStr ← renderOrGet type fun e => do
           renderTagged none (← runMeta (ppCodeWithInfos e))
@@ -1553,7 +1583,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         else pure none
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩
       | .ldecl _index fvar name type val _ _ =>
-        let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
+        let nk ← (← exprKind ci lctx none (.fvar fvar)).mapM retainKind
         let type ← runMeta <| instantiateMVars type
         let val ← runMeta <| instantiateMVars val
         let tyDoc ← renderOrGetCodeWithInfos type (runMeta <| ppCodeWithInfos ·)
@@ -2074,23 +2104,25 @@ partial def highlight'
           emitToken stx i ⟨k, x.toString⟩
     | stx@(.atom i x) =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Keyword while looking at {lookingAt}") do
-      let docs ← match lookingAt with
-        | none => pure none
-        | some (n, _) => findDocString? (← getEnv) n
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
+      let syntaxKind (kind : Option String → Token.Kind) : HighlightM Token.Kind := do
+        let some (n, _) := lookingAt | return kind none
+        let candidate ← tokenWithDocString (← getEnv) n kind
+        if candidate.1 matches .unknown then return .unknown
+        retainKind candidate
       -- A core delimiter (e.g. `:=` or `=>`) is always a `.delim`, regardless of any elaboration
       -- info that happens to match its span.
       if isSymbolicKeyword x then
-        emitToken stx i ⟨.delim name occ docs, x⟩
+        emitToken stx i ⟨← syntaxKind (.delim name occ ·), x⟩
       else
-      let k ← identKind trees ⟨stx⟩
-      -- A wildcard / hole `_` is indicated separately from a variable to allow separate styling.
+      let candidate ← identCandidate trees stx
+      -- A wildcard retains its type, but has no documentation hover.
       if x == "_" then
-        let (ty, tyFmt) := match k with
-          | .var _ ty tyFmt => (ty, tyFmt)
-          | .withType ty => (ty, none)
-          | _ => ("", none)
+        let (ty, tyFmt) ← match candidate.1 with
+          | .var _ ty _ => pure (ty, ← resolveFormatWithInfos candidate.2.1)
+          | .withType ty => pure (ty, none)
+          | _ => pure ("", none)
         emitToken stx i ⟨.wildcard ty tyFmt, x⟩
       else
       -- Whether the atom is keyword-shaped: ASCII-alphabetic, or `#` followed by a letter.
@@ -2102,12 +2134,11 @@ partial def highlight'
           | _ => false
         | some c => c.isAlpha
         | _ => false
-      match k with
-      | .sort docs? =>
-        withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Sort") do
-          emitToken stx i ⟨.sort docs?, x⟩
+      match candidate.1 with
+      | .sort _ =>
+        emitToken stx i ⟨← resolveKind candidate, x⟩
       | .unknown =>
-        -- `identKind` didn't match this to an identifier, so it's not something akin to Mathlib's
+        -- Candidate selection didn't match this to an identifier, so it's not something akin to Mathlib's
         -- `ℕ`; no elaboration info matches its exact span. Classify it lexically:
         --  * a `·` with no semantic info is a proof-focus bullet — a delimiter (the `·` that *does*
         --    resolve, an anonymous-function placeholder like `(· + 1)`, keeps its kind below);
@@ -2115,19 +2146,22 @@ partial def highlight'
         --    bracket-like atom such as `foo[` wins over the keyword heuristic even though it starts
         --    with a letter;
         --  * a remaining alphabetic or `#`-prefixed atom is a `.keyword`.
-        match atomKind name occ docs x with
+        let k ← syntaxKind fun docs =>
+          match atomKind name occ docs x with
           | .unknown =>
-            if !x.isEmpty && x.all (· == '·') then emitToken stx i ⟨.delim name occ docs, x⟩
-            else if isKeyword then emitToken stx i ⟨.keyword name occ docs, x⟩
-            else emitToken stx i ⟨.unknown, x⟩
-          | k => emitToken stx i ⟨k, x⟩
+            if !x.isEmpty && x.all (· == '·') then .delim name occ docs
+            else if isKeyword then .keyword name occ docs
+            else .unknown
+          | k => k
+        emitToken stx i ⟨k, x⟩
       | _ =>
         -- A keyword-shaped atom (e.g. `instance`) can resolve span-exact to a generated declaration
         -- name — anonymous instances get a synthesized name whose info covers the `instance` token.
         -- Keep it a `.keyword` rather than rendering it as that constant. A non-keyword atom that
         -- resolved (Mathlib's `ℕ`, or a `·` placeholder) keeps its semantic kind.
-        if isKeyword then emitToken stx i ⟨.keyword name occ docs, x⟩
+        if isKeyword then emitToken stx i ⟨← syntaxKind (.keyword name occ ·), x⟩
         else
+          let k ← resolveKind candidate
           withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Resolved atom is {repr k}") do
             emitToken stx i ⟨k, x⟩
     | stx@(.node _ `Lean.Parser.Command.versoCommentBody _) =>
@@ -2241,10 +2275,12 @@ partial def highlight'
 def sortSuppress (nss : List Name) : List Name :=
   nss.toArray.qsort (fun x y => x.components.length > y.components.length) |>.toList
 
+/-- Highlight syntax and return a summary of unavailable documentation metadata alongside it. -/
 def highlight (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := [])
-    (collectFormat : Bool := false) : TermElabM Highlighted := do
+    (collectFormat : Bool := false) :
+    TermElabM (Highlighted × Diagnostics) := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
@@ -2261,11 +2297,11 @@ def highlight (stx : Syntax) (messages : Array Message)
     collectFormat,
     sigCache
   }
-  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ctxt |>.run infoTable |>.run st
-  pure <| .fromOutput output
+  let ((), st) ← highlight' trees stx true |>.run ctxt |>.run infoTable |>.run st
+  return (.fromOutput st.output, st.diagnostics)
 
 /--
-Produces a `Highlighted` value corresponding to `stx`, including any unparsed
+Produces highlighted syntax and a diagnostic summary, including any unparsed
 regions of the source lying within its span.
 
 Any segments of `stx` that failed to parse are drawn from the source given by
@@ -2277,7 +2313,8 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := [])
     (startPos? endPos? : Option Compat.String.Pos := none)
-    (collectFormat : Bool := false) : TermElabM Highlighted := do
+    (collectFormat : Bool := false) :
+    TermElabM (Highlighted × Diagnostics) := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
@@ -2303,14 +2340,15 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     collectFormat,
     sigCache
   }
-  let ((), {output := output, ..}) ← doHighlight.run ctxt |>.run infoTable |>.run st
-  pure <| .fromOutput output
+  let ((), st) ← doHighlight.run ctxt |>.run infoTable |>.run st
+  return (.fromOutput st.output, st.diagnostics)
 
 /--
 Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
 module, where each command has its own corresponding tree.
 
-The work of constructing the alias table is performed once, with all the trees together.
+Returns the highlighted pieces and one combined diagnostic summary. The work of constructing the
+alias table is performed once, with all the trees together.
 
 When `includeUnparsed` is `true`, source text within the highlighted region that is not covered by
 the given syntaxes (e.g. text skipped by parse-error recovery) is included verbatim in the output.
@@ -2322,7 +2360,8 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
     (suppressNamespaces : List Name := [])
     (collectFormat := false)
     (includeUnparsed := false)
-    (startPos? endPos? : Option Compat.String.Pos := none) : TermElabM (Array Highlighted) := do
+    (startPos? endPos? : Option Compat.String.Pos := none) :
+    TermElabM (Array Highlighted × Diagnostics) := do
   let trees' := trees.filterMap id
   let infoTable : InfoTable := .ofInfoTrees trees'
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
@@ -2356,8 +2395,8 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
         else
           hls := hls.modify (hls.size - 1) (· ++ tail)
     pure hls
-  let (hls, _) ← act.run ctxt |>.run infoTable |>.run st
-  pure hls
+  let (hls, st) ← act.run ctxt |>.run infoTable |>.run st
+  return (hls, st.diagnostics)
 where
   go t stx : HighlightM Highlighted := withCurrHeartbeats do
     -- The variable-type cache is scoped to a single syntax: its keys don't capture the
@@ -2436,14 +2475,15 @@ def moduleSegments (fileMap : FileMap) (result : Compat.Frontend.FrontendResult)
 Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
 module, where each command has its own corresponding tree.
 
-The work of constructing the alias table is performed once, with all the trees together. Messages
+Returns the highlighted pieces and one combined diagnostic summary. The work of constructing the
+alias table is performed once, with all the trees together. Messages
 from the whole module are pooled, and each message is attributed to the command that contains its
 start position, so a message is rendered exactly once, on the code it points at, even when a
 different command produced it.
 -/
 def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
     (suppressNamespaces : List Name := []) (collectFormat := false) :
-    TermElabM (Array Highlighted) := do
+    TermElabM (Array Highlighted × Diagnostics) := do
   let trees' := result.items.flatMap (·.info.toArray)
   let allMessages := Compat.messageLogArray result.headerMessages ++
     result.items.flatMap (fun i => Compat.messageLogArray i.messages)
@@ -2476,14 +2516,16 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
       flushSegment segments[0]!) |>.run ctxt |>.run infoTable |>.run
     (← segmentState result.headerSyntax segments[0]!)
   hls := hls.push (Highlighted.fromOutput headerSt.output)
+  let mut diagnostics := headerSt.diagnostics
 
   for idx in [0:result.items.size] do
     let cmd := result.items[idx]!
     let st ← segmentState cmd.commandSyntax segments[idx + 1]!
-    let (hl, _) ← go cmd segments[idx + 1]! |>.run ctxt |>.run infoTable |>.run st
+    let (hl, st) ← go cmd segments[idx + 1]! |>.run ctxt |>.run infoTable |>.run st
     hls := hls.push hl
+    diagnostics := diagnostics ++ st.diagnostics
 
-  return hls
+  return (hls, diagnostics)
 where
   go (res : Compat.Frontend.FrontendItem) (seg : ModuleSegment) := do
     let _ ← highlight' res.info.toArray res.commandSyntax true
@@ -2502,7 +2544,7 @@ where
 def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := []) (collectFormat := false) :
-    TermElabM (Array (Highlighted.Goal Highlighted)) := do
+    TermElabM (Array (Highlighted.Goal Highlighted) × Diagnostics) := do
   let trees := trees.toArray
   let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
   let ids := build modrefs
@@ -2516,13 +2558,13 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     collectFormat,
     sigCache
   }
-  let (hlGoals, _) ← highlightGoals ci goals |>.run ctxt |>.run infoTable |>.run .empty
-  pure hlGoals
+  let (hlGoals, st) ← highlightGoals ci goals |>.run ctxt |>.run infoTable |>.run .empty
+  return (hlGoals, st.diagnostics)
 
 
 def highlightMessage (message : Message)
     (suppressNamespaces : List Name := []) (collectFormat := false) :
-    TermElabM Highlighted.Message := do
+    TermElabM (Highlighted.Message × Diagnostics) := do
   let sigCache ← IO.mkRef {}
   let ctxt := {
     ids := {},
@@ -2532,10 +2574,10 @@ def highlightMessage (message : Message)
     collectFormat,
     sigCache
   }
-  let (contents, _) ← messageContents message |>.run ctxt |>.run {} |>.run .empty
+  let (contents, st) ← messageContents message |>.run ctxt |>.run {} |>.run .empty
   let severity : Highlighted.Span.Kind :=
     match message.severity with
     | .error => .error
     | .warning => .warning
     | .information => .info
-  return { severity, contents }
+  return ({ severity, contents }, st.diagnostics)

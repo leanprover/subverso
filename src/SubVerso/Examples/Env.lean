@@ -62,7 +62,20 @@ structure Example where
   examples can then check for the kind, and throw a user-friendly error if it's the wrong kind.
   -/
   kind : Option Name := none
-deriving ToJson, FromJson, Repr
+  /-- Metadata collected while highlighting this example, separate from its Lean messages. -/
+  diagnostics : Diagnostics := {}
+deriving ToJson, Repr
+
+instance : FromJson Example where
+  fromJson? json := do
+    let highlighted ← json.getObjValAs? _ "highlighted"
+    let messages ← json.getObjValAs? _ "messages"
+    let original ← json.getObjValAs? _ "original"
+    let start ← json.getObjValAs? _ "start"
+    let stop ← json.getObjValAs? _ "stop"
+    let kind ← fromJson? (json.getObjValD "kind")
+    let diagnostics ← Diagnostics.fromJsonField? json
+    return { highlighted, messages, original, start, stop, kind, diagnostics }
 
 open Syntax in
 instance : Quote Lean.Position where
@@ -81,14 +94,15 @@ instance : Quote MessageSeverity where
 
 instance : Quote Example where
   quote
-    | ⟨highlighted, messages, original, start, stop, kind⟩ =>
+    | ⟨highlighted, messages, original, start, stop, kind, diagnostics⟩ =>
       Syntax.mkCApp ``Example.mk #[
         quote highlighted,
         quote messages,
         quote original,
         quote start,
         quote stop,
-        quote kind
+        quote kind,
+        quote diagnostics
       ]
 
 initialize highlighted : PersistentEnvExtension (NameMap (NameMap Json)) (Name × Name × Example) (NameMap (NameMap Json)) ←

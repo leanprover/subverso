@@ -158,3 +158,6 @@ jobs:
       - name: Run tests
         run: |
           lake exe subverso-tests
+          # Existing #eval/assertion tests run during lake build.
+          # Also run the import-mode tests in the executable's main.
+          lake exe subverso-internal-tests
