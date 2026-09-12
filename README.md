@@ -119,66 +119,42 @@ module.
 
 ### Docstring lookup (staging API)
 
-`SubVerso.DocString` provides `SubVerso.findDocString`, a staging API intended for Verso to consume
-before upstreaming to Lean. It returns `SubVerso.DocStringLookup String`:
+`SubVerso.DocString` provides `SubVerso.findDocString`, intended for Verso to consume before
+upstreaming to Lean. It returns `.found doc`, `.absent`, or `.unavailable moduleName`;
+`toOption` recovers the usual optional docstring.
 
-```lean
-match ← SubVerso.findDocString env declName with
-| .found doc => -- Render the docstring
-  pure ()
-| .absent => -- No docstring and no known unavailable metadata blocking the lookup
-  pure ()
-| .unavailable moduleName => -- Collect the module for an import-all suggestion
-  pure ()
-```
+Successful lookups preserve Lean's rendering, builtin documentation, tactic aliases, and inherited
+documentation. The API accepts the same `includeBuiltin`, `options`, `currNamespace`, and `openDecls`
+arguments as Lean 4.34's `findDocString?`; arguments unsupported by older versions are ignored.
 
-The result's `toOption` method recovers the usual optional docstring. Successful lookups preserve
-Lean's rendering, builtin documentation, tactic aliases, and inherited documentation. The API accepts
-the same `includeBuiltin`, `options`, `currNamespace`, and `openDecls` arguments as Lean 4.34's
-`findDocString?`; rendering arguments unsupported by older Lean versions are ignored.
+On failure, lookup follows loaded `inherit_doc` references and checks the defining module's effective
+import mode, including transitive imports. `.unavailable M` means documentation might exist but its
+metadata is unavailable; a batch build can load it with `import all M`. Lookup itself loads no extra
+metadata. Local declarations can return `.unavailable` through inherited documentation.
 
-On a failed lookup, SubVerso follows loaded `inherit_doc` references and checks the defining module's
-effective import mode, including transitive imports. `.unavailable M` means the documentation's
-existence is unknown until that module's metadata is loaded, typically with `import all M` in a
-batch build. This lookup does not load additional metadata. A local declaration can return
-`.unavailable` when it inherits documentation from an imported declaration.
-
-While this API is staged, detection of available server metadata uses declaration ranges from the
-same module as evidence. This conservative proxy can report `.unavailable` if that evidence is
-absent; an authoritative environment query belongs in the eventual Lean implementation. Older Lean
-versions without the module system return only `.found` or `.absent`.
+Available server metadata is currently detected using declaration ranges from the same module as
+conservative evidence. Missing ranges can cause a false `.unavailable`; an authoritative environment
+query belongs in Lean. Versions without the module system return only `.found` or `.absent`.
 
 ### Highlighting diagnostics
 
-Docstrings from module-system imports may require `import all M` to be available during a batch
-build. SubVerso reports this separately from Lean messages, so clients can render one warning about
-the highlighting rather than adding warnings to the example's expected output.
-
-All highlighting entrypoints return a pair containing the highlighted output and a diagnostic
-summary:
+All highlighting entrypoints return the output and a diagnostic summary, separate from Lean messages:
 
 ```lean
 let (hl, diagnostics) ← SubVerso.Highlighting.highlight stx messages trees
 ```
 
-The summary records each missing module once, rather than retaining lookup status on every token.
-Clients can display one warning for the highlighted result. When combining separate highlighting
-results, merge their diagnostics with `++` to preserve deduplication.
+`diagnostics.missingDocStringModules` is a `Lean.NameSet` of modules reported as unavailable for
+retained hovers. Merge summaries with `++` when combining results. JSON encodes the set as a sorted
+array, and decoding restores uniqueness. Individual token lookup statuses and locations are not kept.
 
-The summary covers the entire result. Slicing its highlighted output or selecting a subset of
-extracted module items does not narrow the summary. For warnings specific to an excerpt, collect
-diagnostics when highlighting that excerpt and merge only the pieces included in it.
-
-Internally, documentation lookup returns a diagnostic with each candidate meaning. Only retained
-hovers contribute to the summary; discarded candidates and format-only annotations do not add warnings.
-
-`diagnostics.missingDocStringModules` is a `Lean.NameSet` of modules returned by `.unavailable`
-from the staging lookup API, including targets of inherited documentation. It stays a set in the
-Lean API; JSON encodes it as a sorted array, and decoding restores the set and removes duplicates.
+The summary covers the entire result. Slicing highlighted output or selecting module items does not
+narrow it. For warnings specific to an excerpt, collect diagnostics at that excerpt's boundary and
+merge only the included pieces.
 
 A suitable warning is “Documentation metadata is unavailable for these modules. If these names are
-documented, use `import all M` to include their docstrings.” `.found` and `.absent` results do not
-produce suggestions. Older Lean versions without the module system return an empty set.
+documented, use `import all M` to include their docstrings.” `.found` and `.absent` results produce no
+suggestions, and older Lean versions without the module system return an empty summary.
 
-Helper results, extracted modules, and saved examples include a `diagnostics` JSON field with this
-metadata. Their decoders accept older payloads that omit the field, defaulting to empty diagnostics.
+Helper results, extracted modules, and saved examples include a `diagnostics` JSON field. Their
+decoders accept older payloads that omit it, defaulting to empty diagnostics.

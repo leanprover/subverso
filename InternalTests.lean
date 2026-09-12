@@ -1913,9 +1913,8 @@ private def testDocStringCandidates (env serverEnv : Environment) (moduleSystem 
       unless st.missingDocStringModules.contains `SubVerso.Highlighting.Diagnostics do
         throwError "Rendered pretty-printer hovers must still report unavailable documentation"
     let (_, st) ← run #[] do
-      let outer : TokenCandidate := {
-        kind := .const unavailable "" none false none
-        missingDocStringModule? := some `SubVerso.Highlighting.Diagnostics }
+      let outer : KindWithPPSig :=
+        (.const unavailable "" none false none, none, some `SubVerso.Highlighting.Diagnostics)
       discard <| renderTagged (some outer) (.text "fun ")
     unless st.missingDocStringModules.isEmpty do
       throwError "An outer meaning replaced by a keyword must not contribute diagnostics"
