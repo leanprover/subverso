@@ -962,7 +962,7 @@ where
   | Syntax.atom info val => pure <| Syntax.atom (wholeFileInfo info) val
   | Syntax.ident info rawVal val pre => pure <| Syntax.ident (wholeFileInfo info) rawVal val pre
   | Syntax.node info k args => do
-    for i in [0:args.size - 1] do
+    for i in [0:args.size] do
       let j := args.size - (i + 1)
       if let some s := wholeFile' args[j]! then
         let args := args.set! j s
@@ -970,7 +970,7 @@ where
     none
   | .missing => none
   wholeFileInfo : SourceInfo → SourceInfo
-    | .original l l' t _ => .original l l' t (String.endPos contents)
+    | .original l l' t e => .original l l' { t with stopPos := String.endPos contents } e
     | i => i
   -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
   -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.

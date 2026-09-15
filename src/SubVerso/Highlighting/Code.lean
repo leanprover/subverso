@@ -2153,20 +2153,18 @@ partial def highlight'
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Numeral") do
         let (ty?, tyFmt?) ← literalType trees stx
         emitToken stx i ⟨.num ty? tyFmt?, n⟩
-    | .node _ ``Lean.Parser.Command.docComment #[.atom i1 opener, .atom i2 body] =>
+    | .node _ ``Lean.Parser.Command.docComment _
+    | .node _ ``Lean.Parser.Command.moduleDoc _ =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Doc comment") do
-      if let .original leading pos ws _ := i1 then
-        if let .original ws' _ trailing endPos := i2 then
-          emitToken stx (.original leading pos trailing endPos) ⟨.docComment, opener ++ ws.toString ++ ws'.toString ++ body⟩
+      -- A doc comment is one token of unhighlighted source, whether its contents are Markdown or
+      -- Verso markup, so its span is all that matters here.
+      if let .original leading pos _ _ := stx.getHeadInfo then
+        if let .original _ _ trailing endPos := stx.getTailInfo then
+          let source := (← getFileMap).source
+          emitToken stx (.original leading pos trailing endPos)
+            ⟨.docComment, Compat.Substring.mk source pos endPos |>.toString⟩
           return
-      emitString' (opener ++ " " ++ body ++ "\n")
-    | .node _ ``Lean.Parser.Command.moduleDoc #[.atom i1 opener, .atom i2 body] =>
-      withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Module doc") do
-      if let .original leading pos ws _ := i1 then
-        if let .original ws' _ trailing endPos := i2 then
-          emitToken stx (.original leading pos trailing endPos) ⟨.docComment, opener ++ ws.toString ++ ws'.toString ++ body⟩
-          return
-      emitString' (opener ++ " " ++ body ++ "\n")
+      emitString' (stx.reprint.getD "")
     | .node _ ``Lean.Parser.Term.dotIdent #[dot@(.atom i _), name@(.ident i' _ x _)] =>
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Dotted identifier") do
       match i, i' with
