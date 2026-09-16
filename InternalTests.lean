@@ -1842,3 +1842,26 @@ def oldSignatureFormat : Bool :=
 end ConstSignatures
 
 def main : IO Unit := pure ()
+
+/-- The text of every doc comment token in highlighted code, in order. -/
+partial def docCommentTokens : Highlighting.Highlighted → Array String
+  | .seq xs => xs.foldl (init := #[]) fun acc x => acc ++ docCommentTokens x
+  | .tactics _ _ _ x | .span _ x => docCommentTokens x
+  | .token ⟨.docComment, s⟩ => #[s]
+  | _ => #[]
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let hls ← highlightModuleStyleSegments "/--\nSome docs\n-/\ndef documented := 1\n\n/-- More docs -/\ndef alsoDocumented := 2\n"
+  let toks := hls.foldl (init := #[]) fun acc hl => acc ++ docCommentTokens hl
+  unless toks == #["/--\nSome docs\n-/", "/-- More docs -/"] do
+    throwError "Expected one doc comment token per doc comment, got {toks.toList}"
+
+-- Verso doc comments exist only where the `doc.verso` option does.
+open Lean Elab Command SubVerso.Compat in
+%if_bound Lean.doc.verso
+#eval show CommandElabM Unit from do
+  let hls ← highlightModuleStyleSegments "set_option doc.verso true\n/-!\nA *module* doc\n-/\n\nset_option doc.verso true\n/--\nSome *docs* here\n-/\ndef documented := 1\n"
+  let toks := hls.foldl (init := #[]) fun acc hl => acc ++ docCommentTokens hl
+  unless toks == #["/-!\nA *module* doc\n-/", "/--\nSome *docs* here\n-/"] do
+    throwError "Expected one doc comment token per Verso comment, got {toks.toList}"
