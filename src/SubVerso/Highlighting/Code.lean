@@ -2160,9 +2160,8 @@ partial def highlight'
       -- Verso markup, so its span is all that matters here.
       if let .original leading pos _ _ := stx.getHeadInfo then
         if let .original _ _ trailing endPos := stx.getTailInfo then
-          let source := (← getFileMap).source
           emitToken stx (.original leading pos trailing endPos)
-            ⟨.docComment, Compat.Substring.mk source pos endPos |>.toString⟩
+            ⟨.docComment, Compat.String.Pos.extract (← getFileMap).source pos endPos⟩
           return
       emitString' (stx.reprint.getD "")
     | .node _ ``Lean.Parser.Term.dotIdent #[dot@(.atom i _), name@(.ident i' _ x _)] =>
