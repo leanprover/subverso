@@ -997,6 +997,18 @@ def PendingItem.toFrontendItem (item : PendingItem) : FrontendItem :=
   let (asyncMessages, info) := item.results.get
   { commandSyntax := item.commandSyntax, messages := item.syncMessages ++ asyncMessages, info }
 
+/--
+Elaborates a top-level command, passing the preceding top-level commands to the elaborator as Lean's
+own frontend does. Module linters, which run at the end of the input, receive these commands.
+-/
+def elabCommandWithPreceding (cmd : Syntax) : Frontend.FrontendM Unit := do
+  %first_succeeding [
+    -- `processCommand` has already recorded `cmd` itself, so it is dropped here.
+    let preceding := (← get).commands.pop
+    runCommandElabM <| Lean.Elab.Command.elabCommandTopLevel cmd preceding,
+    elabCommandAtFrontend cmd
+  ]
+
 def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
   updateCmdPos
   let cmdState ← getCommandState
@@ -1013,7 +1025,7 @@ def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
     setMessages {}
     runCommandElabM <| setInfoState { enabled := true }
     resetSnapshotTasks
-    elabCommandAtFrontend cmd
+    elabCommandWithPreceding cmd
     let st ← getCommandState
     let results ← match asyncSupport? with
       | some async => async.collect st
