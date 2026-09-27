@@ -3,16 +3,14 @@ Copyright (c) 2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
 import Lean.Parser.Command
 import Lean.Environment
 import Lean.Elab.Command
-public import Lean.Data.Options
+import Lean.Data.Options
 
 import SubVerso.Compat
 import SubVerso.Highlighting.Code
-public import SubVerso.Examples.Env
-public section
+import SubVerso.Examples.Env
 
 /-!
 This module contains a version of the signature checking code that's independent of the embedded
