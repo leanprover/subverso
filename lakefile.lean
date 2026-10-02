@@ -193,7 +193,9 @@ else
 
     exeJob.bindM fun exeFile =>
       modJob.mapM fun oleanFile => do
-        addPureTrace suppNS
+        -- Every module's job writes the same namespace file, so it's trace can be independent of
+        -- the module's content. This prevents builds from clobbering each other.
+        setTrace (Compat.traceOfHash (.ofString suppNS))
         buildFileUnlessUpToDate' (text := true) nsFile do
           IO.FS.createDirAll (buildDir / "highlighted")
           IO.FS.writeFile nsFile suppNS
@@ -254,7 +256,9 @@ else
 
     exeJob.bindM fun exeFile => do
       modJob.mapM fun oleanPath => do
-        addPureTrace suppNS
+        -- Every module's job writes the same namespace file, so it's trace can be independent of
+        -- the module's content. This prevents builds from clobbering each other.
+        setTrace (Compat.traceOfHash (.ofString suppNS))
         buildFileUnlessUpToDate' (text := true) nsFile do
           IO.FS.createDirAll (buildDir / "examples")
           IO.FS.writeFile nsFile suppNS
