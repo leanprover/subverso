@@ -508,11 +508,6 @@ def getInfoTrailing? (info : SourceInfo) : Option Substring :=
   | .original (trailing := trailing) .. => some trailing
   | _ => none
 
-def getInfoLeading? (info : SourceInfo) : Option Substring :=
-  match info with
-  | .original (leading := leading) .. => some leading
-  | _ => none
-
 /--
 Gets the end position information from a `SourceInfo`, if available.
 If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
@@ -526,18 +521,6 @@ def getInfoTailPos? (info : SourceInfo) (canonicalOnly := false) : Option String
   | _, _     => none
 
 /--
-Gets the start position information from a `SourceInfo`, if available.
-If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
-will also return `none`.
--/
-def getInfoHeadPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
-  match info, canonicalOnly with
-  | .original (pos := pos) ..,  _
-  | .synthetic (pos := pos) (canonical := true) .., _
-  | .synthetic (pos := pos) .., false => some pos
-  | _, _     => none
-
-/--
 Gets the end position information of the trailing whitespace of a `SourceInfo`, if available.
 If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
 will also return `none`.
@@ -547,21 +530,8 @@ def getInfoTrailingTailPos? (info : SourceInfo) (canonicalOnly := false) : Optio
   | some trailing => some trailing.stopPos
   | none => getInfoTailPos? info canonicalOnly
 
-/--
-Gets the start position information of the leading whitespace of a `SourceInfo`, if available.
-If `canonicalOnly` is true, then `.synthetic` syntax with `canonical := false`
-will also return `none`.
--/
-def getInfoLeadingHeadPos? (info : SourceInfo) (canonicalOnly := false) : Option String.Pos :=
-  match getInfoLeading? info with
-  | some leading => some leading.startPos
-  | none => getInfoHeadPos? info canonicalOnly
-
 def getTrailingTailPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
   getInfoTrailingTailPos? stx.getTailInfo canonicalOnly
-
-def getLeadingHeadPos? (stx : Syntax) (canonicalOnly := false) : Option String.Pos :=
-  getInfoLeadingHeadPos? stx.getHeadInfo canonicalOnly
 
 def getRangeWithTrailing? (stx : Syntax) (canonicalOnly := false) : Option Syntax.Range :=
   return ⟨← stx.getPos? canonicalOnly, ← getTrailingTailPos? stx canonicalOnly⟩
@@ -664,18 +634,6 @@ instance : GetElem InfoPerPos Nat Elab.Info (fun xs x => get? xs x |>.isSome) wh
 
 end InfoPerPos
 
-namespace NameMap
-def mergeBy (f : Name → α → α → α) (xs ys : NameMap α) : NameMap α :=
-  %first_succeeding [
-    Std.TreeMap.mergeWith f xs ys,
-    Lean.RBMap.mergeBy f xs ys
-  ]
-def get? (xs : NameMap α) (x : Name) : Option α :=
-  %first_succeeding [
-    xs[x]?, xs.find? x
-  ]
-end NameMap
-
 namespace List
 -- bind was renamed to flatMap in 4.14
 def flatMap (xs : List α) (f : α → List β) : List β :=
@@ -772,9 +730,9 @@ open Lean Elab Command in
     let cmd ← `(macro "compat_simp_arith_all":tactic => `(tactic| first | simp_arith [*] | simp (config := {arith := true}) [*]))
     elabCommand cmd
 
--- Elab.async got turned on in nightly-2025-03-16, but that means that the info tree is not always
--- ready when elaboration returns from an example. Thus, we need to turn it off for examples,
--- because otherwise proof states are not present when the highlighted code is generated.
+-- Elab.async is on by default starting with nightly-2025-03-16. With it on, the info tree may be
+-- incomplete when elaboration of a command returns. Commands elaborated for highlighting run with it
+-- off so that their proof states are present when the highlighted code is generated.
 open Lean Elab Command in
 def commandWithoutAsync (act : CommandElabM α) : CommandElabM α := do
   -- withScope doesn't work here, because it restores other changes made to the scopes by the
@@ -962,7 +920,7 @@ where
   | Syntax.atom info val => pure <| Syntax.atom (wholeFileInfo info) val
   | Syntax.ident info rawVal val pre => pure <| Syntax.ident (wholeFileInfo info) rawVal val pre
   | Syntax.node info k args => do
-    for i in [0:args.size - 1] do
+    for i in [0:args.size] do
       let j := args.size - (i + 1)
       if let some s := wholeFile' args[j]! then
         let args := args.set! j s
@@ -970,7 +928,7 @@ where
     none
   | .missing => none
   wholeFileInfo : SourceInfo → SourceInfo
-    | .original l l' t _ => .original l l' t (String.endPos contents)
+    | .original l l' t e => .original l l' { t with stopPos := String.endPos contents } e
     | i => i
   -- The EOI parser uses a constant `"".toSubstring` for its leading and trailing info, which gets
   -- in the way of `updateLeading`. This can lead to missing comments from the end of the file.
@@ -997,6 +955,18 @@ def PendingItem.toFrontendItem (item : PendingItem) : FrontendItem :=
   let (asyncMessages, info) := item.results.get
   { commandSyntax := item.commandSyntax, messages := item.syncMessages ++ asyncMessages, info }
 
+/--
+Elaborates a top-level command, passing the preceding top-level commands to the elaborator as Lean's
+own frontend does. Module linters, which run at the end of the input, receive these commands.
+-/
+def elabCommandWithPreceding (cmd : Syntax) : Frontend.FrontendM Unit := do
+  %first_succeeding [
+    -- `processCommand` has already recorded `cmd` itself, so it is dropped here.
+    let preceding := (← get).commands.pop
+    runCommandElabM <| Lean.Elab.Command.elabCommandTopLevel cmd preceding,
+    elabCommandAtFrontend cmd
+  ]
+
 def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
   updateCmdPos
   let cmdState ← getCommandState
@@ -1013,7 +983,7 @@ def processCommand : Frontend.FrontendM (Bool × PendingItem) := do
     setMessages {}
     runCommandElabM <| setInfoState { enabled := true }
     resetSnapshotTasks
-    elabCommandAtFrontend cmd
+    elabCommandWithPreceding cmd
     let st ← getCommandState
     let results ← match asyncSupport? with
       | some async => async.collect st

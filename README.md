@@ -41,8 +41,8 @@ hash of `main` that it was generated from.
 Presently, SubVerso supports the extraction of highlighting
 information from code. There may be a many-to-many relationship
 between Lean modules and documents that describe them. In these cases,
-using SubVerso's examples library to indicate examples to be shown in
-the text can be useful.
+marking the code to be shown in the text with anchors in ordinary Lean
+modules can be useful.
 
 This feature may also be useful for other applications that require
 careful presentation of Lean code.
@@ -101,7 +101,8 @@ objects have the following keys:
    using the `FromJson Highlighted` instance from SubVerso.
    
 The `highlighted` facet for a package, library, or module builds
-highlighted sources.
+highlighted sources. It runs `subverso-extract-mod` on each module and
+writes the results to `.lake/build/highlighted`.
 
 ### Helper Process
 
@@ -156,5 +157,5 @@ A suitable warning is “Documentation metadata is unavailable for these modules
 documented, use `import all M` to include their docstrings.” `.found` and `.absent` results produce no
 suggestions, and older Lean versions without the module system return an empty summary.
 
-Helper results, extracted modules, and saved examples include a `diagnostics` JSON field. Their
+Helper results and extracted modules include a `diagnostics` JSON field. Their
 decoders accept older payloads that omit it, defaulting to empty diagnostics.
