@@ -4,12 +4,11 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
 import SubVerso.Compat
-import SubVerso.Examples.Env
 import SubVerso.Module
 
 open Lean Elab Frontend
 open Lean.Elab.Command hiding Context
-open SubVerso Examples Module
+open SubVerso Module
 open SubVerso.Highlighting (Highlighted highlight highlightMany)
 
 def helpText : String :=

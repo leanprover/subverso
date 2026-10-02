@@ -1,39 +1,17 @@
 import SubVerso.Highlighting
-import SubVerso.Examples
-import SubVerso.Examples.Env
 import SubVerso.Module
 import SubVerso.Helper.Netstring
 import Lean.Data.Json
-import Lean.Data.NameMap
 
-open SubVerso.Examples (loadExamples Example)
 open SubVerso.Module (ModuleItem)
 open Lean.FromJson (fromJson?)
 
 open SubVerso
 
-open Lean in
-def exampleArray (examples : NameMap (NameMap α)) : Array α := Id.run do
-  let mut exs := #[]
-  for (_, inner) in examples do
-    for (_, x) in inner do
-      exs := exs.push x
-  exs
-
-open Lean in
-def findVersionString (examples : NameMap (NameMap Example)) : Option String := do
-  let demo ← examples.find? `Demo
-  let version ← demo.find? `version
-  let [(.information, str)] := version.messages
-    | none
-  Compat.String.trim str |>
-  (Compat.String.drop · 1) |>
-  (Compat.String.dropRight · 1)
-
-namespace SubVerso
+namespace SubVerso.Highlighting
 
 partial
-def Highlighting.Highlighted.countProofStates (hl : Highlighting.Highlighted) : Nat :=
+def Highlighted.countProofStates (hl : Highlighted) : Nat :=
   match hl with
   | .seq hls =>
     hls.map countProofStates |>.foldr (· + · ) 0
@@ -43,52 +21,20 @@ def Highlighting.Highlighted.countProofStates (hl : Highlighting.Highlighted) : 
     hl'.countProofStates + 1
   | _ => 0
 
-namespace Examples
+/-- The severity and text of each message attached to highlighted code, in order of appearance. -/
+partial
+def Highlighted.messageTexts (hl : Highlighted) : Array (Highlighted.Span.Kind × String) :=
+  match hl with
+  | .seq hls =>
+    hls.foldl (init := #[]) fun acc x => acc ++ x.messageTexts
+  | .span info hl' =>
+    info.map (fun (k, m) => (k, m.toString)) ++ hl'.messageTexts
+  | .tactics _ _ _ hl' =>
+    hl'.messageTexts
+  | .point k m => #[(k, m.toString)]
+  | _ => #[]
 
-def Example.countProofStates (e : Example) : Nat :=
-  e.highlighted.countProofStates
-
-end Examples
-end SubVerso
-
-open Lean in
-def proofCount (examples : NameMap (NameMap Example)) : Nat := Id.run do
-  let mut n := 0
-  for e in exampleArray examples do
-    n := n + e.countProofStates
-  n
-
-open Lean in
-def checkVersion (expected : String) (examples : NameMap (NameMap Example)) : IO Unit := do
-  let v := findVersionString examples
-  IO.println s!"Reported version {v}"
-  if v != some expected then
-    IO.eprintln "Unexpected version!"
-    IO.Process.exit 1
-  pure ()
-
-open Lean in
-def checkHasSorry (examples : NameMap (NameMap Example)) : IO Unit := do
-  IO.println "Making sure the `hasSorry example has a sorry"
-  let demo ← examples.find? `Demo |>.map pure |>.getD (do IO.eprintln "Demo not found"; IO.Process.exit 1)
-  let hasSorry ← demo.find? `hasSorry  |>.map pure |>.getD (do IO.eprintln "hasSorry not found"; IO.Process.exit 1)
-  if hasSorry.messages == [(.warning, "declaration uses 'sorry'\n")] then pure ()
-  else
-    IO.eprintln s!"Expected a sorry warning, got {repr hasSorry.messages}"
-    IO.Process.exit 1
-
-open Lean in
-def checkIsLinted (examples : NameMap (NameMap Example)) : IO Unit := do
-  IO.println "Making sure the linted example is linted"
-  let demo ← examples.find? `Demo |>.map pure |>.getD (do IO.eprintln "Demo not found"; IO.Process.exit 1)
-  let hasSorry ← demo.find? `linted  |>.map pure |>.getD (do IO.eprintln "linted not found"; IO.Process.exit 1)
-  if let [(.warning, str)] := hasSorry.messages then
-    -- The phrasing varies a bit in Lean versions, but this is the important part
-    if "unused variable `x`".isPrefixOf str then
-      return ()
-
-  IO.eprintln s!"Expected a linter warning, got {repr hasSorry.messages}"
-  IO.Process.exit 1
+end SubVerso.Highlighting
 
 open SubVerso.Helper in
 def testNetstring (str : String) : IO Unit := do
@@ -356,12 +302,70 @@ def prepareProject (project : System.FilePath) (toolchain : String) (demodSrc : 
   copyRecursively demodSrc (buildDir / "no-mod") (fun _ => true)
   pure buildDir
 
-open Lean in
-/-- Loads examples from `project`, building it under `toolchain` in its per-toolchain build dir. -/
-def loadExamplesIn (project : System.FilePath) (toolchain : String) (demodSrc : System.FilePath) :
-    IO (NameMap (NameMap Example)) := do
+/--
+Builds the `highlighted` package facet of `project` under `toolchain` in its per-toolchain build
+dir, then reads the highlighted JSON that the facet wrote for `mod`.
+-/
+def loadHighlightedModuleIn (project : System.FilePath) (mod : String) (toolchain : String)
+    (demodSrc : System.FilePath) : IO (Array ModuleItem) := do
   let dir ← prepareProject project toolchain demodSrc
-  loadExamples dir (overrideToolchain := some toolchain)
+  let cmd := "elan"
+  let args := #["run", "--install", toolchain, "lake", "build", ":highlighted"]
+  let res ← IO.Process.output {
+    cmd, args, cwd := dir
+    -- Unset Lake's environment variables
+    env := lakeVars.map (·, none)
+  }
+  if res.exitCode != 0 then loadModuleContent.reportFail dir cmd args res
+  let file : System.FilePath :=
+    (mod.splitOn ".").foldl (· / ·) (dir / ".lake" / "build" / "highlighted") |>.withExtension "json"
+  let .ok json := Lean.Json.parse (← IO.FS.readFile file)
+    | throw <| IO.userError s!"Expected JSON in {file}"
+  match Module.Module.fromJson? json with
+  | .error err =>
+    throw <| IO.userError s!"Couldn't parse JSON from {file}: {err}"
+  | .ok m =>
+    pure m.items
+
+/--
+Checks the anchors of the demo project's `Demo` module, given its highlighted items. The `version`
+anchor reports `expectedVersion`. The `hasSorry` anchor has a warning about `sorry`. The `linted`
+anchor has a linter warning. Returns the module's number of proof states.
+-/
+def checkDemo (items : Array ModuleItem) (expectedVersion : String) : IO Nat := do
+  let code := items.map (·.code) |>.foldl (· ++ ·) .empty
+  let anchors ←
+    match code.anchored with
+    | .error e => throw <| IO.userError s!"Error loading anchored content: {e}"
+    | .ok {code := _, anchors, proofStates := _} => pure anchors
+  let messagesOf (name : String) : IO (Array (Highlighting.Highlighted.Span.Kind × String)) :=
+    match anchors.get? name with
+    | some hl => pure hl.messageTexts
+    | none => throw <| IO.userError s!"Anchor '{name}' not found"
+
+  let infos := (← messagesOf "version").filter (·.1 == .info) |>.map (·.2)
+  let version :=
+    if let #[str] := infos then
+      some <| Compat.String.dropRight (Compat.String.drop (Compat.String.trim str) 1) 1
+    else none
+  IO.println s!"Reported version {version}"
+  if version != some expectedVersion then
+    throw <| IO.userError s!"Unexpected version! Expected {expectedVersion}, got messages {repr infos}"
+
+  IO.println "Making sure the `hasSorry` anchor has a sorry"
+  let sorryMsgs ← messagesOf "hasSorry"
+  -- Later Lean versions quote `sorry` with backticks
+  let sorryTexts := ["declaration uses 'sorry'", "declaration uses `sorry`"]
+  unless sorryMsgs.any (fun (k, str) => k == .warning && sorryTexts.contains (Compat.String.trim str)) do
+    throw <| IO.userError s!"Expected a sorry warning, got {repr sorryMsgs}"
+
+  IO.println "Making sure the `linted` anchor is linted"
+  let lintMsgs ← messagesOf "linted"
+  -- The phrasing varies a bit in Lean versions, but this is the important part
+  unless lintMsgs.any (fun (k, str) => k == .warning && "unused variable `x`".isPrefixOf str) do
+    throw <| IO.userError s!"Expected a linter warning, got {repr lintMsgs}"
+
+  pure code.countProofStates
 
 /-- Loads a module from `project`, building it under `toolchain` in its per-toolchain build dir. -/
 def loadModuleContentIn (project : System.FilePath) (mod : String) (toolchain : String)
@@ -411,12 +415,9 @@ Runs the full test suite. `demodSrc` is the demodulized SubVerso source tree (fr
 def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
   let demoTomlTc ← projectToolchain "demo-toml"
 
-  IO.println "Checking that the TOML project will load"
-  let examplesToml ← loadExamplesIn "demo-toml" demoTomlTc demodSrc
-  if examplesToml.isEmpty then
-    IO.eprintln "No examples found"
-    return 1
-  else IO.println s!"Found {proofCount examplesToml} proofs"
+  IO.println "Checking the demo module in the TOML project"
+  let tomlCount ← checkDemo (← loadHighlightedModuleIn "demo-toml" "Demo" demoTomlTc demodSrc) "4.8.0"
+  IO.println s!"Found {tomlCount} proofs"
 
   IO.println "Checking anchor test file in TOML project"
   let anchorMod := (← loadModuleContentIn "demo-toml" "Anchors" demoTomlTc demodSrc).map (·.code) |>.foldl (· ++ ·) (.empty)
@@ -444,43 +445,16 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
       else
         IO.eprintln "Got non-tactic {hl y}"; return 1
 
-  IO.println "Checking that the test project generates at least some deserializable JSON with 4.3.0"
-  let examples ← loadExamplesIn "demo" (← projectToolchain "demo") demodSrc
-  if examples.isEmpty then
-    IO.eprintln "No examples found"
-    return 1
-  checkVersion "4.3.0" examples
-  checkHasSorry examples
-  checkIsLinted examples
-  let proofCount1 := proofCount examples
-  IO.println s!"Found {proofCount1} proofs "
+  let mut proofCounts := #[]
+  for (toolchain, version) in [(← projectToolchain "demo", "4.3.0"), (demoToolchain48, "4.8.0"), (demoToolchain410, "4.10.0")] do
+    IO.println s!"Checking the demo module with Lean toolchain {toolchain}"
+    let count ← checkDemo (← loadHighlightedModuleIn "demo" "Demo" toolchain demodSrc) version
+    IO.println s!"Found {count} proofs"
+    proofCounts := proofCounts.push count
 
-  IO.println "Checking that the test project generates at least some deserializable JSON with 4.8.0"
-  let examples' ← loadExamplesIn "demo" demoToolchain48 demodSrc
-  if examples'.isEmpty then
-    IO.eprintln "No examples found with later toolchain"
+  if proofCounts.any (· != tomlCount) then
+    IO.eprintln s!"Demo proof count mismatch: {tomlCount} in the TOML project, {proofCounts} in the demo project"
     return 1
-  checkVersion "4.8.0" examples'
-  checkHasSorry examples'
-  checkIsLinted examples'
-  let proofCount2 := proofCount examples'
-  IO.println s!"Found {proofCount2} proofs "
-
-  IO.println "Checking that the test project generates at least some deserializable JSON with 4.10.0"
-  let examples'' ← loadExamplesIn "demo" demoToolchain410 demodSrc
-  if examples''.isEmpty then
-    IO.eprintln "No examples found with later toolchain"
-    return 1
-  checkVersion "4.10.0" examples''
-  checkHasSorry examples''
-  checkIsLinted examples''
-  let proofCount3 := proofCount examples''
-  IO.println s!"Found {proofCount3} proofs "
-
-  if proofCount1 != proofCount2 || proofCount2 != proofCount3 then
-    IO.eprintln "Example proof count mismatch"
-    return 1
-
 
   let oldest := ["4.0.0", "4.1.0", "4.2.0"]
   let oldest := oldest ++ oldest.map ("v" ++ ·) |>.map ("leanprover/lean4:" ++ ·)
@@ -556,9 +530,9 @@ def prepare (demodSrc : System.FilePath) (args : List String) : IO UInt32 := do
       return 2
   for (project, toolchain) in targets do
     IO.println s!"Prebuilding {project} using Lean toolchain {toolchain}"
-    let examples ← loadExamplesIn project toolchain demodSrc
-    if examples.isEmpty then
-      IO.eprintln s!"No examples found while prebuilding {project} @ {toolchain}"
+    let items ← loadHighlightedModuleIn project "Demo" toolchain demodSrc
+    if items.isEmpty then
+      IO.eprintln s!"No highlighted code found while prebuilding {project} @ {toolchain}"
       return 1
   pure 0
 
