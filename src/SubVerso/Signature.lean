@@ -3,17 +3,15 @@ Copyright (c) 2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
 import Lean.Parser.Command
 import Lean.Environment
-public import Lean.Elab.Command
-public import Lean.Data.Options
+import Lean.Elab.Command
+import Lean.Data.Options
 
-public import SubVerso.Compat
-public import SubVerso.Examples.Options
-public import SubVerso.Highlighting.Highlighted
+import SubVerso.Compat
+import SubVerso.Examples.Options
+import SubVerso.Highlighting.Highlighted
 import SubVerso.Highlighting.Code
-public section
 
 /-!
 Signature checking and highlighting for existing declarations. A signature written in a document is
