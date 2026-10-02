@@ -6,18 +6,19 @@ Author: David Thrane Christiansen
 module
 import Lean.Parser.Command
 import Lean.Environment
-import Lean.Elab.Command
+public import Lean.Elab.Command
 public import Lean.Data.Options
 
-import SubVerso.Compat
+public import SubVerso.Compat
+public import SubVerso.Examples.Options
+public import SubVerso.Highlighting.Highlighted
 import SubVerso.Highlighting.Code
-public import SubVerso.Examples.Env
 public section
 
 /-!
-This module contains a version of the signature checking code that's independent of the embedded
-example infrastructure. In the long run, we should migrate away
-from the old name example mechanism in favor of quotations from the anchor mechanism.
+Signature checking and highlighting for existing declarations. A signature written in a document is
+elaborated and compared against that of the existing declaration of the same name, after which it is
+highlighted using information from both.
 -/
 
 open Lean Elab Command Term
@@ -25,9 +26,6 @@ open Lean Elab Command Term
 open SubVerso.Highlighting
 
 namespace SubVerso.Examples
-
-def getSuppressed [Monad m] [MonadOptions m] : m (List Name) := do
-  return (← getOptions) |> SubVerso.examples.suppressedNamespaces.get |>.splitOn " " |>.map (·.toName)
 
 private def biDesc : BinderInfo → String
   | .default => "explicit"

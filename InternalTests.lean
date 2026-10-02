@@ -1,13 +1,13 @@
 
 import SubVerso.Examples
-import SubVerso.Highlighting.Highlighted
+import SubVerso.Highlighting
 import SubVerso.Highlighting.Anchors
 import SubVerso.Highlighting.String
 
 /-! These are SubVerso tests that don't involve a subprocess, to make development easier. -/
 
 
-open SubVerso Examples
+open SubVerso
 
 partial def SubVerso.Highlighting.Highlighted.asString (hl : Highlighted) : String := Id.run do
   let mut out := ""
@@ -41,46 +41,6 @@ partial def SubVerso.Highlighting.Highlighted.proofStates (hl : Highlighting.Hig
 
 set_option pp.rawOnError true
 
-%example proof
-theorem test (n : Nat) : n * 1 = n := by
-  induction n with
-  | zero => rfl
-  | succ n ih =>
-    rw [← ih]
-    cases n
-    next => simp
-    case' succ =>
-      skip
-    case succ =>
-      . skip; simp
-%end
-
-%dump proof into proofJson
-
-%dumpE proof into proofEx
-
-%example proof2
-example :
-    (fun (x y z : Nat) =>
-      x + (y + z))
-    =
-    (fun x y z =>
-      (z + x) + y)
-  := by
-  conv =>
-    lhs
-    intro x y z
-    conv =>
-      arg 2
-      rw [Nat.add_comm]
-    rw [← Nat.add_assoc]
-    arg 1
-    rw [Nat.add_comm]
-%end
-
-%dumpE proof2 into proofEx2
-
-
 -- We don't have #guard_msgs in all supported Lean versions, so here's a low-tech replacement:
 
 open Lean Elab Command in
@@ -111,16 +71,6 @@ elab "#evalStrings " "[" ss:str,* "] " e:term : command => do
       throwErrorAt e "Expected one of {ok.map String.quote}, got {String.quote (← msg.toString)}"
   finally
     modify ({· with messages := msgs})
-
-#evalString "[[\"n * 1 = n\"]]\n"
-  (proofEx.highlighted.proofStates.toList.filter (·.fst == "by") |>.map (·.snd.toList.map (·.conclusion)))
-
-#evalStrings [ -- NB #5677 changed goal displays, so the second
-               -- version here became the expected output after
-               -- nightly-2024-10-18.
-    "[[some \"zero\"], [some \"succ\"], [none], [some \"succ.succ\"], [none]]\n",
-    "[[none], [some \"succ.succ\"], [none]]\n"]
- (proofEx.highlighted.proofStates.toList.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name)))
 
 /-! # Message Normalization -/
 
@@ -324,6 +274,64 @@ open Lean Elab Command in
 @[inherit_doc highlightModuleStyleSegments]
 def highlightModuleStyle (input : String) : CommandElabM Highlighting.Highlighted := do
   return (← highlightModuleStyleSegments input).foldl (· ++ ·) .empty
+
+open Lean Elab Command in
+-- Proof states of an induction proof. The `by` keyword shows the theorem's statement, and the `=>`
+-- of each alternative shows the goals named by its case. Goal display in Lean changed after
+-- nightly-2024-10-18, so two lists of case names are accepted.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle <|
+    "theorem test (n : Nat) : n * 1 = n := by\n" ++
+    "  induction n with\n" ++
+    "  | zero => rfl\n" ++
+    "  | succ n ih =>\n" ++
+    "    rw [← ih]\n" ++
+    "    cases n\n" ++
+    "    next => simp\n" ++
+    "    case' succ =>\n" ++
+    "      skip\n" ++
+    "    case succ =>\n" ++
+    "      . skip; simp\n"
+  let states := hl.proofStates.toList
+  let byGoals := states.filter (·.fst == "by") |>.map (·.snd.toList.map (·.conclusion))
+  unless byGoals == [["n * 1 = n"]] do
+    throwError m!"Unexpected `by` proof states: {repr byGoals}"
+  let arrowNames := states.filter (·.fst == "=>") |>.map (·.snd.toList.map (·.name))
+  let accepted : List (List (List (Option String))) := [
+    [[some "zero"], [some "succ"], [none], [some "succ.succ"], [none]],
+    [[none], [some "succ.succ"], [none]]
+  ]
+  unless accepted.contains arrowNames do
+    throwError m!"Unexpected `=>` proof states: {repr arrowNames}"
+
+open Lean Elab Command in
+-- A proof that uses `conv` has proof states. Decoding its JSON yields code with the same text and
+-- the same JSON.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle <|
+    "example :\n" ++
+    "    (fun (x y z : Nat) =>\n" ++
+    "      x + (y + z))\n" ++
+    "    =\n" ++
+    "    (fun x y z =>\n" ++
+    "      (z + x) + y)\n" ++
+    "  := by\n" ++
+    "  conv =>\n" ++
+    "    lhs\n" ++
+    "    intro x y z\n" ++
+    "    conv =>\n" ++
+    "      arg 2\n" ++
+    "      rw [Nat.add_comm]\n" ++
+    "    rw [← Nat.add_assoc]\n" ++
+    "    arg 1\n" ++
+    "    rw [Nat.add_comm]\n"
+  if hl.proofStates.isEmpty then
+    throwError "No proof states found in the `conv` proof"
+  match (fromJson? (toJson hl) : Except String Highlighting.Highlighted) with
+  | .error e => throwError m!"Failed to decode the `conv` proof's JSON: {e}"
+  | .ok hl' =>
+    unless (toJson hl').compress == (toJson hl).compress && hl'.toString == hl.toString do
+      throwError "The `conv` proof changed in a JSON round trip"
 
 open Lean Elab Command in
 -- Each frontend item's messages are the command's own parse errors and elaboration messages, even

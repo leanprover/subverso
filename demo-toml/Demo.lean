@@ -5,38 +5,30 @@ Author: David Thrane Christiansen
 -/
 import «Demo».Basic
 
-import SubVerso.Examples
-
-open SubVerso.Examples
-
-%example version
+-- ANCHOR: version
 #eval Lean.versionString
-%end
+-- ANCHOR_END: version
 
-%example xdef
-def f (x : Nat) := %ex{add}{33 + %ex{X}{x}}
-%end
-
-%example proof
+-- ANCHOR: proof
 theorem test (n : Nat) : n * 1 = n := by
   induction n with
   | zero => rfl
   | succ n ih =>
     rw [← ih]
     simp
-%end
+-- ANCHOR_END: proof
 
-%example proofWithInstance
+-- ANCHOR: proofWithInstance
 -- Test that proof states containing daggered names can round-trip
 def test2 [ToString α] (x : α) : Decidable (toString x = "") := by
   constructor; sorry
-%end
+-- ANCHOR_END: proofWithInstance
 
-%show_name Nat.rec
-
-%signature qs
-  Array.qsort.{u} {α : Type u} (as : Array α) (lt : α → α → Bool) (low : Nat := 0) (high : Nat := as.size - 1) : Array α
-
-%example hasSorry
+-- ANCHOR: hasSorry
 theorem bogus : 2 = 2 := by sorry
-%end
+-- ANCHOR_END: hasSorry
+
+-- ANCHOR: linted
+def g : α → Nat
+  | x => 3
+-- ANCHOR_END: linted
