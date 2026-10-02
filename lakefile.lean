@@ -136,11 +136,6 @@ lean_exe «subverso-internal-tests» where
   supportInterpreter := true
 
 @[default_target]
-lean_exe «subverso-extract» where
-  root := `Extract
-  supportInterpreter := true
-
-@[default_target]
 lean_exe «subverso-extract-mod» where
   root := `ExtractModule
   supportInterpreter := true
@@ -214,62 +209,6 @@ else
           }
         pure hlFile
 
-meta if Compat.useOldBind then
-  module_facet examples mod : FilePath := do
-    let ws ← getWorkspace
-    let some extract ← findLeanExe? `«subverso-extract»
-      | error "The subverso-extract executable was not found"
-
-    let exeJob ← extract.exe.fetch
-    let modJob ← mod.olean.fetch
-    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
-
-    let buildDir := ws.root.buildDir
-    let hlFile := mod.filePath (buildDir / "examples") "json"
-    let nsFile := buildDir / "examples" / s!"ns-{hash suppNS}"
-
-    exeJob.bindAsync fun exeFile exeTrace =>
-      modJob.bindSync fun _oleanPath modTrace => do
-        let depTrace := mixTrace exeTrace modTrace
-        let trace ← buildFileUnlessUpToDate hlFile depTrace do
-          Compat.logStep s!"Exporting highlighted example JSON for '{mod.name}'"
-          proc {
-            cmd := exeFile.toString
-            args := #[mod.name.toString, hlFile.toString]
-            env := ← getAugmentedEnv
-          }
-        pure (hlFile, trace)
-
-else
-  module_facet examples mod : FilePath := do
-    let ws ← getWorkspace
-
-    let exeJob ← «subverso-extract».fetch
-    let modJob ← mod.olean.fetch
-    let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
-
-    let buildDir := ws.root.buildDir
-    let hlFile := mod.filePath (buildDir / "examples") "json"
-    let nsFile := buildDir / "examples" / s!"ns-{hash suppNS}"
-
-    exeJob.bindM fun exeFile => do
-      modJob.mapM fun oleanPath => do
-        addPureTrace suppNS
-        buildFileUnlessUpToDate' (text := true) nsFile do
-          IO.FS.createDirAll (buildDir / "examples")
-          IO.FS.writeFile nsFile suppNS
-        addTrace (← computeTrace exeFile)
-        addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
-        addTrace (← computeTrace oleanPath)
-        Compat.logStep s!"Exporting highlighted example JSON for '{mod.name}'"
-        buildFileUnlessUpToDate' (text := true) hlFile do
-          proc {
-            cmd := exeFile.toString
-            args := #[mod.name.toString, hlFile.toString]
-            env := ← getAugmentedEnv
-          }
-        pure hlFile
-
 meta if Compat.useOldMixArray then
   library_facet highlighted lib : FilePath := do
     let ws ← getWorkspace
@@ -287,25 +226,6 @@ else
     moduleJobs.mapM fun () => do
       let buildDir := ws.root.buildDir
       let hlDir := buildDir / "highlighted"
-      pure hlDir
-
-meta if Compat.useOldMixArray then
-  library_facet examples lib : FilePath := do
-    let ws ← getWorkspace
-    let mods ← Compat.getMods lib
-    let moduleJobs ← BuildJob.mixArray <| ← mods.mapM (fetch <| ·.facet `examples)
-    let buildDir := ws.root.buildDir
-    let hlDir := buildDir / "examples"
-    moduleJobs.bindSync fun () trace => do
-      pure (hlDir, trace)
-else
-  library_facet examples lib : FilePath := do
-    let ws ← getWorkspace
-    let mods ← Compat.getMods lib
-    let moduleJobs ← Job.mixArray <$> mods.mapM (·.facet `examples |>.fetch)
-    moduleJobs.mapM fun () => do
-      let buildDir := ws.root.buildDir
-      let hlDir := buildDir / "examples"
       pure hlDir
 
 meta if Compat.useOldMixArray then
@@ -330,27 +250,6 @@ else
       let buildDir := ws.root.buildDir
       let hlDir := buildDir / "highlighted"
       Compat.logInfo s!"Highlighted code written to '{hlDir}'"
-      pure hlDir
-
-meta if Compat.useOldMixArray then
-  package_facet examples pkg : FilePath := do
-    let ws ← getWorkspace
-    let libs := pkg.leanLibs
-    let libJobs ← BuildJob.mixArray <| ← libs.mapM (fetch <| ·.facet `examples)
-    let buildDir := ws.root.buildDir
-    let hlDir := buildDir / "examples"
-    libJobs.bindSync fun () trace => do
-      Compat.logInfo s!"Highlighted code written to '{hlDir}'"
-      pure (hlDir, trace)
-else
-  package_facet examples pkg : FilePath := do
-    let ws ← getWorkspace
-    let libs := pkg.leanLibs
-    let libJobs ← Job.mixArray <$> libs.mapM (·.facet `examples |>.fetch)
-    libJobs.mapM fun () => do
-      let buildDir := ws.root.buildDir
-      let hlDir := buildDir / "examples"
-      logInfo s!"Highlighted code written to '{hlDir}'"
       pure hlDir
 
 open Lean in
