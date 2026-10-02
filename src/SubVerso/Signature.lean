@@ -12,6 +12,7 @@ public import Lean.Data.Options
 public import SubVerso.Compat
 public import SubVerso.Examples.Options
 public import SubVerso.Highlighting.Highlighted
+public import SubVerso.Highlighting.Diagnostics
 import SubVerso.Highlighting.Code
 public section
 
@@ -59,7 +60,7 @@ Check the signature by elaborating and comparing.
 def checkSignature
     (sigName : TSyntax ``Lean.Parser.Command.declId)
     (sig : TSyntax ``Lean.Parser.Command.declSig) :
-    CommandElabM (Highlighted × String × Compat.String.Pos × Compat.String.Pos × PersistentArray InfoTree) := do
+    CommandElabM (Highlighted × Diagnostics × String × Compat.String.Pos × Compat.String.Pos × PersistentArray InfoTree) := do
   -- First make sure the names won't clash - we want two different declarations to compare.
   let mod ← getMainModule
   let sc ← getCurrMacroScope
@@ -124,7 +125,9 @@ def checkSignature
   let suppressedNS ← getSuppressed
   let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
   let trees := targetTrees ++ trees
-  let hl ← liftTermElabM <| withDeclName `x do
-    pure <| .seq #[← highlight sigName #[] trees suppressedNS, ← highlight sig #[] trees suppressedNS]
+  let (hl, diagnostics) ← liftTermElabM <| withDeclName `x do
+    let (nameHl, nameDiagnostics) ← highlight sigName #[] trees suppressedNS
+    let (sigHl, sigDiagnostics) ← highlight sig #[] trees suppressedNS
+    return (.seq #[nameHl, sigHl], nameDiagnostics ++ sigDiagnostics)
 
-  return (hl, str, startPos, stopPos, trees)
+  return (hl, diagnostics, str, startPos, stopPos, trees)

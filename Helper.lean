@@ -70,10 +70,10 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               if msgs.hasErrors then
                 return Response.error 5 "Elaboration failed" <| some <| .arr <|
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-              let hl ← liftTermElabM <| do
+              let (hl, diagnostics) ← liftTermElabM do
                 -- No messages - those are confusing here
                 highlight stx #[] trees
-              pure <| Response.result <| .highlighted hl
+              pure <| Response.result <| .highlighted hl diagnostics
           finally
             setInfoState infoState
       catch
@@ -115,10 +115,10 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               if msgs.hasErrors then
                 return Response.error 5 "Elaboration failed" <| some <| .arr <|
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-              let hl ← liftTermElabM <| do
+              let (hl, diagnostics) ← liftTermElabM do
                 -- No messages - those are confusing here
                 highlight name #[] trees
-              pure <| Response.result <| .highlighted hl
+              pure <| Response.result <| .highlighted hl diagnostics
           finally
             setInfoState infoState
       catch
@@ -148,9 +148,9 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               if msgs.hasErrors then
                 return Response.error 7 "Command failed" <| some <| .arr <|
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-              let hl ← liftTermElabM do
+              let (hl, diagnostics) ← liftTermElabM do
                 highlight stx msgs.toArray trees
-              pure <| Response.result <| .highlighted hl
+              pure <| Response.result <| .highlighted hl diagnostics
           finally
             setInfoState infoState
       catch
@@ -183,18 +183,18 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
           try
             setInfoState {}
             withEnableInfoTree (m := CommandElabM) true do
-              let hl ←
+              let (hl, diagnostics) ←
                 try
-                  let (hl, _, _, _) ← checkSignature ⟨name⟩ ⟨sig⟩
+                  let (hl, diagnostics, _, _, _, _) ← checkSignature ⟨name⟩ ⟨sig⟩
                   let msgs := (← get).messages
                   if msgs.hasErrors then
                     return Response.error 9 "Command failed" <| some <| .arr <|
                       (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-                  pure hl
+                  pure (hl, diagnostics)
                 catch
                   | e =>
                     return Response.error 8 (← e.toMessageData.toString) none
-              return Response.result <| .highlighted hl
+              return Response.result <| .highlighted hl diagnostics
           finally
             setInfoState infoState
       catch

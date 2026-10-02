@@ -68,13 +68,16 @@ compact than the underlying array.
 -/
 structure Module where
   items : Array ModuleItem
+  /-- Diagnostic summary for all highlighted items in the module. -/
+  diagnostics : Diagnostics := {}
 deriving Inhabited
 
 def Module.toJson (mod : Module) : Json :=
   let (items, state) := mod.items.mapM itemJson |>.run {}
   Json.mkObj [
     ("data", state.toExport.toJson),
-    ("items", .arr items)
+    ("items", .arr items),
+    ("diagnostics", ToJson.toJson mod.diagnostics)
   ]
 where
   itemJson : ModuleItem → ExportM Json
@@ -93,7 +96,8 @@ def Module.fromJson? (json : Json) : Except String Module := do
   let data ← Export.fromJson? data
   let .arr items ← json.getObjVal? "items"
     | throw "Expected array for key 'items'"
-  return ⟨← items.mapM (getItem data)⟩
+  let diagnostics ← Diagnostics.fromJsonField? json
+  return ⟨← items.mapM (getItem data), diagnostics⟩
 where
   getItem (data : Export) (v : Json) : Except String ModuleItem := do
     let range ← v.getObjVal? "range" >>= rangeFromJson
