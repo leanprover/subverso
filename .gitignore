@@ -6,3 +6,4 @@ lake-manifest.json
 .source-commit
 no-mod
 .builds
+.prebuild
