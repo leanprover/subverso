@@ -18,34 +18,53 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
-      runners: ${{ steps.plan.outputs.runners }}
+      projects: ${{ steps.plan.outputs.projects }}
+      prebuild: ${{ steps.plan.outputs.prebuild }}
+      sources: ${{ steps.plan.outputs.sources }}
     steps:
       - uses: actions/checkout@v6
 
-      # The test job has 8 version slots, so shards hold at most 8 versions.
+      # The test job has 8 version slots, so shards hold at most 8 versions. It has 6 slots that
+      # restore test projects, so there are at most 6 (project, toolchain) pairs. The prebuild
+      # matrix has one entry for each pair on each kind of runner.
       - name: Plan the test matrix
         id: plan
+        env:
+          SOURCES: ${{ hashFiles('*.lean', 'lean-toolchain', 'demo-toolchains', 'ci/test-projects.sh', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
         run: |
           set -euo pipefail
           matrix="$(jq -c --argjson shard 8 --arg runner nscloud-ubuntu-22.04-amd64-8x16 \
             --slurpfile platforms .github/platform-versions.json \
             -f .github/lean-versions.jq .github/lean-versions.json)"
           jq . <<< "$matrix"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "runners=$(jq -c '[.include[].runner] | unique' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+          projects="$(bash ci/test-projects.sh | jq -R -s -c '
+            split("\n") | map(select(length > 0) | split(" ")
+              | {name: "\(.[0])-\(.[1] | sub("^.*:"; ""))", project: .[0], toolchain: .[1]})')"
+          jq . <<< "$projects"
+          if [ "$(jq length <<< "$projects")" -gt 6 ]; then
+            echo "::error::There are more test projects than the test job has slots that restore them"
+            exit 1
+          fi
+          prebuild="$(jq -c --argjson projects "$projects" \
+            '{include: [(.include | map(.runner) | unique)[] as $runner | $projects[] | . + {runner: $runner}]}' <<< "$matrix")"
+          {
+            echo "matrix=$matrix"
+            echo "projects=$projects"
+            echo "prebuild=$prebuild"
+            echo "sources=$SOURCES"
+          } >> "$GITHUB_OUTPUT"
 
-  # The test projects are built against the SubVerso under test with their own toolchains, so one
-  # cache entry per kind of runner serves every Lean version under test. Each build root under
-  # `.prebuild` has the layout of `.builds` and belongs to one (project, toolchain) pair.
+  # Each test project is built against the SubVerso under test with its own toolchain, so one cache
+  # entry per test project and kind of runner serves every Lean version under test. The build root
+  # `.prebuild/<name>` has the layout of `.builds` and belongs to one (project, toolchain) pair.
   prebuild:
     needs: plan
-    name: Prebuild test projects (${{ matrix.runner }})
+    name: Prebuild ${{ matrix.name }} (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        runner: ${{ fromJSON(needs.plan.outputs.runners) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.prebuild) }}
     steps:
       - name: Install elan
         run: |
@@ -55,20 +74,20 @@ jobs:
 
       - uses: actions/checkout@v6
 
-      - name: Restore the prebuilt test projects
-        id: test-projects
+      - name: Restore the prebuilt test project
+        id: test-project
         uses: actions/cache/restore@v5
         with:
           path: |
-            .prebuild/*/*/*/.lake
-            .prebuild/*/*/*/no-mod/.lake
-          key: subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demo-toolchains', 'ci/test-projects.sh', 'ci/prebuild.sh', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+            .prebuild/${{ matrix.name }}/*/*/.lake
+            .prebuild/${{ matrix.name }}/*/*/no-mod/.lake
+          key: subverso-test-project-${{ matrix.name }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.plan.outputs.sources }}
           restore-keys: |
-            subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-
+            subverso-test-project-${{ matrix.name }}-${{ runner.os }}-${{ runner.arch }}-
 
-      # The toolchain in `lean-toolchain` builds the test driver that prebuilds the test projects.
+      # The toolchain in `lean-toolchain` builds the test driver that prebuilds the test project.
       - name: Install the toolchain in lean-toolchain
-        if: steps.test-projects.outputs.cache-hit != 'true'
+        if: steps.test-project.outputs.cache-hit != 'true'
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 15
@@ -76,51 +95,40 @@ jobs:
           retry_wait_seconds: 15
           command: elan run --install "$(cat lean-toolchain)" lean --version
 
-      - name: Install the test projects' toolchains
-        if: steps.test-projects.outputs.cache-hit != 'true'
+      - name: Install the test project's toolchain
+        if: steps.test-project.outputs.cache-hit != 'true'
         uses: nick-fields/retry@v3
+        env:
+          TOOLCHAIN: ${{ matrix.toolchain }}
         with:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 15
-          command: |
-            set -euo pipefail
-            bash ci/test-projects.sh | awk '{print $2}' | sort -u | while read -r tc; do
-              elan run --install "$tc" lean --version < /dev/null
-            done
+          command: elan run --install "$TOOLCHAIN" lean --version
 
       - name: Build the test driver
-        if: steps.test-projects.outputs.cache-hit != 'true'
+        if: steps.test-project.outputs.cache-hit != 'true'
         run: lake build subverso-tests
 
-      - name: Prebuild the test projects
-        id: prebuild
-        if: steps.test-projects.outputs.cache-hit != 'true'
-        run: bash ci/prebuild.sh
+      - name: Prebuild the test project
+        if: steps.test-project.outputs.cache-hit != 'true'
+        env:
+          SUBVERSO_TEST_BUILD_ROOT: .prebuild/${{ matrix.name }}
+          PROJECT: ${{ matrix.project }}
+          TOOLCHAIN: ${{ matrix.toolchain }}
+        run: lake exe subverso-tests prepare "$PROJECT" "$TOOLCHAIN"
 
-      - name: Save the prebuilt test projects
-        if: steps.test-projects.outputs.cache-hit != 'true'
+      - name: Save the prebuilt test project
+        if: steps.test-project.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: |
-            .prebuild/*/*/*/.lake
-            .prebuild/*/*/*/no-mod/.lake
-          key: ${{ steps.test-projects.outputs.cache-primary-key }}
-
-      # When a test project fails to build, the ones that did build are saved under a key of their
-      # own. The test job restores that entry, because its key starts with the test job's key. This
-      # job doesn't count it as a cache hit, so its next run builds the failed projects again.
-      - name: Save the test projects that built
-        if: failure() && steps.prebuild.outcome == 'failure'
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            .prebuild/*/*/*/.lake
-            .prebuild/*/*/*/no-mod/.lake
-          key: ${{ steps.test-projects.outputs.cache-primary-key }}-partial
+            .prebuild/${{ matrix.name }}/*/*/.lake
+            .prebuild/${{ matrix.name }}/*/*/no-mod/.lake
+          key: ${{ steps.test-project.outputs.cache-primary-key }}
 
   # The test job waits for the prebuild so that the cache holds the test projects. It also runs
-  # when the prebuild fails. Each version's test run then builds the test projects itself and
+  # when a prebuild fails. Each version's test run then builds that test project itself and
   # reports the failure.
   test:
     needs: [plan, prebuild]
@@ -129,7 +137,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 10
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     # ci/test-version.sh keeps its work in $RUNNER_TEMP/subverso-ci and reads the prebuilt test
@@ -172,69 +180,122 @@ jobs:
               elan run --install "$tc" lean --version < /dev/null
             done
 
-      - name: Restore the prebuilt test projects
+      # One slot per test project. A slot whose index is past the end of the list is skipped,
+      # because indexing past the end of an array yields null.
+      - name: ${{ fromJSON(needs.plan.outputs.projects)[0] != null && format('Restore {0}', fromJSON(needs.plan.outputs.projects)[0].name) || 'No-op' }}
+        if: fromJSON(needs.plan.outputs.projects)[0] != null
         uses: actions/cache/restore@v5
         with:
           path: |
-            .prebuild/*/*/*/.lake
-            .prebuild/*/*/*/no-mod/.lake
-          key: subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demo-toolchains', 'ci/test-projects.sh', 'ci/prebuild.sh', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[0].name }}/*/*/.lake
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[0].name }}/*/*/no-mod/.lake
+          key: subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[0].name }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.plan.outputs.sources }}
           restore-keys: |
-            subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-
+            subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[0].name }}-${{ runner.os }}-${{ runner.arch }}-
+      - name: ${{ fromJSON(needs.plan.outputs.projects)[1] != null && format('Restore {0}', fromJSON(needs.plan.outputs.projects)[1].name) || 'No-op' }}
+        if: fromJSON(needs.plan.outputs.projects)[1] != null
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[1].name }}/*/*/.lake
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[1].name }}/*/*/no-mod/.lake
+          key: subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[1].name }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.plan.outputs.sources }}
+          restore-keys: |
+            subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[1].name }}-${{ runner.os }}-${{ runner.arch }}-
+      - name: ${{ fromJSON(needs.plan.outputs.projects)[2] != null && format('Restore {0}', fromJSON(needs.plan.outputs.projects)[2].name) || 'No-op' }}
+        if: fromJSON(needs.plan.outputs.projects)[2] != null
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[2].name }}/*/*/.lake
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[2].name }}/*/*/no-mod/.lake
+          key: subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[2].name }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.plan.outputs.sources }}
+          restore-keys: |
+            subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[2].name }}-${{ runner.os }}-${{ runner.arch }}-
+      - name: ${{ fromJSON(needs.plan.outputs.projects)[3] != null && format('Restore {0}', fromJSON(needs.plan.outputs.projects)[3].name) || 'No-op' }}
+        if: fromJSON(needs.plan.outputs.projects)[3] != null
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[3].name }}/*/*/.lake
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[3].name }}/*/*/no-mod/.lake
+          key: subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[3].name }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.plan.outputs.sources }}
+          restore-keys: |
+            subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[3].name }}-${{ runner.os }}-${{ runner.arch }}-
+      - name: ${{ fromJSON(needs.plan.outputs.projects)[4] != null && format('Restore {0}', fromJSON(needs.plan.outputs.projects)[4].name) || 'No-op' }}
+        if: fromJSON(needs.plan.outputs.projects)[4] != null
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[4].name }}/*/*/.lake
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[4].name }}/*/*/no-mod/.lake
+          key: subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[4].name }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.plan.outputs.sources }}
+          restore-keys: |
+            subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[4].name }}-${{ runner.os }}-${{ runner.arch }}-
+      - name: ${{ fromJSON(needs.plan.outputs.projects)[5] != null && format('Restore {0}', fromJSON(needs.plan.outputs.projects)[5].name) || 'No-op' }}
+        if: fromJSON(needs.plan.outputs.projects)[5] != null
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[5].name }}/*/*/.lake
+            .prebuild/${{ fromJSON(needs.plan.outputs.projects)[5].name }}/*/*/no-mod/.lake
+          key: subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[5].name }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.plan.outputs.sources }}
+          restore-keys: |
+            subverso-test-project-${{ fromJSON(needs.plan.outputs.projects)[5].name }}-${{ runner.os }}-${{ runner.arch }}-
 
       # One slot per version of this matrix entry. A slot whose index is past the end of the list
       # is skipped, because indexing past the end of an array yields null.
       - parallel:
-          - name: Lean ${{ fromJSON(matrix.versions)[0].version }}
+          - name: ${{ fromJSON(matrix.versions)[0] != null && format('Lean {0}', fromJSON(matrix.versions)[0].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[0] != null
             timeout-minutes: 60
             env:
               LEAN_VERSION: ${{ fromJSON(matrix.versions)[0].version }}
               LEAN_MODULES: ${{ fromJSON(matrix.versions)[0].modules }}
             run: bash ci/test-version.sh
-          - name: Lean ${{ fromJSON(matrix.versions)[1].version }}
+          - name: ${{ fromJSON(matrix.versions)[1] != null && format('Lean {0}', fromJSON(matrix.versions)[1].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[1] != null
             timeout-minutes: 60
             env:
               LEAN_VERSION: ${{ fromJSON(matrix.versions)[1].version }}
               LEAN_MODULES: ${{ fromJSON(matrix.versions)[1].modules }}
             run: bash ci/test-version.sh
-          - name: Lean ${{ fromJSON(matrix.versions)[2].version }}
+          - name: ${{ fromJSON(matrix.versions)[2] != null && format('Lean {0}', fromJSON(matrix.versions)[2].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[2] != null
             timeout-minutes: 60
             env:
               LEAN_VERSION: ${{ fromJSON(matrix.versions)[2].version }}
               LEAN_MODULES: ${{ fromJSON(matrix.versions)[2].modules }}
             run: bash ci/test-version.sh
-          - name: Lean ${{ fromJSON(matrix.versions)[3].version }}
+          - name: ${{ fromJSON(matrix.versions)[3] != null && format('Lean {0}', fromJSON(matrix.versions)[3].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[3] != null
             timeout-minutes: 60
             env:
               LEAN_VERSION: ${{ fromJSON(matrix.versions)[3].version }}
               LEAN_MODULES: ${{ fromJSON(matrix.versions)[3].modules }}
             run: bash ci/test-version.sh
-          - name: Lean ${{ fromJSON(matrix.versions)[4].version }}
+          - name: ${{ fromJSON(matrix.versions)[4] != null && format('Lean {0}', fromJSON(matrix.versions)[4].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[4] != null
             timeout-minutes: 60
             env:
               LEAN_VERSION: ${{ fromJSON(matrix.versions)[4].version }}
               LEAN_MODULES: ${{ fromJSON(matrix.versions)[4].modules }}
             run: bash ci/test-version.sh
-          - name: Lean ${{ fromJSON(matrix.versions)[5].version }}
+          - name: ${{ fromJSON(matrix.versions)[5] != null && format('Lean {0}', fromJSON(matrix.versions)[5].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[5] != null
             timeout-minutes: 60
             env:
               LEAN_VERSION: ${{ fromJSON(matrix.versions)[5].version }}
               LEAN_MODULES: ${{ fromJSON(matrix.versions)[5].modules }}
             run: bash ci/test-version.sh
-          - name: Lean ${{ fromJSON(matrix.versions)[6].version }}
+          - name: ${{ fromJSON(matrix.versions)[6] != null && format('Lean {0}', fromJSON(matrix.versions)[6].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[6] != null
             timeout-minutes: 60
             env:
               LEAN_VERSION: ${{ fromJSON(matrix.versions)[6].version }}
               LEAN_MODULES: ${{ fromJSON(matrix.versions)[6].modules }}
             run: bash ci/test-version.sh
-          - name: Lean ${{ fromJSON(matrix.versions)[7].version }}
+          - name: ${{ fromJSON(matrix.versions)[7] != null && format('Lean {0}', fromJSON(matrix.versions)[7].version) || 'No-op' }}
             if: fromJSON(matrix.versions)[7] != null
             timeout-minutes: 60
             env:
