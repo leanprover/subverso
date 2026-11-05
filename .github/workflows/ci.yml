@@ -1,0 +1,281 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  merge_group:
+
+name: CI
+
+# A push to a pull request cancels the earlier run for that pull request. Every other run has a
+# group of its own, so pushes to main and merge queue entries always run to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      runners: ${{ steps.plan.outputs.runners }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # The test job has 8 version slots, so shards hold at most 8 versions.
+      - name: Plan the test matrix
+        id: plan
+        run: |
+          set -euo pipefail
+          matrix="$(jq -c --argjson shard 8 --arg runner nscloud-ubuntu-22.04-amd64-8x16 \
+            --slurpfile platforms .github/platform-versions.json \
+            -f .github/lean-versions.jq .github/lean-versions.json)"
+          jq . <<< "$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "runners=$(jq -c '[.include[].runner] | unique' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
+  # The test projects are built against the SubVerso under test with their own toolchains, so one
+  # cache entry per kind of runner serves every Lean version under test. Each build root under
+  # `.prebuild` has the layout of `.builds` and belongs to one (project, toolchain) pair.
+  prebuild:
+    needs: plan
+    name: Prebuild test projects (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.plan.outputs.runners) }}
+    steps:
+      - name: Install elan
+        run: |
+          set -o pipefail
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v6
+
+      - name: Restore the prebuilt test projects
+        id: test-projects
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .prebuild/*/*/*/.lake
+            .prebuild/*/*/*/no-mod/.lake
+          key: subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demo-toolchains', 'ci/test-projects.sh', 'ci/prebuild.sh', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-
+
+      # The toolchain in `lean-toolchain` builds the test driver that prebuilds the test projects.
+      - name: Install the toolchain in lean-toolchain
+        if: steps.test-projects.outputs.cache-hit != 'true'
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: elan run --install "$(cat lean-toolchain)" lean --version
+
+      - name: Install the test projects' toolchains
+        if: steps.test-projects.outputs.cache-hit != 'true'
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: |
+            set -euo pipefail
+            bash ci/test-projects.sh | awk '{print $2}' | sort -u | while read -r tc; do
+              elan run --install "$tc" lean --version < /dev/null
+            done
+
+      - name: Build the test driver
+        if: steps.test-projects.outputs.cache-hit != 'true'
+        run: lake build subverso-tests
+
+      - name: Prebuild the test projects
+        id: prebuild
+        if: steps.test-projects.outputs.cache-hit != 'true'
+        run: bash ci/prebuild.sh
+
+      - name: Save the prebuilt test projects
+        if: steps.test-projects.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            .prebuild/*/*/*/.lake
+            .prebuild/*/*/*/no-mod/.lake
+          key: ${{ steps.test-projects.outputs.cache-primary-key }}
+
+      # When a test project fails to build, the ones that did build are saved under a key of their
+      # own. The test job restores that entry, because its key starts with the test job's key. This
+      # job doesn't count it as a cache hit, so its next run builds the failed projects again.
+      - name: Save the test projects that built
+        if: failure() && steps.prebuild.outcome == 'failure'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            .prebuild/*/*/*/.lake
+            .prebuild/*/*/*/no-mod/.lake
+          key: ${{ steps.test-projects.outputs.cache-primary-key }}-partial
+
+  # The test job waits for the prebuild so that the cache holds the test projects. It also runs
+  # when the prebuild fails. Each version's test run then builds the test projects itself and
+  # reports the failure.
+  test:
+    needs: [plan, prebuild]
+    if: ${{ !cancelled() }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    # ci/test-version.sh keeps its work in $RUNNER_TEMP/subverso-ci and reads the prebuilt test
+    # projects from .prebuild in the workspace.
+    steps:
+      - name: Install elan (official script)
+        if: matrix.install == 'curl'
+        run: |
+          set -o pipefail
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Install elan (Homebrew)
+        if: matrix.install == 'brew'
+        run: |
+          brew install elan-init
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Check the install method
+        if: matrix.install != 'curl' && matrix.install != 'brew'
+        run: |
+          echo "::error::Unknown install method '${{ matrix.install }}'"
+          exit 1
+
+      - name: Which lake?
+        run: |
+          which lake
+
+      - uses: actions/checkout@v6
+
+      - name: Install the test projects' toolchains
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 15
+          command: |
+            set -euo pipefail
+            bash ci/test-projects.sh | awk '{print $2}' | sort -u | while read -r tc; do
+              elan run --install "$tc" lean --version < /dev/null
+            done
+
+      - name: Restore the prebuilt test projects
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .prebuild/*/*/*/.lake
+            .prebuild/*/*/*/no-mod/.lake
+          key: subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('*.lean', 'lean-toolchain', 'demo-toolchains', 'ci/test-projects.sh', 'ci/prebuild.sh', 'demodulize.py', 'src/**/*.lean', 'demo/**/*.lean', 'demo/lakefile.lean', 'demo/lean-toolchain', 'demo-toml/**/*.lean', 'demo-toml/lakefile.toml', 'demo-toml/lean-toolchain', 'small-tests/**/*.lean', 'small-tests/lakefile.lean') }}
+          restore-keys: |
+            subverso-test-projects-${{ runner.os }}-${{ runner.arch }}-
+
+      # One slot per version of this matrix entry. A slot whose index is past the end of the list
+      # is skipped, because indexing past the end of an array yields null.
+      - parallel:
+          - name: ${{ fromJSON(matrix.versions)[0] != null && format('Lean {0}', fromJSON(matrix.versions)[0].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[0] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[0].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[0].modules }}
+            run: bash ci/test-version.sh
+          - name: ${{ fromJSON(matrix.versions)[1] != null && format('Lean {0}', fromJSON(matrix.versions)[1].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[1] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[1].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[1].modules }}
+            run: bash ci/test-version.sh
+          - name: ${{ fromJSON(matrix.versions)[2] != null && format('Lean {0}', fromJSON(matrix.versions)[2].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[2] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[2].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[2].modules }}
+            run: bash ci/test-version.sh
+          - name: ${{ fromJSON(matrix.versions)[3] != null && format('Lean {0}', fromJSON(matrix.versions)[3].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[3] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[3].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[3].modules }}
+            run: bash ci/test-version.sh
+          - name: ${{ fromJSON(matrix.versions)[4] != null && format('Lean {0}', fromJSON(matrix.versions)[4].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[4] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[4].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[4].modules }}
+            run: bash ci/test-version.sh
+          - name: ${{ fromJSON(matrix.versions)[5] != null && format('Lean {0}', fromJSON(matrix.versions)[5].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[5] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[5].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[5].modules }}
+            run: bash ci/test-version.sh
+          - name: ${{ fromJSON(matrix.versions)[6] != null && format('Lean {0}', fromJSON(matrix.versions)[6].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[6] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[6].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[6].modules }}
+            run: bash ci/test-version.sh
+          - name: ${{ fromJSON(matrix.versions)[7] != null && format('Lean {0}', fromJSON(matrix.versions)[7].version) || 'No-op' }}
+            if: fromJSON(matrix.versions)[7] != null
+            timeout-minutes: 60
+            env:
+              LEAN_VERSION: ${{ fromJSON(matrix.versions)[7].version }}
+              LEAN_MODULES: ${{ fromJSON(matrix.versions)[7].modules }}
+            run: bash ci/test-version.sh
+
+      - name: Summarize
+        if: always()
+        env:
+          SHARD_NAME: ${{ matrix.name }}
+          EXPECTED_VERSIONS: ${{ matrix.expected }}
+        run: |
+          # shellcheck disable=SC2086 # the version list is split into arguments on purpose
+          bash ci/summarize.sh "$SHARD_NAME" $EXPECTED_VERSIONS
+
+      - name: Upload the logs of failed versions
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: failed-versions-${{ strategy.job-index }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/subverso-ci/failed
+          if-no-files-found: ignore
+
+  # The required status checks name these two jobs.
+  no-module-complete:
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: "Check matrix result"
+        if: needs.test.result != 'success'
+        run: exit 1
+      - run: echo "All tests passed"
+
+  module-complete:
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: "Check matrix result"
+        if: needs.test.result != 'success'
+        run: exit 1
+      - run: echo "All tests passed"

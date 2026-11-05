@@ -374,13 +374,18 @@ def loadModuleContentIn (project : System.FilePath) (mod : String) (toolchain : 
   loadModuleContent dir.toString mod (overrideToolchain := some toolchain)
 
 /--
-The fixed (Lean-version-independent) demo builds. These don't depend on the toolchain under test, so
-they're identical across every matrix job and are good candidates to build once and cache. Kept as
-named constants so the prebuild phase and the full test run agree on the exact toolchain strings
-(and hence on the build-directory names).
+Reads the toolchains that the `demo` project is tested with from the file `demo-toolchains`.
+
+The file holds one Lean version per line, as they would be written after `leanprover/lean4:` in a
+`lean-toolchain` file. In the return value, each toolchain is paired with its version number.
 -/
-def demoToolchain48 : String := "leanprover/lean4:v4.8.0"
-@[inherit_doc demoToolchain48] def demoToolchain410 : String := "leanprover/lean4:4.10.0"
+def demoToolchains : IO (List (String × String)) := do
+  let versions := (← IO.FS.readFile "demo-toolchains").splitOn "\n"
+    |>.map Compat.String.trim |>.filter (· != "")
+  if versions.isEmpty then
+    throw <| .userError "The file demo-toolchains doesn't list any Lean versions"
+  pure <| versions.map fun v =>
+    ("leanprover/lean4:" ++ v, if v.startsWith "v" then Compat.String.drop v 1 else v)
 
 /--
 The small-tests module that references a `match` auxiliary declaration by the name `toolchain`'s
@@ -399,14 +404,14 @@ def matchNamesModule (toolchain : String) : Option String :=
     else none
   | _ => some "Small.MatchNames21"
 
-/-- The `(project, toolchain)` pairs whose builds are shared across all matrix jobs. -/
+/--
+The `(project, toolchain)` pairs whose builds are the same for every Lean version under test.
+
+They are `demo-toml` under its own toolchain and `demo` under each toolchain in `demo-toolchains`.
+-/
 def fixedTargets : IO (List (System.FilePath × String)) := do
-  pure [
-    ("demo-toml", ← projectToolchain "demo-toml"),
-    ("demo", ← projectToolchain "demo"),
-    ("demo", demoToolchain48),
-    ("demo", demoToolchain410)
-  ]
+  let demoToml : System.FilePath × String := ("demo-toml", ← projectToolchain "demo-toml")
+  pure <| demoToml :: (← demoToolchains).map fun (toolchain, _) => ("demo", toolchain)
 
 /--
 Runs the full test suite. `demodSrc` is the demodulized SubVerso source tree (from
@@ -446,7 +451,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
         IO.eprintln "Got non-tactic {hl y}"; return 1
 
   let mut proofCounts := #[]
-  for (toolchain, version) in [(← projectToolchain "demo", "4.3.0"), (demoToolchain48, "4.8.0"), (demoToolchain410, "4.10.0")] do
+  for (toolchain, version) in ← demoToolchains do
     IO.println s!"Checking the demo module with Lean toolchain {toolchain}"
     let count ← checkDemo (← loadHighlightedModuleIn "demo" "Demo" toolchain demodSrc) version
     IO.println s!"Found {count} proofs"
@@ -518,8 +523,8 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
 
 /--
 Builds the fixed-toolchain demo targets (or a single `<project> <toolchain>` pair) into their
-per-toolchain build directories and exits, without running any assertions. Used by the CI prebuild
-job to cache the builds that are shared across all matrix jobs.
+per-toolchain build directories and exits, without running any assertions. CI uses it to cache the
+builds that are shared across all Lean versions under test.
 -/
 def prepare (demodSrc : System.FilePath) (args : List String) : IO UInt32 := do
   let targets ← match args with

@@ -1,0 +1,7 @@
+[
+  { "platform": "macos-curl", "runner": "macos-15-intel", "install": "curl", "version": "4.24.0", "modules": false },
+  { "platform": "macos-curl", "runner": "macos-15-intel", "install": "curl", "version": "4.9.1", "modules": false },
+  { "platform": "macos-brew", "runner": "macos-15-intel", "install": "brew", "version": "4.8.0", "modules": false },
+  { "platform": "macos-brew", "runner": "macos-15-intel", "install": "brew", "version": "4.3.0", "modules": false },
+  { "platform": "macos-curl", "runner": "macos-15-intel", "install": "curl", "version": "4.27.0-rc1", "modules": true }
+]
