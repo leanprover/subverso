@@ -129,6 +129,12 @@ run_checks() {
 
   stage="lake exe subverso-tests"
   lake exe subverso-tests
+
+  # Lake keeps imports in its artifact cache instead of the build directory from Lean 4.23 on.
+  if [ "$(printf '%s\n' 4.23.0 "$version" | sort -V | head -n 1)" = 4.23.0 ]; then
+    stage="artifact cache test"
+    ci/test-artifact-cache.sh "$modules"
+  fi
 }
 
 collect_failure() {
