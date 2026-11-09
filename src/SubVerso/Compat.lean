@@ -268,13 +268,30 @@ def isModule (stx : Syntax) : Bool :=
 
 set_option linter.unusedVariables false in
 open CanBeArrayOrList in
-def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options) (trustLevel : UInt32 := 0) (isModule : Bool := false) (asServer : Bool := false) : IO Environment :=
+/--
+Imports modules into a new environment.
+
+If `setupJson?` is not `none` then it should be the text of a Lake module setup JSON file. This
+enables the Lake artifact cache. Toolchains without this feature ignore `setupJson?`.
+-/
+def importModules [CanBeArrayOrList f] (imports : f Import) (opts : Options)
+    (trustLevel : UInt32 := 0) (isModule : Bool := false)
+    (asServer : Bool := false)
+    (setupJson? : Option String := none) : IO Environment :=
   %first_succeeding [
+    do
+      let setup? : Option ModuleSetup ← setupJson?.mapM fun json => IO.ofExcept (Json.parse json >>= fromJson?)
+      let arts := (setup?.map ModuleSetup.importArts).getD {}
+      Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then if asServer then .server else .exported else .private) (arts := arts),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true) (level := if isModule then if asServer then .server else .exported else .private),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel) (loadExts := true),
     Lean.importModules (%first_succeeding [asArray imports, asList imports]) opts (trustLevel := trustLevel)
   ]
 
+
+/-- Whether `importModules` can load modules from the artifacts in a Lake module setup. -/
+def supportsSetupArtifacts : Bool :=
+  %first_succeeding [(have := @ModuleSetup.importArts; true), false]
 
 def mkRefIdentFVar [Monad m] [MonadEnv m] (id : FVarId) : m Lean.Lsp.RefIdent := do
   pure %first_succeeding [

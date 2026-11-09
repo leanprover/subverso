@@ -211,6 +211,23 @@ def serve (input output : IO.FS.Stream) : FrontendM UInt32 := do
     if !(← handle input output) then break
   return 0
 
+/--
+Asks Lake for the JSON setup of a Lean source file.
+
+The setup lists the artifacts of the file's imports, which are in Lake's artifact cache when that is
+enabled. Lake builds any imports that are out of date. The result is `none` when the helper is
+running outside of Lake, when the toolchain can't use the setup, or when Lake reports a failure.
+-/
+def fetchLakeSetup? (file : System.FilePath) : IO (Option String) := do
+  unless Compat.supportsSetupArtifacts do return none
+  let some lake ← IO.getEnv "LAKE"
+    | return none
+  let out ← IO.Process.output { cmd := lake, args := #["setup-file", file.toString] }
+  if out.exitCode == 0 then
+    return some out.stdout
+  IO.eprint out.stderr
+  return none
+
 unsafe def main : (args : List String) → IO UInt32
   | [mod] => do
     try
@@ -228,7 +245,8 @@ unsafe def main : (args : List String) → IO UInt32
       let (headerStx, parserState, msgs) ← Parser.parseHeader ictx
       let imports := headerToImports headerStx
       enableInitializersExecution
-      let env ← Compat.importModules imports {}
+      let setupJson? ← fetchLakeSetup? fname
+      let env ← Compat.importModules imports {} (isModule := Compat.isModule headerStx) (asServer := true) (setupJson? := setupJson?)
       let pctx : Context := {inputCtx := ictx}
 
       let commandState : Command.State := { env, maxRecDepth := defaultMaxRecDepth, messages := msgs }

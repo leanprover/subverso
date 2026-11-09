@@ -30,6 +30,11 @@ OPTS may be:
     When elaborating a module, import only the public parts. This emulates the
     behavior of the command-line compiler instead of the language server.
 
+  --setup FILE
+    Load imported modules from the artifacts listed in FILE, which should be a in
+    Lake's module setup JSON format. Imports that FILE doesn't list are found
+    through LEAN_PATH. Toolchains without Lake module setups ignore this option.
+
 Each command in the module is represented as a JSON object with the following
 fields:
 
@@ -74,7 +79,7 @@ partial def commandKind (cmd : Syntax) : SyntaxNodeKind :=
   | `(command|$_cmd1 in $cmd2) => commandKind cmd2
   | _ => cmd.getKind
 
-unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
+unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (setupFile? : Option System.FilePath) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
     initSearchPath (← findSysroot)
     let modName := mod.toName
@@ -93,7 +98,8 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
     let imports := headerToImports headerStx
     enableInitializersExecution
     let isModule := Compat.isModule headerStx
-    let env ← Compat.importModules imports {} (isModule := isModule) (asServer := asServer)
+    let setupJson? ← setupFile?.mapM IO.FS.readFile
+    let env ← Compat.importModules imports {} (isModule := isModule) (asServer := asServer) (setupJson? := setupJson?)
     let pctx : Context := {inputCtx := ictx}
 
     let commandState : Command.State := { env, maxRecDepth := defaultMaxRecDepth, messages := msgs }
@@ -128,41 +134,47 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
 structure Config where
   asServer : Bool
   suppressedNamespaces : Array Name := #[]
+  setupFile? : Option System.FilePath := none
   mod : String
   outFile : Option String := none
 
-def Config.fromArgs (args : List String) : IO Config := go true #[] args
+def Config.fromArgs (args : List String) : IO Config := go true #[] none args
 where
-  go (asServer : Bool) (nss : Array Name) : List String → IO Config
+  go (asServer : Bool) (nss : Array Name) (setupFile? : Option System.FilePath) : List String → IO Config
     | "--suppress-namespace" :: more =>
       if let ns :: more := more then
-        go asServer (nss.push ns.toName) more
+        go asServer (nss.push ns.toName) setupFile? more
       else
         throw <| .userError "No namespace given after --suppress-namespace"
     | "--suppress-namespaces" :: more => do
       if let file :: more := more then
         let contents ← IO.FS.readFile file
         let nss' := Compat.String.splitToList contents (·.isWhitespace) |>.filter (!·.isEmpty) |>.map (·.toName)
-        go asServer (nss ++ nss') more
+        go asServer (nss ++ nss') setupFile? more
       else
         throw <| .userError "No namespace file given after --suppress-namespaces"
     | "--not-server" :: more => do
-      go false nss more
-    | [mod] => pure { asServer, suppressedNamespaces := nss, mod }
-    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, mod, outFile := some outFile }
+      go false nss setupFile? more
+    | "--setup" :: more => do
+      if let file :: more := more then
+        go asServer nss (some file) more
+      else
+        throw <| .userError "No setup file given after --setup"
+    | [mod] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod }
+    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, outFile := some outFile }
     | other => throw <| .userError s!"Didn't understand remaining arguments: {other}"
 
 unsafe def main (args : List String) : IO UInt32 := do
   try
-    let { asServer, suppressedNamespaces, mod, outFile } ← Config.fromArgs args
+    let { asServer, suppressedNamespaces, setupFile?, mod, outFile } ← Config.fromArgs args
     match outFile with
     | none =>
-      go asServer suppressedNamespaces mod (← IO.getStdout)
+      go asServer suppressedNamespaces setupFile? mod (← IO.getStdout)
     | some outFile =>
       if let some p := (outFile : System.FilePath).parent then
         IO.FS.createDirAll p
       IO.FS.withFile outFile .write fun h =>
-        go asServer suppressedNamespaces mod (.ofHandle h)
+        go asServer suppressedNamespaces setupFile? mod (.ofHandle h)
   catch e =>
     if args.isEmpty then
       IO.eprintln s!"No arguments provided."
