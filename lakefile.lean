@@ -60,6 +60,39 @@ open Lean Elab Command Term in
   else if ty == "LeanLib → IndexBuildM (Array Lake.Module)" then
     elabCommand <| ← `(def $(mkIdent `getMods) (lib : LeanLib) : IndexBuildM (Array Lake.Module) := lib.modules.fetch)
   else throwError "Didn't recognize type of lib.modules.fetch to define compatibility shim for 'getMods': {ty}"
+
+-- Defines `buildJsonFile`, which builds a JSON file that is saved in Lake's artifact cache when
+-- that is enabled. The file is always present at its path in the build directory.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  -- Only the module facet for newer Lake versions uses this definition
+  if env.contains `Lake.buildFileUnlessUpToDate' then
+    let buildJsonFile := mkIdent `buildJsonFile
+    if env.contains `Lake.buildArtifactUnlessUpToDate then
+      -- The artifact cache is consulted only for the job's current package
+      elabCommand <| ← `(def $buildJsonFile (pkg : Lake.Package) (file : System.FilePath) (build : Lake.JobM PUnit) : Lake.JobM Unit :=
+        Lake.withCurrPackage pkg <| discard <| Lake.buildArtifactUnlessUpToDate file build (text := true) (ext := "json") (restore := true))
+    else
+      elabCommand <| ← `(def $buildJsonFile (_pkg : Lake.Package) (file : System.FilePath) (build : Lake.JobM PUnit) : Lake.JobM Unit :=
+        discard <| Lake.buildFileUnlessUpToDate' (text := true) file build)
+
+-- Defines `fetchSetupJson`, which fetches the JSON form of a module's setup. The setup lists the
+-- artifacts of the module's imports, which are in Lake's artifact cache when that is enabled.
+-- The JSON is `none` on toolchains that find imports through `LEAN_PATH` alone.
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let env ← getEnv
+  -- Only the module facet for newer Lake versions uses this definition
+  if env.contains `Lake.buildFileUnlessUpToDate' then
+    let fetchSetupJson := mkIdent `fetchSetupJson
+    if env.contains `Lake.setupServerModule then
+      elabCommand <| ← `(def $fetchSetupJson (mod : Lake.Module) : Lake.FetchM (Lake.Job (Option Lean.Json)) := do
+        let path ← IO.FS.realPath mod.leanFile
+        return (← Lake.setupServerModule mod.name.toString path none).map (some <| Lean.toJson ·))
+    else
+      elabCommand <| ← `(def $fetchSetupJson (_mod : Lake.Module) : Lake.FetchM (Lake.Job (Option Lean.Json)) :=
+        pure (Lake.Job.pure none))
 end Compat
 
 def nightly? (version : String) : Option (Nat × Nat × Nat) := do
@@ -180,36 +213,44 @@ else
 
     let exeJob ← «subverso-extract-mod».fetch
     let modJob ← mod.olean.fetch
+    let setupJob ← Compat.fetchSetupJson mod
     let suppNS := (← IO.getEnv "SUBVERSO_SUPPRESS_NAMESPACES").getD ""
 
     let buildDir := ws.root.buildDir
     let hlFile := mod.filePath (buildDir / "highlighted") "json"
     let nsFile := buildDir / "highlighted" / s!"ns-{hash suppNS}"
+    let setupFile := mod.filePath (buildDir / "highlighted-setup") "json"
 
     exeJob.bindM fun exeFile =>
-      modJob.mapM fun oleanFile => do
-        -- Every module's job writes the same namespace file, so it's trace can be independent of
-        -- the module's content. This prevents builds from clobbering each other.
-        setTrace (Compat.traceOfHash (.ofString suppNS))
-        buildFileUnlessUpToDate' (text := true) nsFile do
-          IO.FS.createDirAll (buildDir / "highlighted")
-          IO.FS.writeFile nsFile suppNS
+      modJob.bindM fun oleanFile =>
+        setupJob.mapM fun setup? => do
+          -- Every module's job writes the same namespace file, so it's trace can be independent of
+          -- the module's content. This prevents builds from clobbering each other.
+          setTrace (Compat.traceOfHash (.ofString suppNS))
+          buildFileUnlessUpToDate' (text := true) nsFile do
+            IO.FS.createDirAll (buildDir / "highlighted")
+            IO.FS.writeFile nsFile suppNS
 
-        -- Rebuild when the SubVerso executable, the module's source, or the compiled module
-        -- changes. Changes to the source code that don't change the olean must also be reflected
-        -- in semantically-highlighted source, so the Lean file is important here.
-        addTrace (← computeTrace exeFile)
-        addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
-        addTrace (← computeTrace oleanFile)
-        addTrace (← computeTrace (TextFilePath.mk nsFile))
+          -- Rebuild when the SubVerso executable, the module's source, or the compiled module
+          -- changes. Changes to the source code that don't change the olean must also be reflected
+          -- in semantically-highlighted source, so the Lean file is important here.
+          addTrace (← computeTrace exeFile)
+          addTrace (← computeTrace (TextFilePath.mk mod.leanFile))
+          addTrace (← computeTrace oleanFile)
+          addTrace (← computeTrace (TextFilePath.mk nsFile))
 
-        buildFileUnlessUpToDate' (text := true) hlFile <|
-          proc {
-            cmd := exeFile.toString
-            args :=  #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
-            env := ← getAugmentedEnv
-          }
-        pure hlFile
+          Compat.buildJsonFile mod.pkg hlFile do
+            let mut args := #["--suppress-namespaces", nsFile.toString, mod.name.toString, hlFile.toString]
+            if let some setup := setup? then
+              IO.FS.createDirAll (setupFile.parent.getD buildDir)
+              IO.FS.writeFile setupFile setup.compress
+              args := #["--setup", setupFile.toString] ++ args
+            proc {
+              cmd := exeFile.toString
+              args
+              env := ← getAugmentedEnv
+            }
+          pure hlFile
 
 meta if Compat.useOldMixArray then
   library_facet highlighted lib : FilePath := do
