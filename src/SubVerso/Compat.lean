@@ -737,6 +737,13 @@ instance [BEq α] [Hashable α] : EmptyCollection (HashSet α) :=
 
 end HashSet
 
+def Json.objectFields? : Json → Option (Array (String × Json))
+  | .obj kvs => some %first_succeeding [
+      kvs.foldl (fun acc k v => acc.push (k, v)) #[],
+      kvs.fold (fun acc k v => acc.push (k, v)) #[]
+    ]
+  | _ => none
+
 -- In nightly-2025-02-13, simp_arith became an error. Falling back to the old version is complicated
 -- because there's no fully-backwards-compatible syntax to use here that works all the way back to Lean 4.0.0.
 open Lean Elab Command in

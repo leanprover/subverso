@@ -9,4 +9,5 @@ public import SubVerso.Examples
 public import SubVerso.Helper
 public import SubVerso.Highlighting
 public import SubVerso.Module
+public import SubVerso.Module.Normalize
 public import SubVerso.Signature
