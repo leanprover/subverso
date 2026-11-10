@@ -353,6 +353,14 @@ def msgEmbedCase (embed : MsgEmbed)
     | .trace i cls msg c cs => onTrace i cls msg c cs
   ]
 
+open Lean.Widget in
+def tagCodeInfos (ctx : Elab.ContextInfo) (infos : SubExpr.PosMap Elab.Info)
+    (tt : TaggedText (Nat × Nat)) : BaseIO CodeWithInfos :=
+  %first_succeeding [
+    Lean.Widget.tagCodeInfos ctx infos tt,
+    pure (Lean.Widget.tagCodeInfos ctx infos tt)
+  ]
+
 section
 set_option linter.unusedVariables false
 /- Compatibility layer for the big String refactor -/

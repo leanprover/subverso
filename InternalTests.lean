@@ -1977,3 +1977,99 @@ def assertNormalizeDifferent (a b : Module) : CommandElabM Unit := do
     throwError "Expected the second item's key to differ, got {codeKey sample}"
   assertNormalizeSame sample (← roundTrip sample)
   assertNormalizeSame ⟨#[sample.items[1]!]⟩ ⟨#[(← roundTrip shifted).items[1]!]⟩
+
+end ModuleNormalize
+
+namespace SubVerso.Highlighting
+section CollectFormat
+open Lean Elab Command
+
+def moduleFrontendResult (input : String) : CommandElabM (Compat.Frontend.FrontendResult × FileMap) := do
+  let inputCtx := Parser.mkInputContext input "<input>"
+  let (headerStx, parserState, msgs) ← Parser.parseHeader inputCtx
+  let commandState : Command.State :=
+    { env := (← getEnv), maxRecDepth := (← get).maxRecDepth, messages := msgs }
+  let commandState :=
+    let sc := commandState.scopes[0]!
+    { commandState with scopes := { sc with opts := sc.opts.setBool `pp.tagAppFns true } :: commandState.scopes.tail! }
+  let (result, _) ← Compat.Frontend.processCommands headerStx
+    |>.run { inputCtx } |>.run { commandState, parserState, cmdPos := parserState.pos }
+  return (result.updateLeading input, inputCtx.fileMap)
+
+abbrev FormatM := StateM (Array (String × String))
+
+def recordFormat (what : String) : Option String → FormatM Unit
+  | some s => modify (·.push (what, s))
+  | none => pure ()
+
+def Token.Kind.eraseFormat : Token.Kind → FormatM Token.Kind
+  | .const n sig docs isDef fmt => do recordFormat "signature" fmt; pure (.const n sig docs isDef none)
+  | .anonCtor n sig docs fmt => do recordFormat "signature" fmt; pure (.anonCtor n sig docs none)
+  | .var x ty fmt => do recordFormat "type" fmt; pure (.var x ty none)
+  | .wildcard ty fmt => do recordFormat "type" fmt; pure (.wildcard ty none)
+  | .num ty fmt => do recordFormat "type" fmt; pure (.num ty none)
+  | k => pure k
+
+def Token.eraseFormat (tok : Token) : FormatM Token :=
+  return { tok with kind := ← tok.kind.eraseFormat }
+
+partial def Highlighted.eraseFormat : Highlighted → FormatM Highlighted
+  | .token tok => .token <$> tok.eraseFormat
+  | .seq xs => .seq <$> xs.mapM eraseFormat
+  | .span info x => do
+    let info ← info.mapM fun (k, m) => do pure (k, ← messageFormat m)
+    pure (.span info (← eraseFormat x))
+  | .tactics goals s e x => do
+    let goals ← goals.mapM goalFormat
+    pure (.tactics goals s e (← eraseFormat x))
+  | .point k m => .point k <$> messageFormat m
+  | other => pure other
+where
+  goalFormat (g : Highlighted.Goal Highlighted) : FormatM (Highlighted.Goal Highlighted) := do
+    let hyps ← g.hypotheses.mapM fun h => do
+      recordFormat "hypothesis" h.ppType
+      pure { h with
+        names := ← h.names.mapM Token.eraseFormat,
+        typeAndVal := ← eraseFormat h.typeAndVal,
+        ppType := none }
+    recordFormat "conclusion" g.ppConclusion
+    pure { g with hypotheses := hyps, conclusion := ← eraseFormat g.conclusion, ppConclusion := none }
+  messageFormat : Highlighted.MessageContents Highlighted → FormatM (Highlighted.MessageContents Highlighted)
+    | .text s => pure (.text s)
+    | .goal g => .goal <$> goalFormat g
+    | .term e => .term <$> eraseFormat e
+    | .trace cls m cs c => do pure (.trace cls (← messageFormat m) (← cs.mapM messageFormat) c)
+    | .append xs => .append <$> xs.mapM messageFormat
+
+def collectFormatInput : String :=
+  "def double (n : Nat) : Nat := n + n\n" ++
+  "theorem fmtTest (xs : List Nat) (h : xs.length ≤ double 2) :\n" ++
+  "    ∀ n, n ≤ xs.length → n ≤ double 2 + 0 := by\n" ++
+  "  intro n hn\n" ++
+  "  have h' : n ≤ double 2 := Nat.le_trans hn h\n" ++
+  "  let k := double n\n" ++
+  "  have hk : k = n + n := rfl\n" ++
+  "  exact Nat.le_trans h' (Nat.le_add_right _ _)\n"
+
+#eval show CommandElabM Unit from do
+  let (result, fileMap) ← moduleFrontendResult collectFormatInput
+  let (plain, withFormat) ← runTermElabM fun _ =>
+    withTheReader Core.Context (fun ctx => { ctx with fileMap }) do
+      let plain ← highlightFrontendResult result
+      let withFormat ← highlightFrontendResult result (collectFormat := true)
+      pure (plain, withFormat)
+  let (plain', plainFmts) := (plain.mapM Highlighted.eraseFormat).run #[]
+  unless plainFmts.isEmpty do
+    throwError "Format data present without `collectFormat`: {plainFmts}"
+  let (erased, fmts) := (withFormat.mapM Highlighted.eraseFormat).run #[]
+  unless erased == plain' do
+    throwError "Collecting format data changed the highlighted code"
+  for what in ["hypothesis", "conclusion", "signature", "type"] do
+    unless fmts.any (·.1 == what) do
+      throwError "No {what} format data"
+  for (what, s) in fmts do
+    let .ok j := Json.parse s
+      | throwError "The {what} format data isn't JSON: {s}"
+    unless (j.getObjVal? "fmt").toOption.isSome && (j.getObjVal? "annotations").toOption.isSome do
+      throwError "The {what} format data lacks `fmt` or `annotations`: {s}"
+
