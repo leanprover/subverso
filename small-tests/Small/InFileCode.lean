@@ -3,7 +3,8 @@ Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-import Lean
+import Lean.Elab.Term
+import Lean.Elab.Command
 
 /-!
 This test defines a function, a structure with a derived instance, macros, elaborators, an
