@@ -972,14 +972,28 @@ private def leanPosToUtf8Pos (text : FileMap) : Position → Compat.String.Pos :
 abbrev KindWithPPSig := Token.Kind × Option (FormatWithInfos × ContextInfo)
 
 /--
-Finds the appropriate token kind for a token whose meaning is the expression `expr`. When
-`collectFormat` is true, also returns the `FormatWithInfos` to be saved as a reflowable type or
-signature.
+A token kind that might be chosen together with a procedure for rendering it.
+
+Because tokens contain rendered output, and a given syntactic token may have multiple potential
+renderings which are chosen based on priority, it's wasteful to compute all the details ahead of
+time.
 -/
-def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+structure KindCandidate (m : Type → Type) where
+  shape : Token.Kind
+  render : m (Option KindWithPPSig)
+
+/--
+A token kind candidate whose rendered information is already ready and doesn't need further
+computation.
+-/
+def KindCandidate.ready [Monad m] (kind : Token.Kind) : KindCandidate m :=
+  ⟨kind, pure (some (kind, none))⟩
+
+/-- Determines a kind candidate for a token whose meaning is `expr` according to the info tree. -/
+def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
-    m (Option KindWithPPSig) := do
+    m (Option (KindCandidate m)) := do
   let cache : IO.Ref _ := (← read).sigCache
   let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := do
     count .runMetaMCalls
@@ -1059,74 +1073,109 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
           (cache.modify (fun c => { c with varTypes := c.varTypes.insert key tyStr }) : IO _)
           pure (tyStr, prettySig)
 
-  let rec findKind e := do
+  let rec findKind (e : Expr) : m (Option (KindCandidate m)) := do
     match e with
     | Expr.fvar id =>
       if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
-        Compat.refIdentCase y
-          (onFVar := fun x => do
-            let (tyStr, prettySig) ← ppVarType
-            if let some localDecl := lctx.find? x then
-              if localDecl.isAuxDecl then
+        return some <| Compat.refIdentCase y
+          (onFVar := fun x =>
+            if (lctx.find? x).any (·.isAuxDecl) then
+              ⟨.const x.name "" none false none, do
+                let (tyStr, _) ← ppVarType
                 count .delaboratorCalls
                 let e ← runMeta <| Meta.ppExpr expr
                 -- FIXME the mkSimple is a bit of a kludge
-                return some (.const (.mkSimple (toString e)) tyStr none false none, none)
-            return some (.var x tyStr none, prettySig))
-          (onConst := fun x => do
-            let (sig, prettySig) ← ppSig x
-            let docs ← findDocString? (constEnv ci.env (← getEnv) x) x
-            return some (.const x sig docs false none, prettySig))
+                return some (.const (.mkSimple (toString e)) tyStr none false none, none)⟩
+            else
+              ⟨.var x "" none, do
+                let (tyStr, prettySig) ← ppVarType
+                return some (.var x tyStr none, prettySig)⟩)
+          (onConst := fun x =>
+            ⟨.const x "" none false none, do
+              let (sig, prettySig) ← ppSig x
+              let docs ← findDocString? (constEnv ci.env (← getEnv) x) x
+              return some (.const x sig docs false none, prettySig)⟩)
       else
-        let (tyStr, prettySig) ← ppVarType
-        return some (.var id tyStr none, prettySig)
+        return some ⟨.var id "" none, do
+          let (tyStr, prettySig) ← ppVarType
+          return some (.var id tyStr none, prettySig)⟩
     | Expr.const name _ =>
-      let docs ← findDocString? (constEnv ci.env (← getEnv) name) name
-      let (sig, prettySig) ← ppSig name
-      return some (.const name sig docs false none, prettySig)
+      return some ⟨.const name "" none false none, do
+        let docs ← findDocString? (constEnv ci.env (← getEnv) name) name
+        let (sig, prettySig) ← ppSig name
+        return some (.const name sig docs false none, prettySig)⟩
     | Expr.sort _ =>
       if let some stx := stx? then
         let k := stx.getKind
         let docs? ← findDocString? (← getEnv) k
-        return some (.sort docs?, none)
-      else return some (.sort none, none)
-    | Expr.lit (.strVal s) => return some (.str (some s) false, none)
+        return some (.ready (.sort docs?))
+      else return some (.ready (.sort none))
+    | Expr.lit (.strVal s) => return some (.ready (.str (some s) false))
     | Expr.mdata _ e =>
       findKind e
     | _other =>
       if allowUnknownTyped then
-        let (tyStr, prettySig) ← ppTermType
-        if tyStr.isEmpty then return none else return some (.withType tyStr, prettySig)
+        return some ⟨.withType "", do
+          let (tyStr, prettySig) ← ppTermType
+          if tyStr.isEmpty then return none else return some (.withType tyStr, prettySig)⟩
       else
         return none
 
   findKind (← instantiateMVars expr)
+
+/--
+Finds the appropriate token kind for a token whose meaning is the expression `expr`. When
+`collectFormat` is true, also returns the `FormatWithInfos` to be saved as a reflowable type or
+signature.
+-/
+def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+    (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
+    (allowUnknownTyped : Bool := false) :
+    m (Option KindWithPPSig) := do
+  let some candidate ← exprKindCandidate ci lctx stx? expr (allowUnknownTyped := allowUnknownTyped)
+    | return none
+  candidate.render
+
+def termInfoKindCandidate
+    [Monad m] [MonadReaderOf Context m]
+    [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+    (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
+    m (Option (KindCandidate m)) := do
+  let some candidate ←
+      exprKindCandidate ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
+    | return none
+  if !(← read).definitionsPossible then return some candidate
+  return some { candidate with
+    render := do
+      let k ← candidate.render
+      if let some (.const name sig docs _isDef pp?, prettySig) := k then
+        let isDef ← withEnv (constEnv ci.env (← getEnv) name) <| isDefinition name termInfo.stx
+        return some (.const name sig docs isDef pp?, prettySig)
+      return k }
 
 def termInfoKind
     [Monad m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
-  let k ← exprKind ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
-  if (← read).definitionsPossible then
-    if let some (.const name sig docs _isDef pp?, prettySig) := k then
-      let isDef ← withEnv (constEnv ci.env (← getEnv) name) <| isDefinition name termInfo.stx
-      return some (.const name sig docs isDef pp?, prettySig)
-  return k
+  let some candidate ← termInfoKindCandidate ci termInfo (allowUnknownTyped := allowUnknownTyped)
+    | return none
+  candidate.render
 
-def infoKind [Monad m] [MonadReaderOf Context m]
+def infoKindCandidate [Monad m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
-    m (Option KindWithPPSig) := do
+    m (Option (KindCandidate m)) := do
   match info with
-    | .ofTermInfo termInfo => termInfoKind ci termInfo (allowUnknownTyped := allowUnknownTyped)
+    | .ofTermInfo termInfo => termInfoKindCandidate ci termInfo (allowUnknownTyped := allowUnknownTyped)
     | .ofFieldInfo fieldInfo =>
-      count .runMetaMCalls
-      count .delaboratorCalls
-      return some (← fieldInfoKind ci fieldInfo, none)
+      return some ⟨.const fieldInfo.projName "" none false none, do
+        count .runMetaMCalls
+        count .delaboratorCalls
+        return some (← fieldInfoKind ci fieldInfo, none)⟩
     | .ofOptionInfo oi =>
       let doc := (← getOptionDecls).find? oi.optionName |>.map (·.descr)
-      pure <| some (.option oi.optionName oi.declName doc, none)
+      pure <| some (.ready (.option oi.optionName oi.declName doc))
     | .ofCompletionInfo _ => pure none
     | .ofTacticInfo _ => pure none
     | .ofCommandInfo _ => pure none
@@ -1134,6 +1183,14 @@ def infoKind [Monad m] [MonadReaderOf Context m]
     | .ofUserWidgetInfo _ => pure none
     | _ =>
       pure none
+
+def infoKind [Monad m] [MonadReaderOf Context m]
+    [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+    (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
+    m (Option KindWithPPSig) := do
+  let some candidate ← infoKindCandidate ci info (allowUnknownTyped := allowUnknownTyped)
+    | return none
+  candidate.render
 
 /--
 All info nodes whose canonical span matches `stx`, via the pre-built range index when `stx` has a
@@ -1148,18 +1205,30 @@ def infoNodesFor (trees : Array InfoTree) (stx : Syntax) :
     (infoForSyntax t stx).toArray.map fun (ci, info) =>
       { ci, info, commandEnv := commandEnv?.getD ci.env }
 
+def kindCandidatesByPriority
+    (trees : Array InfoTree) (stx : Syntax) (allowUnknownTyped : Bool := false) :
+    HighlightM (Array (Environment × KindCandidate HighlightM)) := do
+  let mut candidates := #[]
+  for { ci, commandEnv, info } in (← infoNodesFor trees stx) do
+    if let some candidate ←
+        withEnv commandEnv (infoKindCandidate ci info (allowUnknownTyped := allowUnknownTyped)) then
+      candidates := candidates.push (commandEnv, candidate)
+  return candidates.insertionSort (·.2.shape.priority > ·.2.shape.priority)
+
 def anonCtorKind
     (trees : Array InfoTree) (stx : Syntax) :
     HighlightM (Option Token.Kind) := do
-  let mut kind : Token.Kind := .unknown
-  for node in (← infoNodesFor trees stx) do
-    if let some (seen, _) ← withEnv node.commandEnv (infoKind node.ci node.info) then
-      if seen.priority > kind.priority then kind := seen
-    else continue
-  return match kind with
-  | .const n sig doc? _ ppSig? => some <| .anonCtor n sig doc? ppSig?
-  | .anonCtor .. => some kind
-  | _ => none
+  for (commandEnv, candidate) in ← kindCandidatesByPriority trees stx do
+    match candidate.shape with
+    | .const .. | .anonCtor .. =>
+      let some (kind, _) ← withEnv commandEnv candidate.render
+        | continue
+      return match kind with
+      | .const n sig doc? _ ppSig? => some <| .anonCtor n sig doc? ppSig?
+      | .anonCtor .. => some kind
+      | _ => none
+    | _ => return none
+  return none
 
 partial def renderTagged [Monad m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
@@ -1739,22 +1808,16 @@ def identKind
     (trees : Array InfoTree) (stx : TSyntax `ident)
     (allowUnknownTyped : Bool := false) :
     HighlightM Token.Kind := do
-  let mut kind : Token.Kind := .unknown
-  -- Formatted signature or type from the winning exprKind call, to be resolved after the loop.
-  let mut kindSig : Option (FormatWithInfos × ContextInfo) := none
-  for { ci, commandEnv, info } in (← infoNodesFor trees stx) do
-    if let some (seen, prettySig) ←
-        withEnv commandEnv (infoKind ci info (allowUnknownTyped := allowUnknownTyped)) then
-      if seen.priority > kind.priority then
-        kind := seen
-        kindSig := prettySig
-    else continue
-  match kind with
-  | .const name sig docs isDef none =>
-    return .const name sig docs isDef (← resolveFormatWithInfos kindSig)
-  | .var id tyStr none =>
-    return .var id tyStr (← resolveFormatWithInfos kindSig)
-  | _ => pure kind
+  for (commandEnv, candidate) in ← kindCandidatesByPriority trees stx allowUnknownTyped do
+    let some (kind, kindSig) ← withEnv commandEnv candidate.render
+      | continue
+    match kind with
+    | .const name sig docs isDef none =>
+      return .const name sig docs isDef (← resolveFormatWithInfos kindSig)
+    | .var id tyStr none =>
+      return .var id tyStr (← resolveFormatWithInfos kindSig)
+    | _ => return kind
+  return .unknown
 
 /--
 The inferred type of a literal (e.g. a numeral), as a pretty-printed string and optional reflowable
@@ -1766,8 +1829,10 @@ def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
   for { ci, info, commandEnv } in (← infoNodesFor trees stx) do
     -- `exprKind` (with `allowUnknownTyped`) reports a non-`const`/`var`/`sort`/`str` expression —
     -- which a numeral's `OfNat.ofNat …`/literal application is — as `.withType <type>`.
-    if let some (.withType ty, prettySig) ←
-        withEnv commandEnv (infoKind ci info (allowUnknownTyped := true)) then
+    let some candidate ← withEnv commandEnv (infoKindCandidate ci info (allowUnknownTyped := true))
+      | continue
+    let .withType .. := candidate.shape | continue
+    if let some (.withType ty, prettySig) ← withEnv commandEnv candidate.render then
       return (some ty, ← resolveFormatWithInfos prettySig)
   return (none, none)
 
