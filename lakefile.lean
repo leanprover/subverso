@@ -178,6 +178,10 @@ lean_exe «subverso-helper» where
   root := `Helper
   supportInterpreter := true
 
+@[default_target]
+lean_exe «subverso-normalize» where
+  root := `NormalizeModule
+
 meta if Compat.useOldBind then
   module_facet highlighted mod : FilePath := do
     let ws ← getWorkspace
