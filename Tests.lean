@@ -10,6 +10,12 @@ open SubVerso
 
 namespace SubVerso.Highlighting
 
+partial def Highlighted.varHovers : Highlighted → Array (String × String)
+  | .token ⟨.var _ type _, content⟩ => #[(content, type)]
+  | .seq hls => hls.foldl (· ++ ·.varHovers) #[]
+  | .span _ hl | .tactics _ _ _ hl => hl.varHovers
+  | _ => #[]
+
 partial
 def Highlighted.countProofStates (hl : Highlighted) : Nat :=
   match hl with
@@ -231,6 +237,22 @@ hp : p
   ("Two",
    "simp [*]",
    [""])
+]
+
+def desiredShadowingProofs : List (String × String) := [
+  ("first", "n : Nat\nh : n = n\n⊢ ∀ (n : Nat), n = n → True"),
+  ("shadowed", "n✝ : Nat\nh : n✝ = n✝\nn : Nat\nh' : n = n\n⊢ True"),
+  ("binderRenamed", "x : Nat\nh : ∀ (x_1 : Nat), x_1 + x = x + x_1\n⊢ ∀ (x_1 : Nat), x_1 = x_1"),
+  ("binderRenamedAgain", "x : Nat\nh : ∀ (x_2 : Nat), x_2 + x = x + x_2\nx_1 : Nat\n⊢ x_1 = x_1"),
+  ("alphaEquivalent", "h₁ : ∀ (a : Nat), a = a\nh₂ : ∀ (b : Nat), b = b\n⊢ True"),
+  ("hoverTypes", "α : Type\nP : α → Prop\na : α\nh : P a\n⊢ ∀ (α : Type), α = α"),
+  ("hoverTypesShadowed", "α✝ : Type\nP : α✝ → Prop\na : α✝\nh : P a\nα : Type\n⊢ α = α"),
+  ("constShadowed", "h : _root_.shadowingConst = 1\nshadowingConst : Nat\n⊢ shadowingConst = shadowingConst")
+]
+
+def desiredShadowingHovers : List (String × String × Array (String × String)) := [
+  ("hoverTypes", "h", #[("P", "α → Prop"), ("a", "α")]),
+  ("hoverTypesShadowed", "h", #[("P", "α✝ → Prop"), ("a", "α✝")])
 ]
 
 partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool) : IO Unit := do
@@ -541,6 +563,38 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.println "Checking --timings output"
     checkTimings "small-tests" "Small.TacticAlts" myToolchain demodSrc
     IO.println "Timings output OK"
+
+  IO.println "Checking names of shadowed hypotheses in proof states"
+  let items ← loadModuleContentIn "small-tests" "Small.Shadowing" myToolchain demodSrc
+  let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+  match content.anchored with
+  | .error e =>
+    IO.eprintln s!"Error loading anchored content: {e}"
+    return 1
+  | .ok {code:=_, anchors:=_, proofStates} =>
+    let mut errors := 0
+    for (name, expected) in desiredShadowingProofs do
+      let some (.tactics goals _ _ _) := proofStates.get? name
+        | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
+      let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
+      if goalString != expected then
+        IO.eprintln s!"Proof state '{name}': expected {repr expected} but got {repr goalString}"
+        errors := errors + 1
+    for (name, hyp, expected) in desiredShadowingHovers do
+      let some (.tactics goals _ _ _) := proofStates.get? name
+        | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
+      let mut hovers := #[]
+      for g in goals do
+        for h in g.hypotheses do
+          if h.names.any (·.content == hyp) then
+            hovers := hovers ++ h.typeAndVal.varHovers
+      if hovers != expected then
+        IO.eprintln s!"Proof state '{name}', hypothesis '{hyp}': expected hovers {repr expected} but got {repr hovers}"
+        errors := errors + 1
+    if errors > 0 then
+      IO.eprintln s!"{errors} errors encountered looking at proof states with shadowed hypotheses"
+      return 1
+  IO.println "Names of shadowed hypotheses OK"
 
   match matchNamesModule myToolchain with
   | none =>

@@ -735,6 +735,20 @@ namespace HashSet
 instance [BEq α] [Hashable α] : EmptyCollection (HashSet α) :=
   ⟨%first_succeeding [Std.HashSet.emptyWithCapacity, Std.HashSet.empty, Lean.HashSet.empty]⟩
 
+instance [BEq α] [Hashable α] : Inhabited (HashSet α) := ⟨{}⟩
+
+def insert {_ : BEq α} {_ : Hashable α} : HashSet α → α → HashSet α :=
+  %first_defined [Std.HashSet.insert, Lean.HashSet.insert]
+
+def contains {_ : BEq α} {_ : Hashable α} : HashSet α → α → Bool :=
+  %first_defined [Std.HashSet.contains, Lean.HashSet.contains]
+
+def toList {_ : BEq α} {_ : Hashable α} (xs : HashSet α) : List α :=
+  %first_succeeding [
+    Std.HashSet.fold (fun r k => k :: r) [] xs,
+    Lean.HashSet.fold (fun r k => k :: r) [] xs
+  ]
+
 end HashSet
 
 -- In nightly-2025-02-13, simp_arith became an error. Falling back to the old version is complicated

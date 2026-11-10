@@ -2,6 +2,7 @@
 -- and `Small.MatchNames21` directly from source, each on the toolchain range whose compiler
 -- generates the auxiliary declaration name it references.
 import Small.TacticAlts
+import Small.Shadowing
 
 example (p q : Prop) : p ∨ q → q ∨ p := by
   intro h
