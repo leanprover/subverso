@@ -163,7 +163,7 @@ of a name (for hovers), and locals that might shadow constants.
 -/
 structure NameContext where
   lctx : LocalContext
-  mctx : MetavarContext
+  types : HashMap FVarId Expr
   /--
   The local names grouped by their unsuffixed base form, so `x`, `x_1`, and `x_12` are in the same
   bucket.
@@ -181,14 +181,17 @@ namespace NameContext
 Constructs a name context from a Lean local context and metavariable context.
 -/
 def ofLocalContext (lctx : LocalContext) (mctx : MetavarContext) : NameContext := Id.run do
+  let mut types : HashMap FVarId Expr := {}
   let mut byRoot : HashMap Name NameSet := {}
   let mut byHead : HashMap Name NameSet := {}
   for d in lctx do
+    let ty := if d.type.hasMVar then (instantiateMVarsCore mctx d.type).1 else d.type
+    types := types.insert d.fvarId ty
     let root := unsuffixName d.userName
     byRoot := byRoot.insert root ((byRoot.getD root {}).insert d.userName)
     let head := d.userName.getRoot
     byHead := byHead.insert head ((byHead.getD head {}).insert d.userName)
-  return { lctx := lctx, mctx := mctx, byUnsuffix := byRoot, byFirstComponent := byHead }
+  return { lctx := lctx, types := types, byUnsuffix := byRoot, byFirstComponent := byHead }
 
 /--
 How to render `x` in this goal.
@@ -207,9 +210,8 @@ def namesWithFirstComponent (ctx : NameContext) (firstComponent : Name) : NameSe
 /--
 The type of `x` in this goal, with metavariables instantiated.
 -/
-def typeOf? (ctx : NameContext) (x : FVarId) : Option Expr := do
-  let ty := (← ctx.lctx.find? x).type
-  return if ty.hasMVar then (instantiateMVarsCore ctx.mctx ty).1 else ty
+def typeOf? (ctx : NameContext) (x : FVarId) : Option Expr :=
+  ctx.types.get? x
 
 end NameContext
 
@@ -290,11 +292,12 @@ structure TermDeps where
   by a short name and require a `_root_` prefix.
   -/
   constNames : Array (Name × NameSet)
+  fvarTypes : Array (FVarId × Expr)
 
 namespace TermDeps
 
 /-- Computes the rendering dependencies of `e` in `ctx`. -/
-def ofExpr (e : Expr) (ctx : NameContext) : TermDeps := Id.run do
+def ofExpr (e : Expr) (ctx : NameContext) : Option TermDeps := do
   let mut exprs := #[e]
   for x in (collectFVars {} e).fvarIds do
     if let some ty := ctx.typeOf? x then
@@ -306,9 +309,15 @@ def ofExpr (e : Expr) (ctx : NameContext) : TermDeps := Id.run do
     uses := uses.add e
     for c in e.getUsedConstants do
       uses := uses.addConst c
+  let mut fvarTypes := #[]
+  for x in fvarState.fvarIds do
+    if let some ty := ctx.typeOf? x then
+      if ty.hasMVar then failure
+      fvarTypes := fvarTypes.push (x, ty)
   return {
-    fvars := fvarState.fvarIds.map fun x => (x, ctx.userName? x)
-    binderNames := uses.binders.toList.toArray.map fun n => (n, ctx.namesWithRoot n)
+    fvars := fvarState.fvarIds.map fun x => (x, ctx.userName? x),
+    fvarTypes,
+    binderNames := uses.binders.toList.toArray.map fun n => (n, ctx.namesWithRoot n),
     constNames := uses.constParts.toList.toArray.map fun n => (n, ctx.namesWithFirstComponent n)
   }
 
@@ -320,7 +329,11 @@ This determines whether a cached rendering can be reused.
 def validIn (deps : TermDeps) (ctx : NameContext) : Bool :=
   deps.fvars.all (fun (x, n) => ctx.userName? x == n) &&
     deps.binderNames.all (fun (root, ns) => sameNames (ctx.namesWithRoot root) ns) &&
-    deps.constNames.all (fun (head, ns) => sameNames (ctx.namesWithFirstComponent head) ns)
+    deps.constNames.all (fun (head, ns) => sameNames (ctx.namesWithFirstComponent head) ns) &&
+    deps.fvarTypes.all fun (x, ty) =>
+      match ctx.typeOf? x with
+      | some ty' => ty'.equal ty
+      | none => false
 
 end TermDeps
 
@@ -350,12 +363,12 @@ def get? (cache : TermCache α) (key : TermKey) (ctx : NameContext) : Option α 
   let candidates ← cache.entries.get? key
   candidates.findSome? fun (deps, v) => if deps.validIn ctx then some v else none
 
-def insert (cache : TermCache α) (key : TermKey) (ctx : NameContext) (v : α) : TermCache α :=
+def insert (cache : TermCache α) (key : TermKey) (deps : TermDeps) (v : α) : TermCache α :=
   let candidates := cache.entries.getD key #[]
   let candidates :=
     if candidates.size < maxCandidatesPerTerm then candidates
     else candidates.extract (candidates.size + 1 - maxCandidatesPerTerm) candidates.size
-  { entries := cache.entries.insert key (candidates.push (.ofExpr key.expr.val ctx, v)) }
+  { entries := cache.entries.insert key (candidates.push (deps, v)) }
 
 end TermCache
 
@@ -1629,6 +1642,7 @@ partial def _root_.Lean.Widget.TaggedText.indent (doc : TaggedText α) : TaggedT
     | .append docs => .append (docs.map indent')
   .append #[.text "  ", indent' doc]
 
+open TermDeps in
 @[specialize]
 def cachedTerm
     (cache : HighlightState → TermCache α) (setCache : HighlightState → TermCache α → HighlightState)
@@ -1640,10 +1654,12 @@ def cachedTerm
     count .termCacheHits
     return v
   count .termCacheMisses
+  let v ← render key.expr.val
+  let some deps := ofExpr key.expr.val ctx
+    | return v
   if (cache (← get)).candidateCount key ≥ maxCandidatesPerTerm then
     count .termCacheEvictions
-  let v ← render key.expr.val
-  modify fun st => setCache st ((cache st).insert key ctx v)
+  modify fun st => setCache st ((cache st).insert key deps v)
   return v
 
 def renderOrGet (key : TermKey) (ctx : NameContext) (render : Expr → HighlightM Highlighted) :
@@ -1808,7 +1824,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         | .cdecl _index fvar name type _ _
         | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
           let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
-          let type ← runMeta <| instantiateMVars type
+          let type := names.typeOf? fvar |>.getD type
           let tyStr ← renderOrGet (termKey type) names fun e => do
             renderTagged none (← ppCode e)
           let ppType ← if doCollectFormat then
@@ -1817,7 +1833,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
           pure (⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩ : Highlighted.Hypothesis Highlighted)
         | .ldecl _index fvar name type val _ _ =>
           let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
-          let type ← runMeta <| instantiateMVars type
+          let type := names.typeOf? fvar |>.getD type
           let val ← runMeta <| instantiateMVars val
           let tyDoc ← renderOrGetCodeWithInfos (termKey type) names ppCode
           let valDoc ←

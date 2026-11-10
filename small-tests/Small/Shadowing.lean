@@ -38,3 +38,8 @@ example (h : shadowingConst = 1) : ∀ (shadowingConst : Nat), shadowingConst = 
   intro shadowingConst
 --^ PROOF_STATE: constShadowed
   rfl
+
+example (x : id Nat) (h : x = x) : x = x := by
+  dsimp only [id] at x
+--^ PROOF_STATE: typeChanged
+  exact h
