@@ -373,6 +373,49 @@ def loadModuleContentIn (project : System.FilePath) (mod : String) (toolchain : 
   let dir ← prepareProject project toolchain demodSrc
   loadModuleContent dir.toString mod (overrideToolchain := some toolchain)
 
+def checkTimings (project : System.FilePath) (mod : String) (toolchain : String)
+    (demodSrc : System.FilePath) : IO Unit := do
+  let dir ← prepareProject project toolchain demodSrc
+  let cmd := "elan"
+  let args := #["run", "--install", toolchain, "lake", "exe", "subverso-extract-mod", "--timings", mod]
+  let res ← IO.Process.output { cmd, args, cwd := dir, env := lakeVars.map (·, none) }
+  if res.exitCode != 0 then loadModuleContent.reportFail dir cmd args res
+  let .ok out := Lean.Json.parse res.stdout
+    | throw <| IO.userError "Expected JSON on standard output with --timings"
+  if let .error err := Module.Module.fromJson? out then
+    throw <| IO.userError s!"Couldn't parse module JSON with --timings: {err}"
+  let lines := (res.stderr.splitOn "\n").map Compat.String.trim |>.filter (· != "")
+  let some line := lines.getLast?
+    | throw <| IO.userError "Expected timing JSON on standard error"
+  let .ok json := Lean.Json.parse line
+    | throw <| IO.userError s!"Timing output is not JSON: {line}"
+  let field (j : Lean.Json) (path : List String) : IO Lean.Json :=
+    path.foldlM (init := j) fun j k =>
+      match j.getObjVal? k with
+      | .ok v => pure v
+      | .error _ => throw <| IO.userError s!"Timing JSON lacks {".".intercalate path}: {line}"
+  let seconds (path : List String) : IO Float := do
+    match ← field json path with
+    | .num n => pure n.toFloat
+    | other => throw <| IO.userError s!"Expected a number at {".".intercalate path}, got {other.compress}"
+  for p in ["import", "elaboration", "highlighting", "export", "writing"] do
+    discard <| seconds ["phases", p, "wallSeconds"]
+    match ← field json ["phases", p, "cpuSeconds"] with
+    | .num _ | .null => pure ()
+    | other => throw <| IO.userError s!"Expected a number or null CPU time for {p}, got {other.compress}"
+  discard <| seconds ["total", "wallSeconds"]
+  let mut categoryTotal := 0.0
+  for c in ["signatures", "variableTypes", "withType", "goalHypotheses", "goalTargets", "messages", "setup", "other"] do
+    categoryTotal := categoryTotal + (← seconds ["highlighting", c])
+  let highlightingWall ← seconds ["phases", "highlighting", "wallSeconds"]
+  if (categoryTotal - highlightingWall).abs > 0.001 then
+    throw <| IO.userError s!"Highlighting categories sum to {categoryTotal}, but the phase took {highlightingWall}"
+  for c in ["delaboratorCalls", "runMetaMCalls"] do
+    match ← field json ["counters", c] with
+    | .num n =>
+      if n.toFloat ≤ 0 then throw <| IO.userError s!"Expected a positive count for {c}, got {line}"
+    | other => throw <| IO.userError s!"Expected a count for {c}, got {other.compress}"
+
 /--
 Reads the toolchains that the `demo` project is tested with from the file `demo-toolchains`.
 
@@ -494,6 +537,10 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
           IO.eprintln s!"{errors} errors encountered looking at proof states for induction/cases alts"
           return 1
     IO.println "Proof states for induction/cases alts OK"
+
+    IO.println "Checking --timings output"
+    checkTimings "small-tests" "Small.TacticAlts" myToolchain demodSrc
+    IO.println "Timings output OK"
 
   match matchNamesModule myToolchain with
   | none =>
