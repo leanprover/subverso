@@ -9,7 +9,8 @@ import SubVerso.Module
 open Lean Elab Frontend
 open Lean.Elab.Command hiding Context
 open SubVerso Module
-open SubVerso.Highlighting (Highlighted highlight highlightMany)
+open SubVerso.Highlighting (Highlighted highlight highlightMany highlightFrontendResult Timings)
+open SubVerso.Highlighting.Timings (Category Counter startCategories stopCategories seconds)
 
 def helpText : String :=
 "Extract a module's highlighted representation as JSON
@@ -34,6 +35,13 @@ OPTS may be:
     Load imported modules from the artifacts listed in FILE, which should be a in
     Lake's module setup JSON format. Imports that FILE doesn't list are found
     through LEAN_PATH. Toolchains without Lake module setups ignore this option.
+
+  --timings
+    After the run, write one line of JSON to standard error with the wall-clock
+    and CPU seconds of each phase (import, elaboration, highlighting, export,
+    writing), the seconds spent on each category of highlighting work (exempting
+    calls to nested highlighting), and counts of pretty-printer and MetaM calls.
+    CPU seconds are null on toolchains that can't report them.
 
 Each command in the module is represented as a JSON object with the following
 fields:
@@ -79,27 +87,69 @@ partial def commandKind (cmd : Syntax) : SyntaxNodeKind :=
   | `(command|$_cmd1 in $cmd2) => commandKind cmd2
   | _ => cmd.getKind
 
-unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (setupFile? : Option System.FilePath) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
-  try
-    initSearchPath (← findSysroot)
-    let modName := mod.toName
+structure Timer where
+  phases : IO.Ref (Array (String × Nat × Option Nat))
+  highlighting : IO.Ref Timings
 
-    let sp ← Compat.initSrcSearchPath
-    let sp : SearchPath := (sp : List System.FilePath) ++ [("." : System.FilePath)]
-    let fname ← do
-      if let some fname ← sp.findModuleWithExt "lean" modName then
-        pure fname
-      else
-        throw <| IO.userError s!"Failed to load {modName} from {sp}"
-    let contents ← IO.FS.readFile fname
-    let fm := FileMap.ofString contents
-    let ictx := Parser.mkInputContext contents fname.toString
-    let (headerStx, parserState, msgs) ← Parser.parseHeader ictx
-    let imports := headerToImports headerStx
-    enableInitializersExecution
-    let isModule := Compat.isModule headerStx
-    let setupJson? ← setupFile?.mapM IO.FS.readFile
-    let env ← Compat.importModules imports {} (isModule := isModule) (asServer := asServer) (setupJson? := setupJson?)
+def Timer.new : IO Timer := do
+  pure { phases := ← IO.mkRef #[], highlighting := ← IO.mkRef {} }
+
+def phase (timer? : Option Timer) (name : String) (act : IO α) (categories : Bool := false) : IO α := do
+  match timer? with
+  | none => act
+  | some timer =>
+    let cpu0 ← Compat.cpuMillis?
+    let t0 ← IO.monoNanosNow
+    if categories then startCategories timer.highlighting t0
+    let r ← act
+    let t1 ← IO.monoNanosNow
+    if categories then stopCategories timer.highlighting t1
+    let cpu1 ← Compat.cpuMillis?
+    timer.phases.modify (·.push (name, t1 - t0, (· - ·) <$> cpu1 <*> cpu0))
+    pure r
+
+def timesJson (wallNanos : Nat) (cpuMillis? : Option Nat) : Json :=
+  Json.mkObj [
+    ("wallSeconds", seconds wallNanos),
+    ("cpuSeconds", cpuMillis?.map (fun ms => Json.num ⟨Int.ofNat ms, 3⟩) |>.getD Json.null)
+  ]
+
+def Timer.report (timer : Timer) (wallNanos : Nat) : IO Json := do
+  let phases ← timer.phases.get
+  let hl ← timer.highlighting.get
+  let cpu? ← Compat.cpuMillis?
+  pure <| Json.mkObj [
+    ("phases", Json.mkObj <| phases.toList.map fun (name, wall, cpu?) => (name, timesJson wall cpu?)),
+    ("total", timesJson wallNanos cpu?),
+    ("highlighting", Json.mkObj <| Category.all.toList.map fun c =>
+      (c.name, seconds (hl.exclusive[c.index]?.getD 0))),
+    ("counters", Json.mkObj <| Counter.all.toList.map fun c =>
+      (c.name, ((hl.counters[c.index]?.getD 0 : Nat) : Json)))
+  ]
+
+unsafe def go (timer? : Option Timer) (asServer : Bool) (suppressedNamespaces : Array Name) (setupFile? : Option System.FilePath) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
+  try
+    let (contents, fm, ictx, headerStx, parserState, msgs, env) ← phase timer? "import" do
+      initSearchPath (← findSysroot)
+      let modName := mod.toName
+
+      let sp ← Compat.initSrcSearchPath
+      let sp : SearchPath := (sp : List System.FilePath) ++ [("." : System.FilePath)]
+      let fname ← do
+        if let some fname ← sp.findModuleWithExt "lean" modName then
+          pure fname
+        else
+          throw <| IO.userError s!"Failed to load {modName} from {sp}"
+      let contents ← IO.FS.readFile fname
+      let fm := FileMap.ofString contents
+      let ictx := Parser.mkInputContext contents fname.toString
+      let (headerStx, parserState, msgs) ← Parser.parseHeader ictx
+      let imports := headerToImports headerStx
+      enableInitializersExecution
+      let isModule := Compat.isModule headerStx
+      let setupJson? ← setupFile?.mapM IO.FS.readFile
+      let env ← Compat.importModules imports {} (isModule := isModule) (asServer := asServer) (setupJson? := setupJson?)
+      pure (contents, fm, ictx, headerStx, parserState, msgs, env)
     let pctx : Context := {inputCtx := ictx}
 
     let commandState : Command.State := { env, maxRecDepth := defaultMaxRecDepth, messages := msgs }
@@ -110,20 +160,29 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (setupFile? 
     let cmdPos := parserState.pos
     let cmdSt ← IO.mkRef { commandState, parserState, cmdPos }
 
-    let res ← Compat.Frontend.processCommands headerStx pctx cmdSt
+    let res ← phase timer? "elaboration" do
+      Compat.Frontend.processCommands headerStx pctx cmdSt
 
-    let res := res.updateLeading contents
+    let (res, hls) ← phase timer? "highlighting" (categories := true) do
+      let res ← IO.lazyPure fun _ => res.updateLeading contents
+      let hls ← (Frontend.runCommandElabM <| liftTermElabM <|
+        highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)
+          (timings? := timer?.map (·.highlighting))) pctx cmdSt
+      pure (res, hls)
 
-    let hls ← (Frontend.runCommandElabM <| liftTermElabM <| Highlighting.highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)) pctx cmdSt
+    let json ← phase timer? "export" do
+      IO.lazyPure fun _ =>
+        let items : Array ModuleItem := hls.zip res.syntax |>.map fun (hl, stx) => {
+          defines := hl.definedNames.toArray,
+          kind := commandKind stx,
+          range := stx.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e),
+          code := hl
+        }
+        toString (Module.mk items).toJson
 
-    let items : Array ModuleItem := hls.zip res.syntax |>.map fun (hl, stx) => {
-      defines := hl.definedNames.toArray,
-      kind := commandKind stx,
-      range := stx.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e),
-      code := hl
-    }
-
-    out.putStrLn (toString (Module.mk items).toJson)
+    phase timer? "writing" do
+      out.putStrLn json
+      out.flush
 
     return (0 : UInt32)
 
@@ -137,44 +196,53 @@ structure Config where
   setupFile? : Option System.FilePath := none
   mod : String
   outFile : Option String := none
+  timings : Bool := false
 
-def Config.fromArgs (args : List String) : IO Config := go true #[] none args
+def Config.fromArgs (args : List String) : IO Config := go true #[] none false args
 where
-  go (asServer : Bool) (nss : Array Name) (setupFile? : Option System.FilePath) : List String → IO Config
+  go (asServer : Bool) (nss : Array Name) (setupFile? : Option System.FilePath) (timings : Bool) : List String → IO Config
     | "--suppress-namespace" :: more =>
       if let ns :: more := more then
-        go asServer (nss.push ns.toName) setupFile? more
+        go asServer (nss.push ns.toName) setupFile? timings more
       else
         throw <| .userError "No namespace given after --suppress-namespace"
     | "--suppress-namespaces" :: more => do
       if let file :: more := more then
         let contents ← IO.FS.readFile file
         let nss' := Compat.String.splitToList contents (·.isWhitespace) |>.filter (!·.isEmpty) |>.map (·.toName)
-        go asServer (nss ++ nss') setupFile? more
+        go asServer (nss ++ nss') setupFile? timings more
       else
         throw <| .userError "No namespace file given after --suppress-namespaces"
     | "--not-server" :: more => do
-      go false nss setupFile? more
+      go false nss setupFile? timings more
     | "--setup" :: more => do
       if let file :: more := more then
-        go asServer nss (some file) more
+        go asServer nss (some file) timings more
       else
         throw <| .userError "No setup file given after --setup"
-    | [mod] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod }
-    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, outFile := some outFile }
+    | "--timings" :: more => do
+      go asServer nss setupFile? true more
+    | [mod] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, timings }
+    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, outFile := some outFile, timings }
     | other => throw <| .userError s!"Didn't understand remaining arguments: {other}"
 
 unsafe def main (args : List String) : IO UInt32 := do
   try
-    let { asServer, suppressedNamespaces, setupFile?, mod, outFile } ← Config.fromArgs args
-    match outFile with
-    | none =>
-      go asServer suppressedNamespaces setupFile? mod (← IO.getStdout)
-    | some outFile =>
-      if let some p := (outFile : System.FilePath).parent then
-        IO.FS.createDirAll p
-      IO.FS.withFile outFile .write fun h =>
-        go asServer suppressedNamespaces setupFile? mod (.ofHandle h)
+    let { asServer, suppressedNamespaces, setupFile?, mod, outFile, timings } ← Config.fromArgs args
+    let timer? ← if timings then some <$> Timer.new else pure none
+    let start ← IO.monoNanosNow
+    let code ← match outFile with
+      | none =>
+        go timer? asServer suppressedNamespaces setupFile? mod (← IO.getStdout)
+      | some outFile =>
+        if let some p := (outFile : System.FilePath).parent then
+          IO.FS.createDirAll p
+        IO.FS.withFile outFile .write fun h =>
+          go timer? asServer suppressedNamespaces setupFile? mod (.ofHandle h)
+    if let some timer := timer? then
+      let stop ← IO.monoNanosNow
+      IO.eprintln (← timer.report (stop - start)).compress
+    pure code
   catch e =>
     if args.isEmpty then
       IO.eprintln s!"No arguments provided."

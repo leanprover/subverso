@@ -20,6 +20,8 @@ import Lean.Widget.InteractiveDiagnostic
 
 -- nomodule skip
 import Std.Data.HashMap
+-- nomodule skip
+import Std.Internal.UV.System
 
 public section
 
@@ -843,6 +845,14 @@ open Lean Elab Command in
   elabTacticKinds `keepNestedStateKinds
     ["rw [h]", "rewrite [h]", "obtain ⟨a, b⟩ := h", "have h : Nat := by exact 0",
      "let x : Nat := by exact 0", "suffices h : Nat by trivial", "replace h : Nat := by exact 0"]
+
+def cpuMillis? : IO (Option Nat) :=
+  %first_succeeding [
+    (do
+      let r ← Std.Internal.UV.System.getrusage
+      pure (some (r.userTime.toNat + r.systemTime.toNat)) : IO (Option Nat)),
+    (pure none : IO (Option Nat))
+  ]
 
 namespace Frontend
 
