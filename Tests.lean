@@ -579,19 +579,22 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
         | IO.eprintln s!"Proof state 'matchRfl' not a proof state: {repr st}"; return 1
     IO.println "Auxiliary declaration names under async elaboration OK"
 
-  for mod in inFileCodeModules myToolchain do
-    IO.println s!"Checking code defined and used in {mod}"
-    let items ← loadModuleContentIn "small-tests" mod myToolchain demodSrc
-    let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
-    if content.hasError then
-      IO.eprintln s!"Error span in {mod}"
-      return 1
-    let infos := content.messageTexts.filter (·.1 == .info) |>.map (Compat.String.trim ·.2)
-    for expected in inFileCodeOutputs do
-      unless infos.contains expected do
-        IO.eprintln s!"Expected the message {repr expected} in {mod}, got {repr infos}"
+  if oldest.contains myToolchain then
+    IO.println s!"Skipping in-file code tests for old Lean toolchain {myToolchain}"
+  else
+    for mod in inFileCodeModules myToolchain do
+      IO.println s!"Checking code defined and used in {mod}"
+      let items ← loadModuleContentIn "small-tests" mod myToolchain demodSrc
+      let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+      if content.hasError then
+        IO.eprintln s!"Error span in {mod}"
         return 1
-    IO.println s!"Code defined and used in {mod} OK"
+      let infos := content.messageTexts.filter (·.1 == .info) |>.map (Compat.String.trim ·.2)
+      for expected in inFileCodeOutputs do
+        unless infos.contains expected do
+          IO.eprintln s!"Expected the message {repr expected} in {mod}, got {repr infos}"
+          return 1
+      IO.println s!"Code defined and used in {mod} OK"
 
   pure 0
 
