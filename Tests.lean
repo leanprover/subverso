@@ -447,6 +447,19 @@ def matchNamesModule (toolchain : String) : Option String :=
     else none
   | _ => some "Small.MatchNames21"
 
+/-- Test files that define and use code in the same module or source file -/
+def inFileCodeModules (toolchain : String) : List String :=
+  let ver := (toolchain.splitOn ":").getLast!
+  let ver := if ver.startsWith "v" then Compat.String.drop ver 1 else ver
+  let modules :=
+    match (ver.splitOn ".").map (·.toNat?) with
+    | some major :: some minor :: _ => major > 4 || (major == 4 && minor >= 27)
+    | _ => true
+  if modules then ["Small.InFileCode", "Small.InFileCodeModule"] else ["Small.InFileCode"]
+
+def inFileCodeOutputs : List String :=
+  ["42", "{ x := 1, y := 4 }", "10", "5", "in-file command", "⟪3⟫ : Nat"]
+
 /--
 The `(project, toolchain)` pairs whose builds are the same for every Lean version under test.
 
@@ -565,6 +578,23 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
       let .tactics _ _ _ _ := st
         | IO.eprintln s!"Proof state 'matchRfl' not a proof state: {repr st}"; return 1
     IO.println "Auxiliary declaration names under async elaboration OK"
+
+  if oldest.contains myToolchain then
+    IO.println s!"Skipping in-file code tests for old Lean toolchain {myToolchain}"
+  else
+    for mod in inFileCodeModules myToolchain do
+      IO.println s!"Checking code defined and used in {mod}"
+      let items ← loadModuleContentIn "small-tests" mod myToolchain demodSrc
+      let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+      if content.hasError then
+        IO.eprintln s!"Error span in {mod}"
+        return 1
+      let infos := content.messageTexts.filter (·.1 == .info) |>.map (Compat.String.trim ·.2)
+      for expected in inFileCodeOutputs do
+        unless infos.contains expected do
+          IO.eprintln s!"Expected the message {repr expected} in {mod}, got {repr infos}"
+          return 1
+      IO.println s!"Code defined and used in {mod} OK"
 
   pure 0
 
