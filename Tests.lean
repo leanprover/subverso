@@ -5,6 +5,8 @@ import Lean.Data.Json
 
 open SubVerso.Module (ModuleItem)
 open Lean.FromJson (fromJson?)
+open Lean (Name)
+open SubVerso.Highlighting (Highlighted)
 
 open SubVerso
 
@@ -452,6 +454,13 @@ def demoToolchains : IO (List (String × String)) := do
   pure <| versions.map fun v =>
     ("leanprover/lean4:" ++ v, if v.startsWith "v" then Compat.String.drop v 1 else v)
 
+def toolchainVersion? (toolchain : String) : Option (Nat × Nat) :=
+  let ver := (toolchain.splitOn ":").getLast!
+  let ver := if ver.startsWith "v" then Compat.String.drop ver 1 else ver
+  match (ver.splitOn ".").map (·.toNat?) with
+  | some major :: some minor :: _ => some (major, minor)
+  | _ => none
+
 /--
 The small-tests module that references a `match` auxiliary declaration by the name `toolchain`'s
 compiler generates for it under asynchronous elaboration. Asynchronous elaboration is the compiler
@@ -460,14 +469,55 @@ Version-numbered toolchains before 4.19 elaborate synchronously and get `none`. 
 unrecognized toolchain strings are current enough for the 4.21 naming.
 -/
 def matchNamesModule (toolchain : String) : Option String :=
-  let ver := (toolchain.splitOn ":").getLast!
-  let ver := if ver.startsWith "v" then Compat.String.drop ver 1 else ver
-  match (ver.splitOn ".").map (·.toNat?) with
-  | some major :: some minor :: _ =>
+  match toolchainVersion? toolchain with
+  | some (major, minor) =>
     if major > 4 || (major == 4 && minor >= 21) then some "Small.MatchNames21"
     else if major == 4 && minor >= 19 then some "Small.MatchNames19"
     else none
-  | _ => some "Small.MatchNames21"
+  | none => some "Small.MatchNames21"
+
+def hasGeneralizedFieldNotation (toolchain : String) : Bool :=
+  match toolchainVersion? toolchain with
+  | some (major, minor) => major > 4 || (major == 4 && minor >= 8)
+  | none => true
+
+partial def constSignatures (name : Name) : Highlighted → Array String
+  | .token ⟨.const n sig .., _⟩ => if n == name then #[sig] else #[]
+  | .span _ hl | .tactics _ _ _ hl => constSignatures name hl
+  | .seq hls => Id.run do
+    let mut sigs := #[]
+    for hl in hls do
+      sigs := sigs ++ constSignatures name hl
+    sigs
+  | .token .. | .text .. | .point .. | .unparsed .. => #[]
+
+def staleSignatureCases : List (Name × List String) := [
+  (`fooOne, ["foo 1", "foo 1", "F[1]"]),
+  (`barOne, ["bar 1", "bar 1", "⟪1⟫"]),
+  (`bazOne, ["baz 1", "Z[1]", "baz 1"]),
+  (`tRefl, ["(x : T)", "(x : T)", "(x : A.T)"]),
+  (`uRefl, ["(x : B.U)", "(x : B.U)", "(x : U)"])
+]
+
+def staleSignatureNoDotCases : List (Name × List String) := [
+  (`getEq, ["s.get", "s.get", "S.get s"])
+]
+
+def checkSignatures (mod : String) (items : Array ModuleItem) (cases : List (Name × List String)) :
+    IO Nat := do
+  let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+  let mut errors := 0
+  for (name, expected) in cases do
+    let sigs := constSignatures name content
+    if sigs.size != expected.length then
+      IO.eprintln s!"{mod}: expected {expected.length} occurrences of {name}, got {sigs}"
+      errors := errors + 1
+    else
+      for (sig, part) in sigs.toList.zip expected do
+        if (sig.splitOn part).length < 2 then
+          IO.eprintln s!"{mod}: expected the signature of {name} to contain {repr part}, got {repr sig}"
+          errors := errors + 1
+  pure errors
 
 /-- Test files that define and use code in the same module or source file -/
 def inFileCodeModules (toolchain : String) : List String :=
@@ -576,6 +626,17 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.println "Checking --timings output"
     checkTimings "small-tests" "Small.TacticAlts" myToolchain demodSrc
     IO.println "Timings output OK"
+
+    IO.println "Checking that signatures follow mid-file changes to pretty printing"
+    let items ← loadModuleContentIn "small-tests" "Small.StaleSignatures" myToolchain demodSrc
+    let mut errors ← checkSignatures "Small.StaleSignatures" items staleSignatureCases
+    if hasGeneralizedFieldNotation myToolchain then
+      let items ← loadModuleContentIn "small-tests" "Small.StaleSignaturesNoDot" myToolchain demodSrc
+      errors := errors + (← checkSignatures "Small.StaleSignaturesNoDot" items staleSignatureNoDotCases)
+    if errors > 0 then
+      IO.eprintln s!"{errors} errors encountered in signatures after mid-file changes"
+      return 1
+    IO.println "Signatures after mid-file changes OK"
 
   if oldest.contains myToolchain then
     IO.println s!"Skipping shadowed hypothesis tests for old Lean toolchain {myToolchain}"

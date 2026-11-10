@@ -2623,9 +2623,7 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
   pure hls
 where
   go t stx : HighlightM Highlighted := withCurrHeartbeats do
-    -- The variable-type cache is scoped to a single syntax: its keys don't capture the
-    -- environment, and separate elaboration threads can reuse `FVarId`s.
-    ((← read).sigCache.modify fun c => { c with varTypes := {} } : IO _)
+    ((← read).sigCache.set {} : IO _)
     let _ ← highlight' (Option.map (#[·]) t |>.getD #[]) stx true
     if (← read).includeUnparsed then
       if let some e := Internal.getTrailingOrTailPos? stx then
@@ -2747,6 +2745,7 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
   for idx in [0:result.items.size] do
     let cmd := result.items[idx]!
     let st ← segmentState cmd.commandSyntax segments[idx + 1]!
+    sigCache.set {}
     let (hl, _) ← go cmd segments[idx + 1]! |>.run ctxt |>.run infoTable |>.run st
     hls := hls.push hl
 

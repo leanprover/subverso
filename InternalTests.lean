@@ -1848,6 +1848,17 @@ def oldSignatureFormat : Bool :=
   "N.foo" ["N.foo : N.T"]
   (skip := oldSignatureFormat)
 
+#eval assertConstSigs
+  (String.intercalate "\n" [
+    "def foo (n : Nat) : Nat := n + 1",
+    "theorem fooOne : foo 1 = 2 := rfl",
+    "example : foo 1 = 2 := fooOne",
+    "local notation \"F[\" n \"]\" => foo n",
+    "example : foo 1 = 2 := fooOne",
+    ""])
+  "fooOne" ["fooOne : foo 1 = 2", "fooOne : foo 1 = 2", "fooOne : F[1] = 2"]
+  (skip := oldSignatureFormat)
+
 end ConstSignatures
 
 def main : IO Unit := pure ()
