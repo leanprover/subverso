@@ -564,37 +564,40 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     checkTimings "small-tests" "Small.TacticAlts" myToolchain demodSrc
     IO.println "Timings output OK"
 
-  IO.println "Checking names of shadowed hypotheses in proof states"
-  let items ← loadModuleContentIn "small-tests" "Small.Shadowing" myToolchain demodSrc
-  let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
-  match content.anchored with
-  | .error e =>
-    IO.eprintln s!"Error loading anchored content: {e}"
-    return 1
-  | .ok {code:=_, anchors:=_, proofStates} =>
-    let mut errors := 0
-    for (name, expected) in desiredShadowingProofs do
-      let some (.tactics goals _ _ _) := proofStates.get? name
-        | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
-      let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
-      if goalString != expected then
-        IO.eprintln s!"Proof state '{name}': expected {repr expected} but got {repr goalString}"
-        errors := errors + 1
-    for (name, hyp, expected) in desiredShadowingHovers do
-      let some (.tactics goals _ _ _) := proofStates.get? name
-        | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
-      let mut hovers := #[]
-      for g in goals do
-        for h in g.hypotheses do
-          if h.names.any (·.content == hyp) then
-            hovers := hovers ++ h.typeAndVal.varHovers
-      if hovers != expected then
-        IO.eprintln s!"Proof state '{name}', hypothesis '{hyp}': expected hovers {repr expected} but got {repr hovers}"
-        errors := errors + 1
-    if errors > 0 then
-      IO.eprintln s!"{errors} errors encountered looking at proof states with shadowed hypotheses"
+  if oldest.contains myToolchain then
+    IO.println s!"Skipping shadowed hypothesis tests for old Lean toolchain {myToolchain}"
+  else
+    IO.println "Checking names of shadowed hypotheses in proof states"
+    let items ← loadModuleContentIn "small-tests" "Small.Shadowing" myToolchain demodSrc
+    let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+    match content.anchored with
+    | .error e =>
+      IO.eprintln s!"Error loading anchored content: {e}"
       return 1
-  IO.println "Names of shadowed hypotheses OK"
+    | .ok {code:=_, anchors:=_, proofStates} =>
+      let mut errors := 0
+      for (name, expected) in desiredShadowingProofs do
+        let some (.tactics goals _ _ _) := proofStates.get? name
+          | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
+        let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
+        if goalString != expected then
+          IO.eprintln s!"Proof state '{name}': expected {repr expected} but got {repr goalString}"
+          errors := errors + 1
+      for (name, hyp, expected) in desiredShadowingHovers do
+        let some (.tactics goals _ _ _) := proofStates.get? name
+          | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
+        let mut hovers := #[]
+        for g in goals do
+          for h in g.hypotheses do
+            if h.names.any (·.content == hyp) then
+              hovers := hovers ++ h.typeAndVal.varHovers
+        if hovers != expected then
+          IO.eprintln s!"Proof state '{name}', hypothesis '{hyp}': expected hovers {repr expected} but got {repr hovers}"
+          errors := errors + 1
+      if errors > 0 then
+        IO.eprintln s!"{errors} errors encountered looking at proof states with shadowed hypotheses"
+        return 1
+    IO.println "Names of shadowed hypotheses OK"
 
   match matchNamesModule myToolchain with
   | none =>
