@@ -178,7 +178,7 @@ unsafe def go (timer? : Option Timer) (asServer : Bool) (suppressedNamespaces : 
           range := stx.getRange?.map fun ⟨s, e⟩ => (fm.toPosition s, fm.toPosition e),
           code := hl
         }
-        toString (Module.mk items).toJson
+        Module.mk items |>.toJson.compress
 
     phase timer? "writing" do
       out.putStrLn json
