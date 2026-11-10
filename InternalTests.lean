@@ -3,6 +3,7 @@ import SubVerso.Examples
 import SubVerso.Highlighting
 import SubVerso.Highlighting.Anchors
 import SubVerso.Highlighting.String
+import SubVerso.Module.Normalize
 
 /-! These are SubVerso tests that don't involve a subprocess, to make development easier. -/
 
@@ -1873,3 +1874,95 @@ open Lean Elab Command SubVerso.Compat in
   let toks := hls.foldl (init := #[]) fun acc hl => acc ++ docCommentTokens hl
   unless toks == #["/-!\nA *module* doc\n-/", "/--\nSome *docs* here\n-/"] do
     throwError "Expected one doc comment token per Verso comment, got {toks.toList}"
+
+section ModuleNormalize
+
+open SubVerso.Highlighting
+open SubVerso.Module (Module ModuleItem normalize rangeToJson)
+open Lean (Name Json toJson)
+open Lean.Elab.Command (CommandElabM)
+
+def normVar (n : Nat) : Highlighted :=
+  .token ⟨.var ⟨Name.mkNum `_uniq n⟩ "Nat" none, "x"⟩
+
+def normConst (name : Name) (sig : String) : Highlighted :=
+  .token ⟨.const name sig none false none, name.toString⟩
+
+def normItem (code : Highlighted) (line : Nat := 1) : ModuleItem :=
+  { range := some (⟨line, 0⟩, ⟨line, 20⟩), kind := `test, defines := #[], code }
+
+def normGoal (hyp concl : Nat) : Highlighted :=
+  .tactics #[{
+      name := none,
+      goalPrefix := "⊢ ",
+      hypotheses := #[{ names := #[⟨.var ⟨Name.mkNum `_uniq hyp⟩ "Nat" none, "h"⟩], typeAndVal := normVar concl }],
+      conclusion := .seq #[normVar hyp, .text " = ", normVar concl] }]
+    0 5 (.text "simp")
+
+def normSample (v w x : Nat) (sig : String := "f : Nat") : Module := ⟨#[
+  normItem (.seq #[.text "def ", normConst `f sig, .text " := ", normVar v]),
+  normItem (.span #[(.info, .text "note")] (normGoal w x)) 2
+]⟩
+
+def assertNormalizeSame (a b : Module) : CommandElabM Unit := do
+  let na := (normalize a).compress
+  let nb := (normalize b).compress
+  unless na == nb do
+    throwError m!"Expected equal normal forms, got\n{na}\nand\n{nb}"
+
+def assertNormalizeDifferent (a b : Module) : CommandElabM Unit := do
+  let na := (normalize a).compress
+  unless na != (normalize b).compress do
+    throwError m!"Expected different normal forms, both are\n{na}"
+
+#eval assertNormalizeSame (normSample 3 4 5) (normSample 3 4 5)
+
+#eval show CommandElabM Unit from do
+  let sample := normSample 3 4 5
+  let .arr items := normalize sample
+    | throwError "Expected an array of items"
+  let ranges := items.map (·.getObjValD "range")
+  unless ranges == sample.items.map (·.range.map rangeToJson |>.getD .null) do
+    throwError m!"Expected the items in source order, got ranges {ranges}"
+
+#eval assertNormalizeSame (normSample 3 4 5) (normSample 30 50 40)
+
+#eval assertNormalizeDifferent (normSample 3 4 5) (normSample 3 4 4)
+
+#eval assertNormalizeDifferent (normSample 3 4 5) (normSample 3 4 5 (sig := "f : Int"))
+
+#eval assertNormalizeDifferent
+  (normSample 3 4 5 (sig := "f : " ++ String.join (List.replicate 80 "x") ++ "Nat"))
+  (normSample 3 4 5 (sig := "f : " ++ String.join (List.replicate 80 "x") ++ "Int"))
+
+#eval assertNormalizeDifferent (normSample 3 4 5)
+  ⟨#[(normSample 3 4 5).items[0]!, { (normSample 3 4 5).items[1]! with range := some (⟨2, 0⟩, ⟨3, 4⟩) }]⟩
+
+#eval assertNormalizeDifferent
+  ⟨#[normItem (.seq #[normVar 1, normVar 2])]⟩
+  ⟨#[normItem (.seq #[normVar 7, normVar 7])]⟩
+
+#eval assertNormalizeDifferent
+  ⟨#[normItem (.seq #[normVar 1, normVar 1])]⟩
+  ⟨#[normItem (.seq #[normVar 7, normVar 8])]⟩
+
+#eval assertNormalizeSame
+  ⟨#[normItem (.seq #[normVar 1]), normItem (.seq #[normVar 1]) 2]⟩
+  ⟨#[normItem (.seq #[normVar 7]), normItem (.seq #[normVar 8]) 2]⟩
+
+#eval show CommandElabM Unit from do
+  let roundTrip (m : Module) : CommandElabM Module :=
+    match Module.fromJson? (toJson m) with
+    | .ok m' => pure m'
+    | .error e => throwError e
+  let sample := normSample 3 4 5
+  let shifted : Module := ⟨#[
+    normItem (.seq #[.token ⟨.keyword none none none, "a"⟩, .text "b", .token ⟨.keyword none none none, "c"⟩]),
+    sample.items[1]!]⟩
+  let codeKey (m : Module) : Option Json := do
+    let items ← (toJson m).getObjValD "items" |>.getArr? |>.toOption
+    (← items[1]?).getObjVal? "code" |>.toOption
+  if codeKey sample == codeKey shifted then
+    throwError "Expected the second item's key to differ, got {codeKey sample}"
+  assertNormalizeSame sample (← roundTrip sample)
+  assertNormalizeSame ⟨#[sample.items[1]!]⟩ ⟨#[(← roundTrip shifted).items[1]!]⟩
