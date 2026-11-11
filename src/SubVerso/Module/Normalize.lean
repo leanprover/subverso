@@ -3,10 +3,8 @@ Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
-public import SubVerso.Compat
-public import SubVerso.Module
-public section
+import SubVerso.Compat
+import SubVerso.Module
 
 open Lean
 
