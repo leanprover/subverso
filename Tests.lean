@@ -345,6 +345,23 @@ def desiredShadowingConclusionHovers : List (String × Array (String × String))
   ("typeChanged", #[("x", "Nat"), ("x", "Nat")])
 ]
 
+def desiredReuseProofs : List (String × String) := [
+  ("pendingWitness", "⊢ ?n = ?n → True\ncase n\n⊢ Nat"),
+  ("pendingHyp", "h : ?n = ?n\n⊢ True\ncase n\n⊢ Nat"),
+  ("assignedHyp", "h : 3 = 3\n⊢ True"),
+  ("hypFirst", "h : Nat\n⊢ ∀ (a : Nat), True"),
+  ("hypShadowed", "h✝ : Nat\nh : Nat\n⊢ True"),
+  ("hypTypeChanged", "x : Nat\nh : x = x\n⊢ x = x"),
+  ("firstBranch", "⊢ 1 = 1"),
+  ("secondBranch", "⊢ 2 = 2"),
+  ("taggedGoal", "⊢ ?n = ?n\ncase n\n⊢ Nat"),
+  ("untaggedGoal", "⊢ Nat")
+]
+
+def desiredReuseHovers : List (String × String × Array (String × String)) := [
+  ("hypTypeChanged", "h", #[("x", "Nat"), ("x", "Nat")])
+]
+
 partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool) : IO Unit := do
   if (← src.isDir) then
     for ⟨_, name⟩ in ← src.readDir do
@@ -730,6 +747,37 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
       IO.eprintln s!"{errors} errors encountered in signatures after mid-file changes"
       return 1
     IO.println "Signatures after mid-file changes OK"
+
+    IO.println "Checking proof states that repeat goals and hypotheses"
+    let items ← loadModuleContentIn "small-tests" "Small.ProofStateReuse" myToolchain demodSrc
+    let content := items.map (·.code) |>.foldl (· ++ ·) (.empty)
+    match content.anchored with
+    | .error e =>
+      IO.eprintln s!"Error loading anchored content: {e}"
+      return 1
+    | .ok {code:=_, anchors:=_, proofStates} =>
+      for (name, expected) in desiredReuseProofs do
+        let some (.tactics goals _ _ _) := proofStates.get? name
+          | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
+        let goalString := "\n".intercalate (goals.map (·.toString) |>.toList)
+        if goalString != expected then
+          IO.eprintln s!"Proof state '{name}': expected {repr expected} but got {repr goalString}"
+          errors := errors + 1
+      for (name, hyp, expected) in desiredReuseHovers do
+        let some (.tactics goals _ _ _) := proofStates.get? name
+          | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
+        let mut hovers := #[]
+        for g in goals do
+          for h in g.hypotheses do
+            if h.names.any (·.content == hyp) then
+              hovers := hovers ++ h.typeAndVal.varHovers
+        if hovers != expected then
+          IO.eprintln s!"Proof state '{name}', hypothesis '{hyp}': expected hovers {repr expected} but got {repr hovers}"
+          errors := errors + 1
+      if errors > 0 then
+        IO.eprintln s!"{errors} errors encountered looking at proof states that repeat goals and hypotheses"
+        return 1
+    IO.println "Proof states that repeat goals and hypotheses OK"
 
   if oldest.contains myToolchain then
     IO.println s!"Skipping shadowed hypothesis, bound variable and nested format data tests for old Lean toolchain {myToolchain}"

@@ -3,6 +3,7 @@
 -- generates the auxiliary declaration name it references.
 import Small.TacticAlts
 import Small.Shadowing
+import Small.ProofStateReuse
 
 example (p q : Prop) : p ∨ q → q ∨ p := by
   intro h
