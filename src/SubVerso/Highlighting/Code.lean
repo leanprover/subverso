@@ -1021,8 +1021,12 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
         pure (toString fmt, none)
     catch _ => pure ("", none)
 
-  -- The fully instantiated inferred type of `expr`, or `none` if inference fails.
+  -- The fully instantiated inferred type of `expr`, or `none` if inference fails.  If `expr` is a
+  -- free variable, its type can be read directly from the local context.
   let typeOf : m (Option Expr) := do
+    if let .fvar x := expr.consumeMData then
+      return lctx.find? x |>.map fun decl =>
+        if decl.type.hasMVar then (instantiateMVarsCore ci.mctx decl.type).1 else decl.type
     try
       runMeta do pure (some (← instantiateMVars (← Meta.inferType expr)))
     catch _ => pure none
