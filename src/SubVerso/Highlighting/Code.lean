@@ -95,11 +95,12 @@ def InfoTable.ofInfoTrees (ts : Array InfoTree) (init : InfoTable := {}) : InfoT
 def InfoTable.nodesFor (table : InfoTable) (rng : Compat.Syntax.Range) : Array InfoNode :=
   (Compat.HashMap.get? table.nodesByRange rng).getD #[]
 
-def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (ContextInfo × TacticInfo)) := do
+def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) :
+    Option (Array (ContextInfo × TacticInfo × Environment)) := do
   let rng ← stx.getRange? (canonicalOnly := true)
   pure <| table.nodesFor rng |>.filterMap fun node =>
     match node.info with
-    | .ofTacticInfo ti => if ti.stx == stx then some (node.ci, ti) else none
+    | .ofTacticInfo ti => if ti.stx == stx then some (node.ci, ti, node.commandEnv) else none
     | _ => none
 
 /--
@@ -1250,6 +1251,12 @@ def infoNodesFor (trees : Array InfoTree) (stx : Syntax) :
     (infoForSyntax t stx).toArray.map fun (ci, info) =>
       { ci, info, commandEnv := commandEnv?.getD ci.env }
 
+def withCommandEnv (trees : Array InfoTree) (stx : Syntax) (act : HighlightM α) : HighlightM α := do
+  if let some node := (← infoNodesFor trees stx)[0]? then
+    withEnv node.commandEnv act
+  else
+    act
+
 def kindCandidatesByPriority
     (trees : Array InfoTree) (stx : Syntax) (allowUnknownTyped : Bool := false) :
     HighlightM (Array (Environment × KindCandidate HighlightM)) := do
@@ -1277,7 +1284,8 @@ def anonCtorKind
 
 partial def renderTagged [Monad m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
-    (outer : Option Token.Kind) (doc : CodeWithInfos) :
+    (outer : Option Token.Kind) (doc : CodeWithInfos)
+    (tagEnv : ContextInfo → Environment → Environment := fun _ env => env) :
     m Highlighted := do
   match doc with
   | .text txt => do
@@ -1311,6 +1319,7 @@ partial def renderTagged [Monad m] [MonadReaderOf Context m]
     pure toks
   | .tag t doc' =>
     let {ctx, info, children := _} := t.info.val
+    withEnv (tagEnv ctx (← getEnv)) do
     if let .text tok := doc' then
       let wsPre := Compat.String.takeWhile tok (·.isWhitespace)
       let wsPost := Compat.String.takeRightWhile tok (·.isWhitespace)
@@ -1318,8 +1327,8 @@ partial def renderTagged [Monad m] [MonadReaderOf Context m]
       pure <| .seq #[.text wsPre, .token ⟨k, Compat.String.trim tok⟩, .text wsPost]
     else
       let k? := (← infoKind ctx info).map (·.1)
-      renderTagged k? doc'
-  | .append xs => xs.mapM (renderTagged outer) <&> (·.foldl (init := .empty) (· ++ ·))
+      renderTagged k? doc' tagEnv
+  | .append xs => xs.mapM (renderTagged outer · tagEnv) <&> (·.foldl (init := .empty) (· ++ ·))
 where
   tokenEnder str := str.isEmpty || !(Compat.String.Pos.get str 0 |>.isAlphanum)
 
@@ -1347,9 +1356,9 @@ where
     | .text str => pure (.text str)
     | .append xs => .append <$> xs.mapM convert
     | .tag embed _ =>
-      let render (e : CodeWithInfos) : HighlightM Highlighted  :=
+      let render (e : CodeWithInfos) : HighlightM Highlighted :=
         if highlightTerms then
-          try renderTagged none e
+          try renderTagged none e (tagEnv := fun ctx _ => ctx.env)
           catch | _ => pure <| .text e.pretty
         else
           pure <| .text e.pretty
@@ -1705,7 +1714,7 @@ def hasTactics (stx : Syntax) : HighlightM Bool := do
         if stx' == stx then return res
 
   if let some info := (← readThe InfoTable).tacticInfo? stx then
-    for (_, ti) in info do
+    for (_, ti, _) in info do
       if ti.stx == stx then
         if let some rng := rng? then
           modify fun st =>
@@ -1858,9 +1867,9 @@ def identKind
       | continue
     match kind with
     | .const name sig docs isDef none =>
-      return .const name sig docs isDef (← resolveFormatWithInfos kindSig)
+      return .const name sig docs isDef (← withEnv commandEnv (resolveFormatWithInfos kindSig))
     | .var id tyStr none =>
-      return .var id tyStr (← resolveFormatWithInfos kindSig)
+      return .var id tyStr (← withEnv commandEnv (resolveFormatWithInfos kindSig))
     | _ => return kind
   return .unknown
 
@@ -1878,7 +1887,7 @@ def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
       | continue
     let .withType .. := candidate.shape | continue
     if let some (.withType ty, prettySig) ← withEnv commandEnv candidate.render then
-      return (some ty, ← resolveFormatWithInfos prettySig)
+      return (some ty, ← withEnv commandEnv (resolveFormatWithInfos prettySig))
   return (none, none)
 
 /-- Render a term, caching it. -/
@@ -1886,8 +1895,8 @@ def renderOrGetWithFormat (key : TermKey) (ctx : NameContext)
     (render : Expr → HighlightM (Highlighted × String)) : HighlightM (Highlighted × String) :=
   cachedTerm (·.fmtTerms) (fun st c => { st with fmtTerms := c }) key ctx render
 
-def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
-    HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
+def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List MVarId) :
+    HighlightM (Array (Highlighted.Goal Highlighted)) := withEnv commandEnv <| withReader (·.noDefinitions) do
   let mut goalView := #[]
   let doCollectFormat := (← read).collectFormat
   let ppCtxHash := ppContextHash ci
@@ -1964,13 +1973,13 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
   pure goalView
 
 def tacticInfoGoals
-    (ci : ContextInfo) (tacticInfo : TacticInfo)
+    (ci : ContextInfo) (commandEnv : Environment) (tacticInfo : TacticInfo)
     (startPos endPos : Compat.String.Pos)
     (before : Bool := false) :
     HighlightM (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos) := do
   let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
   let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
-  let goalView ← highlightGoals ci goals
+  let goalView ← highlightGoals ci commandEnv goals
 
   return (goalView, startPos, endPos)
 
@@ -1986,14 +1995,14 @@ partial def findTactics'
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) := do
 
   if let some res := (← readThe InfoTable).tacticInfo? stx then
-    for (ci, tacticInfo) in res.reverse do
+    for (ci, tacticInfo, commandEnv) in res.reverse do
       if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
         return some (#[], startPos, endPos)
 
       let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
       let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
       if goals.isEmpty then continue
-      let goalView ← highlightGoals ci goals
+      let goalView ← highlightGoals ci commandEnv goals
 
       if !Output.inTacticState (← get).output goalView then
         return some (goalView, startPos, endPos)
@@ -2014,14 +2023,14 @@ partial def findAllTactics'
   let mut found := #[]
 
   if let some res := (← readThe InfoTable).tacticInfo? stx then
-    for (ci, tacticInfo) in res.reverse do
+    for (ci, tacticInfo, commandEnv) in res.reverse do
       if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
         continue
 
       let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
       let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
       if goals.isEmpty then continue
-      let goalView ← highlightGoals ci goals
+      let goalView ← highlightGoals ci commandEnv goals
 
       if !Output.inTacticState (← get).output goalView then
         found := found ++ goalView
@@ -2041,10 +2050,11 @@ partial def rwRuleGoals
   for t in trees do
     for (ci, info) in infoIncludingSyntax t stx do
       if let .ofTacticInfo ti := info then
+        let commandEnv := (infoTreeCommandEnv? t).getD ci.env
         if let some regionStart := ti.stx.getPos? (canonicalOnly := true) then
           if let some regionEnd := ti.stx.getTailPos? (canonicalOnly := true) then
             if regionStart == ruleStart then
-              return some (← tacticInfoGoals ci ti regionStart regionEnd (before := false))
+              return some (← tacticInfoGoals ci commandEnv ti regionStart regionEnd (before := false))
   return none
 
 /-- Tactics which should show inner tactic scripts' states as well as the full final state -/
@@ -2096,7 +2106,8 @@ partial def findTactics
           if tacticInfo.stx.getKind == nullKind then
             if let some tacStx := tacticInfo.stx.getArgs.back? then
               if tacStx == stx then
-                return some (← tacticInfoGoals ci tacticInfo startPos endPos (before := true))
+                let commandEnv := (infoTreeCommandEnv? t).getD ci.env
+                return some (← tacticInfoGoals ci commandEnv tacticInfo startPos endPos (before := true))
 
           match tacticInfo.stx with
           | `(Lean.Parser.Tactic.inductionAlt| $_lhs =>%$tk $rhs )
@@ -2289,7 +2300,8 @@ def highlightSpecial
                   if ti.stx.getKind == nullKind then
                     let preArr := i.stx[0]
                     if preArr.getKind == nullKind && preArr[0] == l then
-                      let (goals, _, _) ← tacticInfoGoals ci ti startPos endPos (before := true)
+                      let commandEnv := (infoTreeCommandEnv? t).getD ci.env
+                      let (goals, _, _) ← tacticInfoGoals ci commandEnv ti startPos endPos (before := true)
                       if !goals.isEmpty then
                         HighlightM.openTactic goals startPos endPos
                         lhsTactics := false
@@ -2646,7 +2658,8 @@ def highlight (stx : Syntax) (messages : Array Message)
     collectFormat,
     sigCache
   }
-  let ((), {output := output, ..}) ← highlight' trees stx true |>.run ctxt |>.run infoTable |>.run st
+  let ((), {output := output, ..}) ← withCommandEnv trees stx (highlight' trees stx true)
+    |>.run ctxt |>.run infoTable |>.run st
   pure <| .fromOutput output
 
 /--
@@ -2674,7 +2687,7 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
 
   let infoTable : InfoTable := .ofInfoTrees trees
 
-  let doHighlight : HighlightM Unit := do
+  let doHighlight : HighlightM Unit := withCommandEnv trees stx do
     highlight' trees stx true
     if let some endPos := endPos? then
       fillMissingSourceUpTo endPos
@@ -2746,7 +2759,8 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
 where
   go t stx : HighlightM Highlighted := withCurrHeartbeats do
     ((← read).sigCache.set {} : IO _)
-    let _ ← highlight' (Option.map (#[·]) t |>.getD #[]) stx true
+    let trees := Option.map (#[·]) t |>.getD #[]
+    let _ ← withCommandEnv trees stx (highlight' trees stx true)
     if (← read).includeUnparsed then
       if let some e := Internal.getTrailingOrTailPos? stx then
         fillMissingSourceUpTo e
@@ -2874,7 +2888,8 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
   return hls
 where
   go (res : Compat.Frontend.FrontendItem) (seg : ModuleSegment) := do
-    let _ ← highlight' res.info.toArray res.commandSyntax true
+    let _ ← withCommandEnv res.info.toArray res.commandSyntax
+      (highlight' res.info.toArray res.commandSyntax true)
     flushSegment seg
     modifyGet fun (st : HighlightState) => (Highlighted.fromOutput st.output, {st with output := []})
   /--
@@ -2904,7 +2919,7 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     collectFormat,
     sigCache
   }
-  let (hlGoals, _) ← highlightGoals ci goals |>.run ctxt |>.run infoTable |>.run .empty
+  let (hlGoals, _) ← highlightGoals ci (← getEnv) goals |>.run ctxt |>.run infoTable |>.run .empty
   pure hlGoals
 
 

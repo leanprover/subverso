@@ -1886,6 +1886,51 @@ open Lean Elab Command SubVerso.Compat in
   unless toks == #["/-!\nA *module* doc\n-/", "/--\nSome *docs* here\n-/"] do
     throwError "Expected one doc comment token per Verso comment, got {toks.toList}"
 
+def nestedMessageEnvTarget : Nat := 0
+
+partial def messageConstDocs (name : Lean.Name) :
+    Highlighting.Highlighted.MessageContents Highlighting.Highlighted → Array (Option String)
+  | .term hl => hl.tokenList.filterMap fun
+    | ⟨.const n _ docs _ _, _⟩ => if n == name then some docs else none
+    | _ => none
+  | .trace _ msg children _ =>
+    children.foldl (· ++ messageConstDocs name ·) (messageConstDocs name msg)
+  | .append xs => xs.foldl (· ++ messageConstDocs name ·) #[]
+  | _ => #[]
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let before ← getEnv
+  elabCommand (← `(/-- Nested message environment -/ add_decl_doc nestedMessageEnvTarget))
+  let after ← getEnv
+  setEnv before
+  let ctx (env : Environment) : MessageDataContext := { env, mctx := {}, lctx := {}, opts := {} }
+  let target := MessageData.ofExpr (mkConst ``nestedMessageEnvTarget)
+  let data := MessageData.withContext (ctx before) <|
+    m!"before: " ++ target ++ m!", after: " ++ MessageData.withContext (ctx after) target
+  let msg : Message := { fileName := "<test>", pos := ⟨1, 0⟩, data }
+  let hl ← runTermElabM fun _ => Highlighting.highlightMessage msg
+  let docs := messageConstDocs ``nestedMessageEnvTarget hl.contents
+  unless docs.size == 2 && docs[0]!.isNone && docs[1]!.isSome do
+    throwError "Expected the docstring only in the nested context, got {repr docs}"
+
+def laterKeywordDocs (hl : Highlighting.Highlighted) : Array (Option String) :=
+  hl.tokenList.filterMap fun
+    | ⟨.keyword _ _ docs, "laterDocKw"⟩ => some docs
+    | _ => none
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let input :=
+    "syntax (name := laterDocKwStx) \"laterDocKw\" : term\n" ++
+    "macro_rules | `(laterDocKw) => `(0)\n" ++
+    "example : Nat := laterDocKw\n" ++
+    "/-- Later keyword docs -/ add_decl_doc laterDocKwStx\n" ++
+    "example : Nat := laterDocKw\n"
+  let docs := laterKeywordDocs (← highlightModuleStyle input)
+  unless docs.size == 3 && docs[1]!.isNone && docs[2]!.isSome do
+    throwError "Expected the keyword docstring only after it is added, got {repr docs}"
+
 section ModuleNormalize
 
 open SubVerso.Highlighting
