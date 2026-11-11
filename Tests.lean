@@ -18,6 +18,38 @@ partial def Highlighted.varHovers : Highlighted → Array (String × String)
   | .span _ hl | .tactics _ _ _ hl => hl.varHovers
   | _ => #[]
 
+partial def Highlighted.constDocs (name : Lean.Name) : Highlighted → Array (Option String)
+  | .token ⟨.const n _ docs _ _, _⟩ => if n == name then #[docs] else #[]
+  | .seq hls => hls.foldl (· ++ ·.constDocs name) #[]
+  | .span _ hl => hl.constDocs name
+  | .tactics _ _ _ hl => hl.constDocs name
+  | _ => #[]
+
+partial def Highlighted.goalConstDocs (name : Lean.Name) : Highlighted → Array (Option String)
+  | .seq hls => hls.foldl (· ++ ·.goalConstDocs name) #[]
+  | .span _ hl => hl.goalConstDocs name
+  | .tactics goals _ _ hl => Id.run do
+    let mut docs := hl.goalConstDocs name
+    for g in goals do
+      docs := docs ++ g.conclusion.constDocs name
+    return docs
+  | _ => #[]
+
+partial def Highlighted.MessageContents.constDocs (name : Lean.Name) :
+    Highlighted.MessageContents Highlighted → Array (Option String)
+  | .term hl => hl.constDocs name
+  | .trace _ msg children _ => children.foldl (· ++ ·.constDocs name) (msg.constDocs name)
+  | .append xs => xs.foldl (· ++ ·.constDocs name) #[]
+  | _ => #[]
+
+partial def Highlighted.messageConstDocs (name : Lean.Name) : Highlighted → Array (Option String)
+  | .seq hls => hls.foldl (· ++ ·.messageConstDocs name) #[]
+  | .span msgs hl =>
+    msgs.foldl (· ++ ·.2.constDocs name) #[] ++ hl.messageConstDocs name
+  | .tactics _ _ _ hl => hl.messageConstDocs name
+  | .point _ msg => msg.constDocs name
+  | _ => #[]
+
 partial
 def Highlighted.countProofStates (hl : Highlighted) : Nat :=
   match hl with
@@ -537,6 +569,11 @@ def hasGeneralizedFieldNotation (toolchain : String) : Bool :=
   | some (major, minor) => major > 4 || (major == 4 && minor >= 8)
   | none => true
 
+def hasRecommendedSpelling (toolchain : String) : Bool :=
+  match toolchainVersion? toolchain with
+  | some (major, minor) => major > 4 || (major == 4 && minor >= 18)
+  | none => true
+
 partial def constSignatures (name : Name) : Highlighted → Array String
   | .token ⟨.const n sig .., _⟩ => if n == name then #[sig] else #[]
   | .span _ hl | .tactics _ _ _ hl => constSignatures name hl
@@ -803,6 +840,36 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
           IO.eprintln s!"Expected the message {repr expected} in {mod}, got {repr infos}"
           return 1
       IO.println s!"Code defined and used in {mod} OK"
+
+  if oldest.contains myToolchain || !hasRecommendedSpelling myToolchain then
+    IO.println s!"Skipping recommended spelling docstring tests for Lean toolchain {myToolchain}"
+  else
+    IO.println "Checking docstrings of an imported constant around a later recommended spelling"
+    let items ← loadModuleContentIn "small-tests" "Small.LaterSpelling" myToolchain demodSrc
+    let codeOf (decl : Lean.Name) : Highlighted :=
+      items.filter (·.defines.contains decl) |>.foldl (· ++ ·.code) .empty
+    let hasSpelling (doc : Option String) : Bool :=
+      doc.any fun d : String => (d.splitOn "maxOfTwo").length > 1
+    let before := codeOf `maxBeforeSpelling
+    let after := codeOf `maxAfterSpelling
+    let messageDocs := items.map (·.code.messageConstDocs ``Max.max)
+      |>.filter (!·.isEmpty)
+    if messageDocs.size != 2 then
+      IO.eprintln s!"Expected two messages that mention Max.max, got {repr messageDocs}"
+      return 1
+    let cases := [
+      ("statement before", before.constDocs ``Max.max, false),
+      ("goal before", before.goalConstDocs ``Max.max, false),
+      ("message before", messageDocs[0]!, false),
+      ("statement after", after.constDocs ``Max.max, true),
+      ("goal after", after.goalConstDocs ``Max.max, true),
+      ("message after", messageDocs[1]!, true)
+    ]
+    for (label, docs, expected) in cases do
+      if docs.isEmpty || docs.any (hasSpelling · != expected) then
+        IO.eprintln s!"Max.max docstrings in the {label}: expected spelling {expected}, got {repr docs}"
+        return 1
+    IO.println "Docstrings around a later recommended spelling OK"
 
   pure 0
 
