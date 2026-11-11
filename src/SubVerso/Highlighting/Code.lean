@@ -76,6 +76,9 @@ def infoTreeCommandEnv? (t : InfoTree) : Option Environment :=
   | .error ci => some ci.env
   | .ok _ => none
 
+def infoTreesCommandEnv? (trees : Array InfoTree) : Option Environment :=
+  trees.reverse.findSome? infoTreeCommandEnv?
+
 /-- Indexes every info node of the tree by its syntax's canonical range. -/
 partial def InfoTable.indexNodes (t : InfoTree) (table : InfoTable) : InfoTable :=
   let commandEnv? := infoTreeCommandEnv? t
@@ -2919,7 +2922,8 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     collectFormat,
     sigCache
   }
-  let (hlGoals, _) ← highlightGoals ci (← getEnv) goals |>.run ctxt |>.run infoTable |>.run .empty
+  let commandEnv := (infoTreesCommandEnv? trees).getD (← getEnv)
+  let (hlGoals, _) ← highlightGoals ci commandEnv goals |>.run ctxt |>.run infoTable |>.run .empty
   pure hlGoals
 
 
