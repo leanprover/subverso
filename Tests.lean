@@ -247,12 +247,18 @@ def desiredShadowingProofs : List (String × String) := [
   ("alphaEquivalent", "h₁ : ∀ (a : Nat), a = a\nh₂ : ∀ (b : Nat), b = b\n⊢ True"),
   ("hoverTypes", "α : Type\nP : α → Prop\na : α\nh : P a\n⊢ ∀ (α : Type), α = α"),
   ("hoverTypesShadowed", "α✝ : Type\nP : α✝ → Prop\na : α✝\nh : P a\nα : Type\n⊢ α = α"),
-  ("constShadowed", "h : _root_.shadowingConst = 1\nshadowingConst : Nat\n⊢ shadowingConst = shadowingConst")
+  ("constShadowed", "h : _root_.shadowingConst = 1\nshadowingConst : Nat\n⊢ shadowingConst = shadowingConst"),
+  ("typeChanged", "x : Nat\nh : x = x\n⊢ x = x")
 ]
 
 def desiredShadowingHovers : List (String × String × Array (String × String)) := [
   ("hoverTypes", "h", #[("P", "α → Prop"), ("a", "α")]),
-  ("hoverTypesShadowed", "h", #[("P", "α✝ → Prop"), ("a", "α✝")])
+  ("hoverTypesShadowed", "h", #[("P", "α✝ → Prop"), ("a", "α✝")]),
+  ("typeChanged", "h", #[("x", "Nat"), ("x", "Nat")])
+]
+
+def desiredShadowingConclusionHovers : List (String × Array (String × String)) := [
+  ("typeChanged", #[("x", "Nat"), ("x", "Nat")])
 ]
 
 partial def copyRecursively (src tgt : System.FilePath) (visit : String → Bool) : IO Unit := do
@@ -606,6 +612,15 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
               hovers := hovers ++ h.typeAndVal.varHovers
         if hovers != expected then
           IO.eprintln s!"Proof state '{name}', hypothesis '{hyp}': expected hovers {repr expected} but got {repr hovers}"
+          errors := errors + 1
+      for (name, expected) in desiredShadowingConclusionHovers do
+        let some (.tactics goals _ _ _) := proofStates.get? name
+          | IO.eprintln s!"Not found: proof state '{name}'"; errors := errors + 1
+        let mut hovers := #[]
+        for g in goals do
+          hovers := hovers ++ g.conclusion.varHovers
+        if hovers != expected then
+          IO.eprintln s!"Proof state '{name}', conclusion: expected hovers {repr expected} but got {repr hovers}"
           errors := errors + 1
       if errors > 0 then
         IO.eprintln s!"{errors} errors encountered looking at proof states with shadowed hypotheses"
