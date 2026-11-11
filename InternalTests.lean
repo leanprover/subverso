@@ -1931,6 +1931,39 @@ open Lean Elab Command in
   unless docs.size == 3 && docs[1]!.isNone && docs[2]!.isSome do
     throwError "Expected the keyword docstring only after it is added, got {repr docs}"
 
+def proofStateEnvTarget : Nat := 0
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  let input :=
+    "/-- Proof state environment -/ add_decl_doc proofStateEnvTarget\n" ++
+    "theorem proofStateEnvCheck : proofStateEnvTarget = 0 := by\n  rfl\n"
+  let inputCtx := Parser.mkInputContext input "<input>"
+  let (headerStx, parserState, msgs) ← Parser.parseHeader inputCtx
+  let commandState : Command.State :=
+    { env := (← getEnv), maxRecDepth := (← get).maxRecDepth, messages := msgs }
+  let (result, _) ← Compat.Frontend.processCommands headerStx
+    |>.run { inputCtx } |>.run { commandState, parserState, cmdPos := parserState.pos }
+  let mut docs : Array (Option String) := #[]
+  for item in result.items do
+    let mut tactics : List (ContextInfo × TacticInfo) := []
+    for t in item.info.toArray do
+      tactics := tactics ++ t.collectNodesBottomUp fun ci info _ soFar =>
+        match info with
+        | .ofTacticInfo ti => (ci, ti) :: soFar
+        | _ => soFar
+    if let some (ci, ti) := tactics.find? (!·.2.goalsBefore.isEmpty) then
+      let ci := { ci with mctx := ti.mctxBefore }
+      let goals ← runTermElabM fun _ =>
+        withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
+          Highlighting.highlightProofState ci ti.goalsBefore item.info
+      for g in goals do
+        docs := docs ++ g.conclusion.tokenList.filterMap fun
+          | ⟨.const n _ d _ _, _⟩ => if n == ``proofStateEnvTarget then some d else none
+          | _ => none
+  unless !docs.isEmpty && docs.all (·.isSome) do
+    throwError "Expected the docstring from the command's environment in the proof state, got {repr docs}"
+
 section ModuleNormalize
 
 open SubVerso.Highlighting
