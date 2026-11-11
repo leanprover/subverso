@@ -55,11 +55,12 @@ inductive Counter where
   | varTypeCacheHits
   | varTypeCacheMisses
   | termCacheEvictions
+  | varTypeCacheEvictions
 deriving Inhabited, BEq, Repr
 
 def Counter.all : Array Counter :=
   #[.delaboratorCalls, .runMetaMCalls, .termCacheHits, .termCacheMisses, .termCacheUncached,
-    .varTypeCacheHits, .varTypeCacheMisses, .termCacheEvictions]
+    .varTypeCacheHits, .varTypeCacheMisses, .termCacheEvictions, .varTypeCacheEvictions]
 
 def Counter.index : Counter → Nat
   | .delaboratorCalls => 0
@@ -70,6 +71,7 @@ def Counter.index : Counter → Nat
   | .varTypeCacheHits => 5
   | .varTypeCacheMisses => 6
   | .termCacheEvictions => 7
+  | .varTypeCacheEvictions => 8
 
 def Counter.name : Counter → String
   | .delaboratorCalls => "delaboratorCalls"
@@ -80,6 +82,7 @@ def Counter.name : Counter → String
   | .varTypeCacheHits => "varTypeCacheHits"
   | .varTypeCacheMisses => "varTypeCacheMisses"
   | .termCacheEvictions => "termCacheEvictions"
+  | .varTypeCacheEvictions => "varTypeCacheEvictions"
 
 end Timings
 
