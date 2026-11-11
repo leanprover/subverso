@@ -3,12 +3,10 @@ Copyright (c) 2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
 import Lean.Data.Json
-public import SubVerso.Highlighting
-public import SubVerso.Helper.Netstring
+import SubVerso.Highlighting
+import SubVerso.Helper.Netstring
 
-public section
 open Lean ToJson FromJson
 open SubVerso.Highlighting
 
