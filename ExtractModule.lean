@@ -43,6 +43,10 @@ OPTS may be:
     calls to nested highlighting), and counts of pretty-printer and MetaM calls.
     CPU seconds are null on toolchains that can't report them.
 
+  --collect-format
+    Include the pretty printer's format data for the types and signatures of
+    tokens and for proof states, so that they can be reflowed to other widths.
+
 Each command in the module is represented as a JSON object with the following
 fields:
 
@@ -127,7 +131,7 @@ def Timer.report (timer : Timer) (wallNanos : Nat) : IO Json := do
       (c.name, ((hl.counters[c.index]?.getD 0 : Nat) : Json)))
   ]
 
-unsafe def go (timer? : Option Timer) (asServer : Bool) (suppressedNamespaces : Array Name) (setupFile? : Option System.FilePath) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
+unsafe def go (timer? : Option Timer) (asServer : Bool) (suppressedNamespaces : Array Name) (setupFile? : Option System.FilePath) (collectFormat : Bool) (mod : String) (out : IO.FS.Stream) : IO UInt32 := do
   try
     let (contents, fm, ictx, headerStx, parserState, msgs, env) ← phase timer? "import" do
       initSearchPath (← findSysroot)
@@ -166,7 +170,7 @@ unsafe def go (timer? : Option Timer) (asServer : Bool) (suppressedNamespaces : 
     let (res, hls) ← phase timer? "highlighting" (categories := true) do
       let res ← IO.lazyPure fun _ => res.updateLeading contents
       let hls ← (Frontend.runCommandElabM <| liftTermElabM <|
-        highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)
+        highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList) (collectFormat := collectFormat)
           (timings? := timer?.map (·.highlighting))) pctx cmdSt
       pure (res, hls)
 
@@ -197,48 +201,51 @@ structure Config where
   mod : String
   outFile : Option String := none
   timings : Bool := false
+  collectFormat : Bool := false
 
-def Config.fromArgs (args : List String) : IO Config := go true #[] none false args
+def Config.fromArgs (args : List String) : IO Config := go true #[] none false false args
 where
-  go (asServer : Bool) (nss : Array Name) (setupFile? : Option System.FilePath) (timings : Bool) : List String → IO Config
+  go (asServer : Bool) (nss : Array Name) (setupFile? : Option System.FilePath) (timings collectFormat : Bool) : List String → IO Config
     | "--suppress-namespace" :: more =>
       if let ns :: more := more then
-        go asServer (nss.push ns.toName) setupFile? timings more
+        go asServer (nss.push ns.toName) setupFile? timings collectFormat more
       else
         throw <| .userError "No namespace given after --suppress-namespace"
     | "--suppress-namespaces" :: more => do
       if let file :: more := more then
         let contents ← IO.FS.readFile file
         let nss' := Compat.String.splitToList contents (·.isWhitespace) |>.filter (!·.isEmpty) |>.map (·.toName)
-        go asServer (nss ++ nss') setupFile? timings more
+        go asServer (nss ++ nss') setupFile? timings collectFormat more
       else
         throw <| .userError "No namespace file given after --suppress-namespaces"
     | "--not-server" :: more => do
-      go false nss setupFile? timings more
+      go false nss setupFile? timings collectFormat more
     | "--setup" :: more => do
       if let file :: more := more then
-        go asServer nss (some file) timings more
+        go asServer nss (some file) timings collectFormat more
       else
         throw <| .userError "No setup file given after --setup"
     | "--timings" :: more => do
-      go asServer nss setupFile? true more
-    | [mod] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, timings }
-    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, outFile := some outFile, timings }
+      go asServer nss setupFile? true collectFormat more
+    | "--collect-format" :: more => do
+      go asServer nss setupFile? timings true more
+    | [mod] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, timings, collectFormat }
+    | [mod, outFile] => pure { asServer, suppressedNamespaces := nss, setupFile?, mod, outFile := some outFile, timings, collectFormat }
     | other => throw <| .userError s!"Didn't understand remaining arguments: {other}"
 
 unsafe def main (args : List String) : IO UInt32 := do
   try
-    let { asServer, suppressedNamespaces, setupFile?, mod, outFile, timings } ← Config.fromArgs args
+    let { asServer, suppressedNamespaces, setupFile?, mod, outFile, timings, collectFormat } ← Config.fromArgs args
     let timer? ← if timings then some <$> Timer.new else pure none
     let start ← IO.monoNanosNow
     let code ← match outFile with
       | none =>
-        go timer? asServer suppressedNamespaces setupFile? mod (← IO.getStdout)
+        go timer? asServer suppressedNamespaces setupFile? collectFormat mod (← IO.getStdout)
       | some outFile =>
         if let some p := (outFile : System.FilePath).parent then
           IO.FS.createDirAll p
         IO.FS.withFile outFile .write fun h =>
-          go timer? asServer suppressedNamespaces setupFile? mod (.ofHandle h)
+          go timer? asServer suppressedNamespaces setupFile? collectFormat mod (.ofHandle h)
     if let some timer := timer? then
       let stop ← IO.monoNanosNow
       IO.eprintln (← timer.report (stop - start)).compress

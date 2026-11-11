@@ -5,7 +5,7 @@ import Lean.Data.Json
 
 open SubVerso.Module (ModuleItem)
 open Lean.FromJson (fromJson?)
-open Lean (Name)
+open Lean (FVarId Name)
 open SubVerso.Highlighting (Highlighted)
 
 open SubVerso
@@ -42,6 +42,56 @@ def Highlighted.messageTexts (hl : Highlighted) : Array (Highlighted.Span.Kind �
   | .point k m => #[(k, m.toString)]
   | _ => #[]
 
+partial
+def Highlighted.goals (hl : Highlighted) : Array (Highlighted.Goal Highlighted) :=
+  match hl with
+  | .seq hls => Id.run do
+    let mut out := #[]
+    for x in hls do
+      out := out ++ x.goals
+    out
+  | .span _ hl' =>
+    hl'.goals
+  | .tactics goals _ _ hl' =>
+    goals ++ hl'.goals
+  | _ => #[]
+
+partial
+def Highlighted.tokens (hl : Highlighted) : Array Token :=
+  match hl with
+  | .token tok => #[tok]
+  | .seq hls => Id.run do
+    let mut out := #[]
+    for x in hls do
+      out := out ++ x.tokens
+    out
+  | .span _ hl' =>
+    hl'.tokens
+  | .tactics _ _ _ hl' =>
+    hl'.tokens
+  | _ => #[]
+
+def Token.var? (tok : Token) : Option FVarId :=
+  if let .var x _ _ := tok.kind then some x else none
+
+def Highlighted.Goal.misattributedVars (goal : Highlighted.Goal Highlighted)
+    (sourceVars : Array FVarId) : Array String := Id.run do
+  let mut names : Array (FVarId × String) := #[]
+  for h in goal.hypotheses do
+    for tok in h.names do
+      if let some x := tok.var? then
+        names := names.push (x, tok.content)
+  let mut found := #[]
+  for part in #[goal.conclusion] ++ goal.hypotheses.map (·.typeAndVal) do
+    for tok in part.tokens do
+      if let some x := tok.var? then
+        match names.find? (·.1 == x) with
+        | some (_, name) =>
+          if name != tok.content then found := found.push tok.content
+        | none =>
+          if sourceVars.contains x then found := found.push tok.content
+  found
+
 end SubVerso.Highlighting
 
 open SubVerso.Helper in
@@ -77,7 +127,7 @@ def lakeVars :=
 open System in
 def loadModuleContent
     (projectDir : String) (mod : String)
-    (overrideToolchain : Option String := none) :
+    (overrideToolchain : Option String := none) (extraArgs : Array String := #[]) :
     IO (Array ModuleItem) := do
 
   let projectDir : FilePath := projectDir
@@ -103,7 +153,7 @@ def loadModuleContent
 
 
   let cmd := "elan"
-  let args := #["run", "--install", toolchain, "lake", "exe", "subverso-extract-mod", mod]
+  let args := #["run", "--install", toolchain, "lake", "exe", "subverso-extract-mod"] ++ extraArgs ++ #[mod]
   let res ← IO.Process.output {
     cmd, args, cwd := projectDir
     -- Unset Lake's environment variables
@@ -399,9 +449,9 @@ def checkDemo (items : Array ModuleItem) (expectedVersion : String) : IO Nat := 
 
 /-- Loads a module from `project`, building it under `toolchain` in its per-toolchain build dir. -/
 def loadModuleContentIn (project : System.FilePath) (mod : String) (toolchain : String)
-    (demodSrc : System.FilePath) : IO (Array ModuleItem) := do
+    (demodSrc : System.FilePath) (extraArgs : Array String := #[]) : IO (Array ModuleItem) := do
   let dir ← prepareProject project toolchain demodSrc
-  loadModuleContent dir.toString mod (overrideToolchain := some toolchain)
+  loadModuleContent dir.toString mod (overrideToolchain := some toolchain) (extraArgs := extraArgs)
 
 def checkTimings (project : System.FilePath) (mod : String) (toolchain : String)
     (demodSrc : System.FilePath) : IO Unit := do
@@ -645,7 +695,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.println "Signatures after mid-file changes OK"
 
   if oldest.contains myToolchain then
-    IO.println s!"Skipping shadowed hypothesis tests for old Lean toolchain {myToolchain}"
+    IO.println s!"Skipping shadowed hypothesis, bound variable and nested format data tests for old Lean toolchain {myToolchain}"
   else
     IO.println "Checking names of shadowed hypotheses in proof states"
     let items ← loadModuleContentIn "small-tests" "Small.Shadowing" myToolchain demodSrc
@@ -687,6 +737,31 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
         IO.eprintln s!"{errors} errors encountered looking at proof states with shadowed hypotheses"
         return 1
     IO.println "Names of shadowed hypotheses OK"
+
+    IO.println "Checking variables bound in proof states"
+    let items ← loadModuleContentIn "small-tests" "Small.BoundVars" myToolchain demodSrc
+    let mut goals := #[]
+    let mut sourceVars := #[]
+    for item in items do
+      goals := goals ++ item.code.goals
+      sourceVars := sourceVars ++ item.code.tokens.filterMap (·.var?)
+    if goals.isEmpty then
+      IO.eprintln "No proof states found in Small.BoundVars"
+      return 1
+    let mut misattributed := #[]
+    for g in goals do
+      misattributed := misattributed ++ g.misattributedVars sourceVars
+    unless misattributed.isEmpty do
+      IO.eprintln s!"Tokens in proof states carry the variable of a different binding: {misattributed}"
+      return 1
+    IO.println "Variables bound in proof states OK"
+
+    IO.println "Checking format data for nested pretty-printer output"
+    let items ← loadModuleContentIn "small-tests" "Small.NestedDelab" myToolchain demodSrc (extraArgs := #["--collect-format"])
+    if items.isEmpty then
+      IO.eprintln "No module items found for Small.NestedDelab"
+      return 1
+    IO.println "Format data for nested pretty-printer output OK"
 
   match matchNamesModule myToolchain with
   | none =>

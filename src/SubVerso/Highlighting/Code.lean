@@ -102,6 +102,23 @@ def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) : Option (Array (Co
     | .ofTacticInfo ti => if ti.stx == stx then some (node.ci, ti) else none
     | _ => none
 
+/--
+Fresh FVarIds created during delaboration (e.g. bound variables in proof state hypothesis types) are
+created with this unique prefix so that they don't clash with FVarIDs chosen by delaboration
+generally.
+
+When they clashed, it could lead to incorrect highlighting or stack overflows.
+-/
+def delabNamePrefix : Name := `_subverso_delab
+
+/--
+If the name generator in `ci` is not one with the prefix `delabNamePrefix`, then it is replaced by
+one that does have that prefix.
+-/
+def delabContext (ci : ContextInfo) : ContextInfo :=
+  if ci.ngen.namePrefix == delabNamePrefix then ci
+  else { ci with ngen := { namePrefix := delabNamePrefix } }
+
 /-- A hash of the pretty-printing context of `ci`: its options, namespace, and open declarations. -/
 def ppContextHash (ci : ContextInfo) : UInt64 :=
   mixHash (hash (toString ci.options)) <|
@@ -1013,6 +1030,7 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
     (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
     m (Option (KindCandidate m)) := do
+  let ci := delabContext ci
   let cache : IO.Ref _ := (← read).sigCache
   let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := do
     count .runMetaMCalls
@@ -1020,8 +1038,9 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
   let doCollect := (← readThe Context).collectFormat
   -- Print the signature in an empty local context to avoid local auxiliary definitions from
   -- elaboration, which may otherwise shadow in recursive occurrences, leading to spurious `_root_.`
-  -- qualifiers. Returns (sigString, sigOrType?) — the second projection is a pretty-printed
-  -- signature for later resolution by identKind.
+  -- qualifiers. Returns a signature string together with a pretty printed signature for later
+  -- resolution by identKind (with both the formatted document and the ContextInfo within which it's
+  -- resolved by identKind)
   let ppSig (x : Name) :  m (String × Option (FormatWithInfos × ContextInfo)) :=
     withCategory .signatures do
     let env := constEnv ci.env (← getEnv) x
@@ -1032,9 +1051,11 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
       else
         let (sig, ci) ← do
           count .delaboratorCalls
-          let sig ← runMeta (env := env) (lctx := {}) <|
-            withOptions (·.set `pp.tagAppFns true) (PrettyPrinter.ppSignature x)
-          pure (sig, { ci with env := env })
+          let (sig, ngen) ← runMeta (env := env) (lctx := {}) <|
+            withOptions (·.set `pp.tagAppFns true) do
+              let sig ← PrettyPrinter.ppSignature x
+              pure (sig, ← getNGen)
+          pure (sig, { ci with env := env, ngen := ngen })
 
         let sigStr := toString (← stripNamespaces sig)
         (cache.modify (fun c => { c with signatures := c.signatures.insert key (sigStr, sig, ci) }) : IO _)
@@ -1046,9 +1067,10 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
     count .delaboratorCalls
     try
       if doCollect then
-        let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) <|
-          PrettyPrinter.ppExprWithInfos ty
-        pure (toString fi.fmt, some (fi, ci))
+        let (fi, ngen) ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
+          let fi ← PrettyPrinter.ppExprWithInfos ty
+          pure (fi, ← getNGen)
+        pure (toString fi.fmt, some (fi, { ci with ngen := ngen }))
       else
         let fmt ← runMeta <| Meta.ppExpr ty
         pure (toString fmt, none)
@@ -1880,9 +1902,8 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     -- functions have no tooltips or binding info in tactics.
     -- cf https://leanprover.zulipchat.com/#narrow/stream/270676-lean4/topic/Function.20application.20delaboration/near/265800665
     let maxHeartbeats : Nat := (← getNatOption `maxHeartbeats)
-    let ci' := { ci with options :=
-        ci.options |>.set `pp.tagAppFns true |>.set `maxHeartbeats maxHeartbeats
-      }
+    let options := ci.options |>.set `pp.tagAppFns true |>.set `maxHeartbeats maxHeartbeats
+    let ci' := delabContext { ci with options }
     let runMeta {α} (act : MetaM α) : HighlightM α := do
       count .runMetaMCalls
       ci'.runMetaM lctx act
@@ -1893,9 +1914,11 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       runMeta (ppCodeWithInfos e)
     let ppCodeAndFormat (e : Expr) : HighlightM (Highlighted × String) := do
       count .delaboratorCalls
-      let (code, fi) ← runMeta (ppCodeAndFormatWithInfos e)
+      let ((code, fi), ngen) ← runMeta do
+        let r ← ppCodeAndFormatWithInfos e
+        pure (r, ← getNGen)
       let hl ← renderTagged none code
-      let (fmt, annots) ← resolveFormatAnnotations fi.fmt fi.infos ci'
+      let (fmt, annots) ← resolveFormatAnnotations fi.fmt fi.infos { ci' with ngen := ngen }
       pure (hl, formatDataToJson fmt annots)
     let renderTerm (e : Expr) : HighlightM (Highlighted × Option String) := do
       if doCollectFormat then
