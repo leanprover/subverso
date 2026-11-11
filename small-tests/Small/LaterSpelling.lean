@@ -8,7 +8,7 @@ theorem maxBeforeSpelling (a b : Nat) : max a b = max a b := by
 
 #check max 1 2
 
-recommended_spelling "maximum" for "max" in [Max.max]
+recommended_spelling "maxOfTwo" for "max" in [Max.max]
 
 theorem maxAfterSpelling (a b : Nat) : max a b = max a b := by
   rfl

@@ -849,7 +849,7 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     let codeOf (decl : Lean.Name) : Highlighted :=
       items.filter (·.defines.contains decl) |>.foldl (· ++ ·.code) .empty
     let hasSpelling (doc : Option String) : Bool :=
-      doc.any fun d : String => (d.splitOn "maximum").length > 1
+      doc.any fun d : String => (d.splitOn "maxOfTwo").length > 1
     let before := codeOf `maxBeforeSpelling
     let after := codeOf `maxAfterSpelling
     let messageDocs := items.map (·.code.messageConstDocs ``Max.max)
