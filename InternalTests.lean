@@ -1709,6 +1709,49 @@ def assertVarHoverTypes (src : String) (name : String) (expected : List String)
     "  trivial"])
   "h" ["x = x", "x = x", "y = y"]
 
+#eval assertVarHoverTypes
+  (String.intercalate "\n" [
+    "example : ∀ (n : Nat), n = n → ∀ (n : Nat), n = n → True :=",
+    "  fun n h n h' => (fun _ _ => trivial) h h'"])
+  "h" ["n = n", "n✝ = n✝"]
+
+open Lean Meta in
+def succFieldNotationFollowsType : MetaM Bool := do
+  let render (ty : Expr) : MetaM String :=
+    withLocalDeclD `x ty fun x => return toString (← ppExpr (mkApp (mkConst ``Nat.succ) x))
+  let nat := mkConst ``Nat
+  return (← render nat) == "x.succ" &&
+    (← render (mkApp (mkConst ``id [.succ .zero]) nat)) == "Nat.succ x"
+
+open Lean Elab Command in
+#eval show CommandElabM Unit from do
+  assertVarHoverTypes
+    (String.intercalate "\n" [
+      "example (x : id Nat) (h : Nat.succ x = Nat.succ x) : True := by",
+      "  have := h",
+      "  dsimp only [id] at x",
+      "  have := h",
+      "  trivial"])
+    "h" ["Nat.succ x = Nat.succ x", "Nat.succ x = Nat.succ x", "x.succ = x.succ"]
+    (skip := !(← liftTermElabM succFieldNotationFollowsType))
+
+#eval assertVarHoverTypes
+  (String.intercalate "\n" [
+    "def varTypeNotationFoo (n : Nat) : Nat := n + 1",
+    "example (h : varTypeNotationFoo 1 = 2) : True := by have := h; trivial",
+    "local notation \"F[\" n \"]\" => varTypeNotationFoo n",
+    "example (h : varTypeNotationFoo 1 = 2) : True := by have := h; trivial"])
+  "h" ["varTypeNotationFoo 1 = 2", "varTypeNotationFoo 1 = 2", "F[1] = 2", "F[1] = 2"]
+
+#eval assertVarHoverTypes
+  (String.intercalate "\n" [
+    "example : ∃ n : Nat, n = 1 → ∀ m : Nat, m = m ∧ m = m := by",
+    "  refine ⟨?n, fun h m => ⟨?l, ?r⟩⟩",
+    "  case l => exact (fun _ => Eq.refl m) h",
+    "  case n => exact 1",
+    "  case r => exact (fun _ => Eq.refl m) h"])
+  "h" ["?n = 1", "?n = 1", "1 = 1"]
+
 end VarHoverTypes
 
 /-! # Point Diagnostic Extents -/

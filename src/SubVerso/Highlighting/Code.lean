@@ -125,40 +125,6 @@ def ppContextHash (ci : ContextInfo) : UInt64 :=
     mixHash (hash ci.currNamespace) (hash (toString ci.openDecls))
 
 /--
-A cache key for the rendered types of local variables that tracks the inputs to the rendering process.
--/
-structure VarTypeKey where
-  /-- The variable's type, fully instantiated -/
-  type : ExprStructEq
-  /-- A hash of the current options, namespace, and open decls -/
-  ppCtxHash : UInt64
-  /-- The local context (needed for daggering names) -/
-  localNames : List (FVarId × Name)
-deriving BEq, Hashable
-
-def VarTypeKey.forOccurrence (ty : Expr) (lctx : LocalContext) (ci : ContextInfo) : VarTypeKey where
-  type := ⟨ty⟩
-  localNames := lctx.foldl (fun xs d => (d.fvarId, d.userName) :: xs) []
-  ppCtxHash := ppContextHash ci
-
-/--
-A cache key for rendered constant signatures that tracks the inputs to the rendering process.
--/
-structure SigKey where
-  /-- The constant -/
-  name : Name
-  /-- A hash of the current options, namespace, and open decls -/
-  ppCtxHash : UInt64
-deriving BEq, Hashable
-
-structure SigCache where
-  signatures : HashMap SigKey (String × FormatWithInfos × ContextInfo)
-  /-- Pretty-printed types of local variable occurrences. -/
-  varTypes : HashMap VarTypeKey String := {}
-
-instance : EmptyCollection SigCache := ⟨⟨{}, {}⟩⟩
-
-/--
 Removes the unique indices that Lean adds to repeated variables.
 
 `Foo.x_2` becomes `Foo.x`, `x_1` becomes `x`. `x5`, `x_`, and `x_1a` are returned unmodified.
@@ -229,6 +195,13 @@ The type of `x` in this goal, with metavariables instantiated.
 -/
 def typeOf? (ctx : NameContext) (x : FVarId) : Option Expr :=
   ctx.types.get? x
+
+def instantiateTypes (ctx : NameContext) (mctx : MetavarContext) : NameContext := Id.run do
+  let mut types := ctx.types
+  for d in ctx.lctx do
+    if d.type.hasMVar then
+      types := types.insert d.fvarId (instantiateMVarsCore mctx d.type).1
+  return { ctx with types := types }
 
 end NameContext
 
@@ -354,6 +327,111 @@ def validIn (deps : TermDeps) (ctx : NameContext) : Bool :=
 
 end TermDeps
 
+/-- The state of a delayed assignment -/
+structure DelayedState where
+  /-- The variables to abstract over after assignment. -/
+  fvars : Array Expr
+  /-- The metavariable that holds the body to be assigned. -/
+  pending : MVarId
+deriving BEq
+
+/-- The state of an MVar, which may or may not be assigned or delayed. -/
+structure MVarState where
+  mvarId : MVarId
+  assignment? : Option Expr
+  delayed? : Option DelayedState
+deriving BEq
+
+def MVarState.current (mctx : MetavarContext) (m : MVarId) : MVarState where
+  mvarId := m
+  assignment? := mctx.eAssignment.find? m
+  delayed? := mctx.dAssignment.find? m |>.map fun d => {
+    fvars := d.fvars, pending := d.mvarIdPending
+  }
+
+/-- The state of a level metavariable, which may or may not be assigned. -/
+structure LMVarState where
+  lmvarId : LMVarId
+  assignment? : Option Level
+deriving BEq
+
+def LMVarState.current (mctx : MetavarContext) (l : LMVarId) : LMVarState where
+  lmvarId := l
+  assignment? := mctx.lAssignment.find? l
+
+/-- The rendering dependencies of a metavariable that are tracked. -/
+structure MVarDeps where
+  exprs : Array MVarState := #[]
+  levels : Array LMVarState := #[]
+
+namespace MVarDeps
+
+private structure CollectState where
+  seen : HashSet ExprStructEq := {}
+  mvars : HashSet MVarId := {}
+  levelMVars : HashSet LMVarId := {}
+  deps : MVarDeps := {}
+
+private partial def collect (mctx : MetavarContext) (e : Expr) : StateM CollectState Unit :=
+  visit e
+where
+  visit (e : Expr) : StateM CollectState Unit := do
+    unless e.hasMVar do return
+    if (← get).seen.contains ⟨e⟩ then return
+    modify fun s => { s with seen := s.seen.insert ⟨e⟩ }
+    match e with
+    | .mvar m => visitMVar m
+    | .sort u => visitLevel u
+    | .const _ us => for u in us do visitLevel u
+    | .app f a =>
+      visit f
+      visit a
+    | .forallE _ t b _ | .lam _ t b _ =>
+      visit t
+      visit b
+    | .letE _ t v b _ =>
+      visit t
+      visit v
+      visit b
+    | .mdata _ b | .proj _ _ b => visit b
+    | .lit .. | .fvar .. | .bvar .. => pure ()
+  visitMVar (m : MVarId) : StateM CollectState Unit := do
+    if (← get).mvars.contains m then return
+    let state := MVarState.current mctx m
+    modify fun s => { s with
+      mvars := s.mvars.insert m,
+      deps := { s.deps with exprs := s.deps.exprs.push state } }
+    if let some v := state.assignment? then visit v
+    if let some d := state.delayed? then visitMVar d.pending
+  visitLevel (u : Level) : StateM CollectState Unit := do
+    unless u.hasMVar do return
+    match u with
+    | .mvar l =>
+      if (← get).levelMVars.contains l then return
+      let state := LMVarState.current mctx l
+      modify fun s => { s with
+        levelMVars := s.levelMVars.insert l,
+        deps := { s.deps with levels := s.deps.levels.push state } }
+      if let some v := state.assignment? then visitLevel v
+    | .succ v => visitLevel v
+    | .max v w | .imax v w =>
+      visitLevel v
+      visitLevel w
+    | .zero | .param .. => pure ()
+
+def ofLocalContext (lctx : LocalContext) (mctx : MetavarContext) : MVarDeps := Id.run do
+  let mut state : CollectState := {}
+  for d in lctx do
+    if d.type.hasMVar then
+      state := (collect mctx d.type).run state |>.2
+  return state.deps
+
+def validIn (deps : MVarDeps) (mctx : MetavarContext) : Bool :=
+  deps.exprs.all (fun s => MVarState.current mctx s.mvarId == s) &&
+    deps.levels.all fun s => LMVarState.current mctx s.lmvarId == s
+
+end MVarDeps
+
 /--
 A key for cached term renderings. It includes the term and a hash of it's pretty-printing context.
 -/
@@ -388,6 +466,24 @@ def insert (cache : TermCache α) (key : TermKey) (deps : TermDeps) (v : α) : T
   { entries := cache.entries.insert key (candidates.push (deps, v)) }
 
 end TermCache
+
+/--
+A cache key for rendered constant signatures that tracks the inputs to the rendering process.
+-/
+structure SigKey where
+  /-- The constant -/
+  name : Name
+  /-- A hash of the current options, namespace, and open decls -/
+  ppCtxHash : UInt64
+deriving BEq, Hashable
+
+structure SigCache where
+  signatures : HashMap SigKey (String × FormatWithInfos × ContextInfo)
+  /-- Pretty-printed types of local variable occurrences. -/
+  varTypes : TermCache String := {}
+  nameContexts : HashMap (UInt64 × List (FVarId × Name × ExprStructEq)) (NameContext × MVarDeps) := {}
+
+instance : EmptyCollection SigCache := ⟨⟨{}, {}, {}⟩⟩
 
 structure Context where
   ids : HashMap Lsp.RefIdent Lsp.RefIdent
@@ -1025,9 +1121,26 @@ computation.
 def KindCandidate.ready [Monad m] (kind : Token.Kind) : KindCandidate m :=
   ⟨kind, pure (some (kind, none))⟩
 
+def tokenNameContext [Monad m] [MonadReaderOf Context m] [MonadLiftT IO m]
+    (ci : ContextInfo) (lctx : LocalContext) (ppCtxHash : UInt64) : m NameContext := do
+  let cache : IO.Ref _ := (← read).sigCache
+  let key := (ppCtxHash, lctx.foldl (fun xs d => (d.fvarId, d.userName, ⟨d.type⟩) :: xs) [])
+  let names ←
+    match Compat.HashMap.get? (← (cache.get : IO _)).nameContexts key with
+    | some (names, deps) =>
+      if deps.validIn ci.mctx then return names
+      pure (names.instantiateTypes ci.mctx)
+    | none =>
+      let sanitized := lctx.sanitizeNames.run' { options := ci.options }
+      pure (.ofLocalContext sanitized ci.mctx)
+  let deps := MVarDeps.ofLocalContext names.lctx ci.mctx
+  (cache.modify (fun c => { c with nameContexts := c.nameContexts.insert key (names, deps) }) : IO _)
+  return names
+
+open TermDeps in
 /-- Determines a kind candidate for a token whose meaning is `expr` according to the info tree. -/
 def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
-    (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
+    (ci : ContextInfo) (lctx : LocalContext) (getNames : UInt64 → m NameContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
     m (Option (KindCandidate m)) := do
   let ci := delabContext ci
@@ -1094,11 +1207,6 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
     | some ty => ppType ty
     | none => pure ("", none)
 
-  -- Cache the rendered types of variables: occurrences of local variables with the same type,
-  -- local names, and pretty-printing context render identically, so the delaboration work can be
-  -- shared. Types that still contain metavariables render fresh each time (a later occurrence may
-  -- print further instantiated), as does everything when collecting format data (the cached
-  -- string has no format payload).
   let ppVarType : m (String × Option (FormatWithInfos × ContextInfo)) :=
     withCategory .variableTypes do
     match ← typeOf with
@@ -1107,15 +1215,21 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
       if doCollect || ty.hasMVar || ty.hasLevelMVar then
         ppType ty
       else
-        let key := VarTypeKey.forOccurrence ty lctx ci
-        match Compat.HashMap.get? (← (cache.get : IO _)).varTypes key with
+        let ppCtxHash := ppContextHash ci
+        let key : TermKey := { expr := ty, ppCtxHash := ppCtxHash }
+        let names ← getNames ppCtxHash
+        match (← (cache.get : IO _)).varTypes.get? key names with
         | some tyStr =>
           count .varTypeCacheHits
           pure (tyStr, none)
         | none =>
           count .varTypeCacheMisses
           let (tyStr, prettySig) ← ppType ty
-          (cache.modify (fun c => { c with varTypes := c.varTypes.insert key tyStr }) : IO _)
+          let some deps := ofExpr ty names
+            | pure (tyStr, prettySig)
+          if (← (cache.get : IO _)).varTypes.candidateCount key ≥ maxCandidatesPerTerm then
+            count .varTypeCacheEvictions
+          (cache.modify (fun c => { c with varTypes := c.varTypes.insert key deps tyStr }) : IO _)
           pure (tyStr, prettySig)
 
   let rec findKind (e : Expr) : m (Option (KindCandidate m)) := do
@@ -1174,10 +1288,10 @@ Finds the appropriate token kind for a token whose meaning is the expression `ex
 signature.
 -/
 def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
-    (ci : ContextInfo) (lctx : LocalContext) (stx? : Option Syntax) (expr : Expr)
+    (ci : ContextInfo) (lctx : LocalContext) (getNames : UInt64 → m NameContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
-  let some candidate ← exprKindCandidate ci lctx stx? expr (allowUnknownTyped := allowUnknownTyped)
+  let some candidate ← exprKindCandidate ci lctx getNames stx? expr (allowUnknownTyped := allowUnknownTyped)
     | return none
   candidate.render
 
@@ -1187,7 +1301,8 @@ def termInfoKindCandidate
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
     m (Option (KindCandidate m)) := do
   let some candidate ←
-      exprKindCandidate ci termInfo.lctx termInfo.stx termInfo.expr (allowUnknownTyped := allowUnknownTyped)
+      exprKindCandidate ci termInfo.lctx (tokenNameContext ci termInfo.lctx) termInfo.stx termInfo.expr
+        (allowUnknownTyped := allowUnknownTyped)
     | return none
   if !(← read).definitionsPossible then return some candidate
   return some { candidate with
@@ -1938,12 +2053,12 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         match decl with
         | .cdecl _index fvar name type _ _
         | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
-          let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
+          let nk := (← exprKind ci lctx (fun _ => pure names) none (.fvar fvar)).map (·.1)
           let type := names.typeOf? fvar |>.getD type
           let (tyStr, ppType) ← renderTerm type
           pure (⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩ : Highlighted.Hypothesis Highlighted)
         | .ldecl _index fvar name type val _ _ =>
-          let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
+          let nk := (← exprKind ci lctx (fun _ => pure names) none (.fvar fvar)).map (·.1)
           let type := names.typeOf? fvar |>.getD type
           let val ← runMeta <| instantiateMVars val
           let tyDoc ← renderOrGetCodeWithInfos (termKey type) names ppCode
