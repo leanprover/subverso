@@ -474,6 +474,25 @@ def ppCodeWithInfos (e : Expr) : MetaM CodeWithInfos:= do
       catch
       | _ => pure <| .text e.dbgToString
 
+/--
+Pretty prints a term once, returning both code for static highlights and a pretty printer document.
+-/
+def ppCodeAndFormatWithInfos (e : Expr) : MetaM (CodeWithInfos × FormatWithInfos) := do
+  let e ← instantiateMVars e
+  let fi ← PrettyPrinter.ppExprWithInfos e
+  if pp.raw.get (← getOptions) then
+    return (← ppCodeWithInfos e, fi)
+  let ctx : ContextInfo := {
+    env := ← getEnv
+    mctx := ← getMCtx
+    options := ← getOptions
+    currNamespace := ← getCurrNamespace
+    openDecls := ← getOpenDecls
+    fileMap := default
+    ngen := ← getNGen
+  }
+  return (← Compat.tagCodeInfos ctx fi.infos (TaggedText.prettyTagged fi.fmt), fi)
+
 end
 
 partial def bestD (sems : Array Token.Kind) (default : Token.Kind) : Token.Kind :=
@@ -885,8 +904,8 @@ structure HighlightState where
   terms : TermCache Highlighted := {}
   /-- Cached already-rendered terms from hovers and proof states, in an intermediate state -/
   ppTerms : TermCache CodeWithInfos := {}
-  /-- Cached format data for terms (when `collectFormat` is true). -/
-  fmtTerms : TermCache String := {}
+  /-- Cached rendered terms -/
+  fmtTerms : TermCache (Highlighted × String) := {}
 
 
 instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}, {}, {}, {}⟩
@@ -1840,20 +1859,10 @@ def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
       return (some ty, ← resolveFormatWithInfos prettySig)
   return (none, none)
 
-def renderOrGetFormat (key : TermKey) (ctx : NameContext) (render : Expr → HighlightM String) :
-    HighlightM (Option String) := do
-  if !(← read).collectFormat then return none
-  some <$> cachedTerm (·.fmtTerms) (fun st c => { st with fmtTerms := c }) key ctx render
-
-/-- Pretty-print an expression and return the format data JSON string (format tree + annotations). -/
-def ppFormatData (e : Expr) (ci : ContextInfo) (runMeta : MetaM FormatWithInfos → HighlightM FormatWithInfos)
-    : HighlightM String := do
-  count .delaboratorCalls
-  let fi ← runMeta <| withOptions (·.set `pp.tagAppFns true) do
-    let e ← instantiateMVars e
-    PrettyPrinter.ppExprWithInfos e
-  let (fmt', annots) ← resolveFormatAnnotations fi.fmt fi.infos ci
-  pure (formatDataToJson fmt' annots)
+/-- Render a term, caching it. -/
+def renderOrGetWithFormat (key : TermKey) (ctx : NameContext)
+    (render : Expr → HighlightM (Highlighted × String)) : HighlightM (Highlighted × String) :=
+  cachedTerm (·.fmtTerms) (fun st c => { st with fmtTerms := c }) key ctx render
 
 def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     HighlightM (Array (Highlighted.Goal Highlighted)) := withReader (·.noDefinitions) do
@@ -1882,6 +1891,20 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
     let ppCode (e : Expr) : HighlightM CodeWithInfos := do
       count .delaboratorCalls
       runMeta (ppCodeWithInfos e)
+    let ppCodeAndFormat (e : Expr) : HighlightM (Highlighted × String) := do
+      count .delaboratorCalls
+      let (code, fi) ← runMeta (ppCodeAndFormatWithInfos e)
+      let hl ← renderTagged none code
+      let (fmt, annots) ← resolveFormatAnnotations fi.fmt fi.infos ci'
+      pure (hl, formatDataToJson fmt annots)
+    let renderTerm (e : Expr) : HighlightM (Highlighted × Option String) := do
+      if doCollectFormat then
+        let (hl, fmt) ← renderOrGetWithFormat (termKey e) names ppCodeAndFormat
+        pure (hl, some fmt)
+      else
+        let hl ← renderOrGet (termKey e) names fun e => do
+          renderTagged none (← ppCode e)
+        pure (hl, none)
 
     for c in lctx.decls do
       let some decl := c
@@ -1894,11 +1917,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
           let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
           let type := names.typeOf? fvar |>.getD type
-          let tyStr ← renderOrGet (termKey type) names fun e => do
-            renderTagged none (← ppCode e)
-          let ppType ← if doCollectFormat then
-            renderOrGetFormat (termKey type) names (ppFormatData · ci' runMeta)
-          else pure none
+          let (tyStr, ppType) ← renderTerm type
           pure (⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩ : Highlighted.Hypothesis Highlighted)
         | .ldecl _index fvar name type val _ _ =>
           let nk := (← exprKind ci lctx none (.fvar fvar)).map (·.1)
@@ -1917,12 +1936,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       hyps := hyps.push hyp
     let (concl, ppConcl) ← withCategory .goalTargets do
       let conclType ← runMeta <| instantiateMVars mvDecl.type
-      let concl ← renderOrGet (termKey conclType) names fun e => do
-        renderTagged none (← ppCode e)
-      let ppConcl ← if doCollectFormat then
-        renderOrGetFormat (termKey conclType) names (ppFormatData · ci' runMeta)
-      else pure none
-      pure (concl, ppConcl)
+      renderTerm conclType
     goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl, ppConcl⟩
   pure goalView
 
