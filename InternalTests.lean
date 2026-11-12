@@ -334,6 +334,44 @@ open Lean Elab Command in
     unless (toJson hl').compress == (toJson hl).compress && hl'.toString == hl.toString do
       throwError "The `conv` proof changed in a JSON round trip"
 
+open Lean Elab Command Highlighting in
+#eval show CommandElabM Unit from do
+  let input := "example (f : {α : Type} → α → α) (h : f 1 = 1) : f 1 = 1 := by\n  exact h\n"
+  let inputCtx := Parser.mkInputContext input "<input>"
+  let (headerStx, parserState, msgs) ← Parser.parseHeader inputCtx
+  let commandState : Command.State :=
+    { env := (← getEnv), maxRecDepth := (← get).maxRecDepth, messages := msgs }
+  let (result, _) ← Compat.Frontend.processCommands headerStx
+    |>.run { inputCtx } |>.run { commandState, parserState, cmdPos := parserState.pos }
+  let trees := result.items.foldl (init := #[]) fun acc item => acc ++ item.info.toArray
+  let tactics := trees.foldl (init := #[]) fun acc t =>
+    t.foldInfo (init := acc) fun ci info acc =>
+      match info with
+      | .ofTacticInfo ti => if ti.goalsBefore.isEmpty then acc else acc.push (ci, ti)
+      | _ => acc
+  let some (ci, ti) := tactics[0]?
+    | throwError "No tactic info with goals found"
+  let ci := { ci with mctx := ti.mctxBefore }
+  let ciExplicit := { ci with options := ci.options.setBool `pp.explicit true }
+  let sigCache ← IO.mkRef {}
+  let ctxt : Highlighting.Context := {
+    ids := {}, definitionsPossible := false, includeUnparsed := false, suppressNamespaces := [],
+    sigCache
+  }
+  let act : HighlightM (Array (Highlighted.Goal Highlighted) × Array (Highlighted.Goal Highlighted)) := do
+    let plain ← highlightGoals ci ci.env ti.goalsBefore
+    let explicit ← highlightGoals ciExplicit ci.env ti.goalsBefore
+    pure (plain, explicit)
+  let (plain, explicit) ← runTermElabM fun _ =>
+    withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
+      let (goals, _) ← act.run ctxt |>.run {} |>.run .empty
+      pure goals
+  let conclusions (goals : Array (Highlighted.Goal Highlighted)) := goals.toList.map (·.conclusion.toString)
+  unless conclusions plain == ["f 1 = 1"] do
+    throwError m!"Unexpected goal without pp.explicit: {repr (conclusions plain)}"
+  unless (conclusions explicit).any (·.startsWith "@") do
+    throwError m!"Unexpected goal with pp.explicit: {repr (conclusions explicit)}"
+
 open Lean Elab Command in
 -- Each frontend item's messages are the command's own parse errors and elaboration messages, even
 -- when the previous command's message range ends exactly where the command starts.

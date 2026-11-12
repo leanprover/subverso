@@ -56,11 +56,20 @@ inductive Counter where
   | varTypeCacheMisses
   | termCacheEvictions
   | varTypeCacheEvictions
+  | goalCacheHits
+  | goalCacheMisses
+  | goalCacheUncached
+  | hypCacheHits
+  | hypCacheMisses
+  | hypCacheUncached
+  | hypCacheEvictions
 deriving Inhabited, BEq, Repr
 
 def Counter.all : Array Counter :=
   #[.delaboratorCalls, .runMetaMCalls, .termCacheHits, .termCacheMisses, .termCacheUncached,
-    .varTypeCacheHits, .varTypeCacheMisses, .termCacheEvictions, .varTypeCacheEvictions]
+    .varTypeCacheHits, .varTypeCacheMisses, .termCacheEvictions, .varTypeCacheEvictions,
+    .goalCacheHits, .goalCacheMisses, .goalCacheUncached, .hypCacheHits, .hypCacheMisses,
+    .hypCacheUncached, .hypCacheEvictions]
 
 def Counter.index : Counter → Nat
   | .delaboratorCalls => 0
@@ -72,6 +81,13 @@ def Counter.index : Counter → Nat
   | .varTypeCacheMisses => 6
   | .termCacheEvictions => 7
   | .varTypeCacheEvictions => 8
+  | .goalCacheHits => 9
+  | .goalCacheMisses => 10
+  | .goalCacheUncached => 11
+  | .hypCacheHits => 12
+  | .hypCacheMisses => 13
+  | .hypCacheUncached => 14
+  | .hypCacheEvictions => 15
 
 def Counter.name : Counter → String
   | .delaboratorCalls => "delaboratorCalls"
@@ -83,6 +99,13 @@ def Counter.name : Counter → String
   | .varTypeCacheMisses => "varTypeCacheMisses"
   | .termCacheEvictions => "termCacheEvictions"
   | .varTypeCacheEvictions => "varTypeCacheEvictions"
+  | .goalCacheHits => "goalCacheHits"
+  | .goalCacheMisses => "goalCacheMisses"
+  | .goalCacheUncached => "goalCacheUncached"
+  | .hypCacheHits => "hypCacheHits"
+  | .hypCacheMisses => "hypCacheMisses"
+  | .hypCacheUncached => "hypCacheUncached"
+  | .hypCacheEvictions => "hypCacheEvictions"
 
 end Timings
 

@@ -290,12 +290,21 @@ structure TermDeps where
 
 namespace TermDeps
 
-/-- Computes the rendering dependencies of `e` in `ctx`. -/
-def ofExpr (e : Expr) (ctx : NameContext) : Option TermDeps := do
-  let mut exprs := #[e]
-  for x in (collectFVars {} e).fvarIds do
+/--
+Computes the rendering dependencies of `roots` in `ctx`.
+
+For a hypothesis `x : T := e`, `ofExprs` would be called with a three element array that contains
+`x`, `T`, and `e` when computing a cache key.
+-/
+def ofExprs (roots : Array Expr) (ctx : NameContext) : Option TermDeps := do
+  let mut exprs := roots
+  let mut rootFVars : CollectFVars.State := {}
+  for e in roots do
+    rootFVars := collectFVars rootFVars e
+  for x in rootFVars.fvarIds do
     if let some ty := ctx.typeOf? x then
-      exprs := exprs.push ty
+      unless roots.any (·.equal ty) do
+        exprs := exprs.push ty
   let mut fvarState : CollectFVars.State := {}
   let mut uses : NameUses := {}
   for e in exprs do
@@ -314,6 +323,10 @@ def ofExpr (e : Expr) (ctx : NameContext) : Option TermDeps := do
     binderNames := uses.binders.toList.toArray.map fun n => (n, ctx.namesWithRoot n),
     constNames := uses.constParts.toList.toArray.map fun n => (n, ctx.namesWithFirstComponent n)
   }
+
+/-- Computes the rendering dependencies of `e` in `ctx`. -/
+def ofExpr (e : Expr) (ctx : NameContext) : Option TermDeps :=
+  ofExprs #[e] ctx
 
 /--
 Checks whether the recorded dependencies `deps` of a term are valid in `ctx`.
@@ -430,11 +443,55 @@ def ofLocalContext (lctx : LocalContext) (mctx : MetavarContext) : MVarDeps := I
       state := (collect mctx d.type).run state |>.2
   return state.deps
 
+def ofGoal (decl : MetavarDecl) (mctx : MetavarContext) : MVarDeps := Id.run do
+  let mut state := (collect mctx decl.type).run {} |>.2
+  for d in decl.lctx do
+    state := (collect mctx d.type).run state |>.2
+    if let .ldecl _ _ _ _ value _ _ := d then
+      state := (collect mctx value).run state |>.2
+  return state.deps
+
 def validIn (deps : MVarDeps) (mctx : MetavarContext) : Bool :=
   deps.exprs.all (fun s => MVarState.current mctx s.mvarId == s) &&
     deps.levels.all fun s => LMVarState.current mctx s.lmvarId == s
 
 end MVarDeps
+
+def sameLocalDecl : Option LocalDecl → Option LocalDecl → Bool
+  | none, none => true
+  | some (.cdecl _ x n t _ k), some (.cdecl _ x' n' t' _ k') =>
+    x == x' && n == n' && t == t' && k == k'
+  | some (.ldecl _ x n t v nonDep k), some (.ldecl _ x' n' t' v' nonDep' k') =>
+    x == x' && n == n' && t == t' && v == v' && nonDep == nonDep' && k == k'
+  | _, _ => false
+
+/-- The cache key used for rendered goals. -/
+structure GoalDeps where
+  userName : Name
+  type : Expr
+  locals : Array (Option LocalDecl)
+  mvars : MVarDeps
+
+namespace GoalDeps
+
+/-- Gets the cache dependencies of a goal, given its metavariable declaration. -/
+def ofDecl (decl : MetavarDecl) (mctx : MetavarContext) : GoalDeps where
+  userName := decl.userName
+  type := decl.type
+  locals := decl.lctx.decls.toArray
+  mvars := .ofGoal decl mctx
+
+/-- Checks whether a rendered goal cache key matches a given goal and context. -/
+def validIn (deps : GoalDeps) (decl : MetavarDecl) (mctx : MetavarContext) : Bool := Id.run do
+  unless decl.userName == deps.userName && decl.type == deps.type do return false
+  unless decl.lctx.decls.size == deps.locals.size do return false
+  let mut i := 0
+  for d in decl.lctx.decls do
+    unless sameLocalDecl d deps.locals[i]! do return false
+    i := i + 1
+  return deps.mvars.validIn mctx
+
+end GoalDeps
 
 /--
 A key for cached term renderings. It includes the term and a hash of it's pretty-printing context.
@@ -445,31 +502,79 @@ structure TermKey where
 deriving BEq, Hashable
 
 /--
+A cache of rendered items along with their term dependencies. Looking up a key in the cache requires
+a name context and returns the first value whose dependency information is satisfied by the context.
+-/
+structure RenderCache (κ : Type) [BEq κ] [Hashable κ] (α : Type) where
+  entries : HashMap κ (Array (TermDeps × α)) := {}
+
+/--
 A mapping from terms and pretty-printing contexts to sets of cached rendering, each with a set of
 dependencies that must be validated before reusing the cached value.
 -/
-structure TermCache (α : Type) where
-  entries : HashMap TermKey (Array (TermDeps × α)) := {}
+abbrev TermCache (α : Type) := RenderCache TermKey α
 
-def maxCandidatesPerTerm : Nat := 10
+def maxCandidatesPerKey : Nat := 10
 
-namespace TermCache
+namespace RenderCache
 
-def candidateCount (cache : TermCache α) (key : TermKey) : Nat :=
+variable [BEq κ] [Hashable κ]
+
+def candidateCount (cache : RenderCache κ α) (key : κ) : Nat :=
   (cache.entries.getD key #[]).size
 
-def get? (cache : TermCache α) (key : TermKey) (ctx : NameContext) : Option α := do
+/-- Returns the first cache entry for `key` whose term dependencies are satsified in `ctx`. -/
+def get? (cache : RenderCache κ α) (key : κ) (ctx : NameContext) : Option α := do
   let candidates ← cache.entries.get? key
   candidates.findSome? fun (deps, v) => if deps.validIn ctx then some v else none
 
-def insert (cache : TermCache α) (key : TermKey) (deps : TermDeps) (v : α) : TermCache α :=
+def insert (cache : RenderCache κ α) (key : κ) (deps : TermDeps) (v : α) : RenderCache κ α :=
   let candidates := cache.entries.getD key #[]
   let candidates :=
-    if candidates.size < maxCandidatesPerTerm then candidates
-    else candidates.extract (candidates.size + 1 - maxCandidatesPerTerm) candidates.size
+    if candidates.size < maxCandidatesPerKey then candidates
+    else candidates.extract (candidates.size + 1 - maxCandidatesPerKey) candidates.size
   { entries := cache.entries.insert key (candidates.push (deps, v)) }
 
-end TermCache
+end RenderCache
+
+/-- A cache key used for rendered hypotheses. -/
+structure HypKey where
+  fvarId : FVarId
+  type : ExprStructEq
+  value : Option ExprStructEq
+  ppCtxHash : UInt64
+deriving BEq, Hashable
+
+def HypKey.roots (key : HypKey) : Array Expr :=
+  match key.value with
+  | some value => #[.fvar key.fvarId, key.type.val, value.val]
+  | none => #[.fvar key.fvarId, key.type.val]
+
+structure GoalKey where
+  goal : MVarId
+  ppCtxHash : UInt64
+deriving BEq, Hashable
+
+/-- A cache of rendered proof goals. -/
+structure GoalCache where
+  entries : HashMap GoalKey (Array (GoalDeps × Highlighted.Goal Highlighted)) := {}
+
+namespace GoalCache
+
+def get? (cache : GoalCache) (key : GoalKey) (decl : MetavarDecl) (mctx : MetavarContext) :
+    Option (Highlighted.Goal Highlighted) := do
+  let candidates ← cache.entries.get? key
+  candidates.findSome? fun (deps, goal) => if deps.validIn decl mctx then some goal else none
+
+def insert (cache : GoalCache) (key : GoalKey) (deps : GoalDeps) (goal : Highlighted.Goal Highlighted) :
+    GoalCache :=
+  let candidates := cache.entries.getD key #[]
+  let candidates :=
+    if candidates.size < maxCandidatesPerKey then candidates
+    else candidates.extract (candidates.size + 1 - maxCandidatesPerKey) candidates.size
+  { entries := cache.entries.insert key (candidates.push (deps, goal)) }
+
+end GoalCache
 
 /--
 A cache key for rendered constant signatures that tracks the inputs to the rendering process.
@@ -1023,9 +1128,11 @@ structure HighlightState where
   ppTerms : TermCache CodeWithInfos := {}
   /-- Cached rendered terms -/
   fmtTerms : TermCache (Highlighted × String) := {}
+  goals : GoalCache := {}
+  hyps : RenderCache HypKey (Highlighted.Hypothesis Highlighted) := {}
 
 
-instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}, {}, {}, {}⟩
+instance : Inhabited HighlightState := ⟨default, default, default, default, {}, {}, {}, {}, {}, {}, {}⟩
 
 def HighlightState.empty : HighlightState where
   messages := #[]
@@ -1033,7 +1140,7 @@ def HighlightState.empty : HighlightState where
   output := []
 
 def HighlightState.resetCache (st : HighlightState) : HighlightState :=
-  { st with terms := {}, ppTerms := {}, fmtTerms := {} }
+  { st with terms := {}, ppTerms := {}, fmtTerms := {}, goals := {}, hyps := {} }
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
     (stx : Syntax) (messages : Array Message)
@@ -1231,7 +1338,7 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
           let (tyStr, prettySig) ← ppType ty
           let some deps := ofExpr ty names
             | pure (tyStr, prettySig)
-          if (← (cache.get : IO _)).varTypes.candidateCount key ≥ maxCandidatesPerTerm then
+          if (← (cache.get : IO _)).varTypes.candidateCount key ≥ maxCandidatesPerKey then
             count .varTypeCacheEvictions
           (cache.modify (fun c => { c with varTypes := c.varTypes.insert key deps tyStr }) : IO _)
           pure (tyStr, prettySig)
@@ -1898,7 +2005,7 @@ def cachedTerm
   let v ← render key.expr.val
   let some deps := ofExpr key.expr.val ctx
     | return v
-  if (cache (← get)).candidateCount key ≥ maxCandidatesPerTerm then
+  if (cache (← get)).candidateCount key ≥ maxCandidatesPerKey then
     count .termCacheEvictions
   modify fun st => setCache st ((cache st).insert key deps v)
   return v
@@ -2013,6 +2120,38 @@ def renderOrGetWithFormat (key : TermKey) (ctx : NameContext)
     (render : Expr → HighlightM (Highlighted × String)) : HighlightM (Highlighted × String) :=
   cachedTerm (·.fmtTerms) (fun st c => { st with fmtTerms := c }) key ctx render
 
+def showsMVars (mctx : MetavarContext) (names : NameContext) (conclusion : Expr) : Bool := Id.run do
+  if conclusion.hasMVar then return true
+  for decl in names.lctx do
+    if (names.typeOf? decl.fvarId |>.getD decl.type).hasMVar then return true
+    if let .ldecl _ _ _ _ value false _ := decl then
+      if (instantiateMVarsCore mctx value).1.hasMVar then return true
+  return false
+
+open TermDeps in
+/--
+Looks up a hypothesis key, returning the cached value if found. If not, it creates and caches the
+highlighted hypothesis using `render`.
+-/
+def cachedHypothesis (key : HypKey) (ctx : NameContext)
+    (render : HighlightM (Highlighted.Hypothesis Highlighted)) :
+    HighlightM (Highlighted.Hypothesis Highlighted) := do
+  let roots := key.roots
+  if roots.any (·.hasMVar) then
+    count .hypCacheUncached
+    return ← render
+  if let some hyp := (← get).hyps.get? key ctx then
+    count .hypCacheHits
+    return hyp
+  count .hypCacheMisses
+  let hyp ← render
+  let some deps := ofExprs roots ctx
+    | return hyp
+  if (← get).hyps.candidateCount key ≥ maxCandidatesPerKey then
+    count .hypCacheEvictions
+  modify fun st => { st with hyps := st.hyps.insert key deps hyp }
+  return hyp
+
 def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List MVarId) :
     HighlightM (Array (Highlighted.Goal Highlighted)) := withEnv commandEnv <| withReader (·.noDefinitions) do
   let mut goalView := #[]
@@ -2022,6 +2161,11 @@ def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List M
     let mut hyps := #[]
     let some mvDecl := ci.mctx.findDecl? g
       | continue
+    let goalKey : GoalKey := { goal := g, ppCtxHash }
+    if let some goal := (← get).goals.get? goalKey mvDecl ci.mctx then
+      count .goalCacheHits
+      goalView := goalView.push goal
+      continue
     let name := if mvDecl.userName.isAnonymous then none else some mvDecl.userName.eraseMacroScopes.toString
     let lctx := mvDecl.lctx |>.sanitizeNames.run' {options := (← getOptions)}
 
@@ -2065,29 +2209,38 @@ def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List M
         match decl with
         | .cdecl _index fvar name type _ _
         | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
-          let nk := (← exprKind ci lctx (fun _ => pure names) none (.fvar fvar)).map (·.1)
           let type := names.typeOf? fvar |>.getD type
-          let (tyStr, ppType) ← renderTerm type
-          pure (⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩ : Highlighted.Hypothesis Highlighted)
+          cachedHypothesis { fvarId := fvar, type, value := none, ppCtxHash } names do
+            let nk := (← exprKind ci lctx (fun _ => pure names) none (.fvar fvar)).map (·.1)
+            let (tyStr, ppType) ← renderTerm type
+            pure (⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩ : Highlighted.Hypothesis Highlighted)
         | .ldecl _index fvar name type val _ _ =>
-          let nk := (← exprKind ci lctx (fun _ => pure names) none (.fvar fvar)).map (·.1)
           let type := names.typeOf? fvar |>.getD type
           let val ← runMeta <| instantiateMVars val
-          let tyDoc ← renderOrGetCodeWithInfos (termKey type) names ppCode
-          let valDoc ←
-            if !ppProofs && (← runMeta <| Meta.isProp type) then
-              pure (.text "···")
-            else renderOrGetCodeWithInfos (termKey val) names ppCode
-          let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
-            if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
-            else #[.text " := \n", valDoc.indent]
-          -- For let-bindings, skip format data (would need combined type+val format)
-          pure ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr, none⟩
+          cachedHypothesis { fvarId := fvar, type, value := some val, ppCtxHash } names do
+            let nk := (← exprKind ci lctx (fun _ => pure names) none (.fvar fvar)).map (·.1)
+            let tyDoc ← renderOrGetCodeWithInfos (termKey type) names ppCode
+            let valDoc ←
+              if !ppProofs && (← runMeta <| Meta.isProp type) then
+                pure (.text "···")
+              else renderOrGetCodeWithInfos (termKey val) names ppCode
+            let tyValStr ← renderTagged none <| .append <| #[tyDoc].append <|
+              if tyDoc.oneLine && valDoc.oneLine then #[.text " := ", valDoc]
+              else #[.text " := \n", valDoc.indent]
+            -- For let-bindings, skip format data (would need combined type+val format)
+            pure ⟨#[⟨nk.getD .unknown, name.toString⟩], tyValStr, none⟩
       hyps := hyps.push hyp
-    let (concl, ppConcl) ← withCategory .goalTargets do
+    let (conclType, concl, ppConcl) ← withCategory .goalTargets do
       let conclType ← runMeta <| instantiateMVars mvDecl.type
-      renderTerm conclType
-    goalView := goalView.push ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl, ppConcl⟩
+      let (concl, ppConcl) ← renderTerm conclType
+      pure (conclType, concl, ppConcl)
+    let goal : Highlighted.Goal Highlighted := ⟨name, Meta.getGoalPrefix mvDecl, hyps, concl, ppConcl⟩
+    if showsMVars ci.mctx names conclType then
+      count .goalCacheUncached
+    else
+      count .goalCacheMisses
+      modify fun st => { st with goals := st.goals.insert goalKey (.ofDecl mvDecl ci.mctx) goal }
+    goalView := goalView.push goal
   pure goalView
 
 def tacticInfoGoals
