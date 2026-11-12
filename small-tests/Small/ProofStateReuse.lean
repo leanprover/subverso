@@ -15,12 +15,12 @@ example : ∃ n : Nat, n = n → True := by
 --^ PROOF_STATE: assignedHyp
   trivial
 
-example : Nat → Nat → True := by
+example : ∀ a b : Nat, a = b ∨ True := by
   intro h
 --^ PROOF_STATE: hypFirst
   intro h
 --^ PROOF_STATE: hypShadowed
-  trivial
+  exact Or.inr trivial
 
 example (x : id Nat) (h : x = x) : x = x := by
   dsimp only [id] at x
