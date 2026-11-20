@@ -60,7 +60,7 @@ jobs:
 
       - name: Restore the prebuilt test projects
         id: test-projects
-        uses: actions/cache/restore@v5.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
@@ -103,7 +103,7 @@ jobs:
 
       - name: Save the prebuilt test projects
         if: steps.test-projects.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5.1.0
+        uses: actions/cache/save@v6.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
@@ -115,7 +115,7 @@ jobs:
       # job doesn't count it as a cache hit, so its next run builds the failed projects again.
       - name: Save the test projects that built
         if: failure() && steps.prebuild.outcome == 'failure'
-        uses: actions/cache/save@v5.1.0
+        uses: actions/cache/save@v6.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
@@ -176,7 +176,7 @@ jobs:
             done
 
       - name: Restore the prebuilt test projects
-        uses: actions/cache/restore@v5.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
