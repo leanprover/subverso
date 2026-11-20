@@ -30,7 +30,76 @@ open SubVerso.Highlighting.Timings (Category Counter enter exit)
 namespace SubVerso.Highlighting
 
 /--
-An info node together with its context and the final environment of the command that produced it.
+Maps the references of a command to the canonical representatives of their alias classes.
+
+Commands that use section variables elaborate the variables' binders again, with new free
+variables. These binders are recognized by their source ranges, which are the source ranges of
+binders in an earlier command. The table gives their alias classes the variable IDs from that
+earlier command. Highlighted tokens for these variables have the shared IDs, so the tokens refer
+to the same variable in every command.
+-/
+structure AliasTable where
+  representatives : HashMap Lsp.RefIdent Lsp.RefIdent := {}
+  /--
+  The shared variable IDs of alias classes whose binders have the source ranges of binders in
+  earlier commands, indexed by representative.
+  -/
+  sharedIds : HashMap Lsp.RefIdent FVarId := {}
+
+instance : Inhabited AliasTable := ⟨{}⟩
+
+/-- The shared variable ID of the alias class of `representative`, if it has one. -/
+def AliasTable.sharedId? (table : AliasTable) (representative : Lsp.RefIdent) : Option FVarId :=
+  table.sharedIds[representative]?
+
+/-- Records `shared` as the shared variable ID of the alias class of `representative`. -/
+def AliasTable.share (table : AliasTable) (representative : Lsp.RefIdent) (shared : FVarId) :
+    AliasTable :=
+  { table with sharedIds := table.sharedIds.insert representative shared }
+
+/--
+The variable IDs of the binders in a module's commands, indexed by the binders' source ranges.
+
+Binders in different commands that have the same source range are the same variable. Their
+variable ID comes from the first command that has a binder at that range.
+-/
+structure BinderIds where
+  ids : HashMap Lsp.Range FVarId := {}
+
+/-- The variable ID of the binders at `range`, if a command has recorded one. -/
+def BinderIds.get? (binders : BinderIds) (range : Lsp.Range) : Option FVarId :=
+  binders.ids[range]?
+
+/-- Records `id` as the variable ID of the binders at `range`. -/
+def BinderIds.insert (binders : BinderIds) (range : Lsp.Range) (id : FVarId) : BinderIds :=
+  { binders with ids := binders.ids.insert range id }
+
+/-- The representative of the alias class of `ref`, when the table has one. -/
+def AliasTable.get? (table : AliasTable) (ref : Lsp.RefIdent) : Option Lsp.RefIdent :=
+  table.representatives[ref]?
+
+/-- Records `representative` as the representative of the alias class of `ref`. -/
+def AliasTable.insert (table : AliasTable) (ref representative : Lsp.RefIdent) : AliasTable :=
+  { table with representatives := table.representatives.insert ref representative }
+
+/--
+The final environment and the alias table for one command.
+
+Free variable IDs are re-used between commands in some Lean versions, so it's important to associate
+free variables with their command elaboration context.
+-/
+structure AliasedEnv where
+  /-- The environment after the command finished elaborating. -/
+  env : Environment
+  aliases : AliasTable := {}
+
+/-- An info tree together with the aliased environment of the command that produced it. -/
+structure AliasedInfoTree where
+  aliasedEnv : AliasedEnv
+  tree : InfoTree
+
+/--
+An info node together with its context and the aliased environment of the command that produced it.
 
 In some cases, elaborators record terminfo for definitions of names that aren't in the environment at the time
 they add them. For these cases, the final command environment is the lookup site.
@@ -39,10 +108,8 @@ structure InfoNode where
   /-- The innermost context that surrounds the node. -/
   ci : ContextInfo
   info : Info
-  /--
-  The environment after the command that produced the node finished elaborating.
-  -/
-  commandEnv : Environment
+  /-- The aliased environment of the command that produced the node. -/
+  aliasedEnv : AliasedEnv
 
 /--
 A table that maps source regions to info.
@@ -66,32 +133,43 @@ structure InfoTable where
 
 instance : Inhabited InfoTable := ⟨⟨{}⟩⟩
 
+/-- The outermost info node of an info tree, together with its context. -/
+def infoTreeRoot? (t : InfoTree) : Option (ContextInfo × Info) :=
+  -- Throwing from `preNode` at the root ends the visit before any child is entered.
+  let rootErr : Except (ContextInfo × Info) (Option Unit) :=
+    t.visitM
+      (preNode := fun ci info _ => throw (ci, info))
+      (postNode := fun _ _ _ _ => pure ())
+  match rootErr with
+  | .error root => some root
+  | .ok _ => none
+
 /--
 The environment of the outermost context of an info tree. For a command's info tree, this is the
 environment after the command finished elaborating.
 -/
 def infoTreeCommandEnv? (t : InfoTree) : Option Environment :=
-  -- Throwing from `preNode` at the root ends the visit before any child is entered.
-  match t.visitM (m := Except ContextInfo) (preNode := fun ci _ _ => throw ci) (postNode := fun _ _ _ _ => pure ()) with
-  | .error ci => some ci.env
-  | .ok _ => none
+  (infoTreeRoot? t).map (·.1.env)
 
 def infoTreesCommandEnv? (trees : Array InfoTree) : Option Environment :=
   trees.reverse.findSome? infoTreeCommandEnv?
 
+/-- The syntax of the outermost node of an info tree. For a command's info tree, this is the command. -/
+def infoTreeRootSyntax? (t : InfoTree) : Option Syntax :=
+  (infoTreeRoot? t).map (·.2.stx)
+
 /-- Indexes every info node of the tree by its syntax's canonical range. -/
-partial def InfoTable.indexNodes (t : InfoTree) (table : InfoTable) : InfoTable :=
-  let commandEnv? := infoTreeCommandEnv? t
-  let nodes := t.collectNodesBottomUp fun ci info _ soFar =>
+partial def InfoTable.indexNodes (t : AliasedInfoTree) (table : InfoTable) : InfoTable :=
+  let nodes := t.tree.collectNodesBottomUp fun ci info _ soFar =>
     match info.stx.getRange? (canonicalOnly := true) with
     | some rng => (rng, ci, info) :: soFar
     | none => soFar
   nodes.foldl (init := table) fun tbl (rng, ci, info) =>
-    let node : InfoNode := { ci, info, commandEnv := commandEnv?.getD ci.env }
+    let node : InfoNode := { ci, info, aliasedEnv := t.aliasedEnv }
     let bucket := ((Compat.HashMap.get? tbl.nodesByRange rng).getD #[]).push node
     { tbl with nodesByRange := tbl.nodesByRange.insert rng bucket }
 
-def InfoTable.ofInfoTrees (ts : Array InfoTree) (init : InfoTable := {}) : InfoTable :=
+def InfoTable.ofInfoTrees (ts : Array AliasedInfoTree) (init : InfoTable := {}) : InfoTable :=
   ts.foldl (init := init) (fun tbl t => InfoTable.indexNodes t tbl)
 
 /-- All info nodes whose syntax has the given canonical range, in traversal order. -/
@@ -99,11 +177,11 @@ def InfoTable.nodesFor (table : InfoTable) (rng : Compat.Syntax.Range) : Array I
   (Compat.HashMap.get? table.nodesByRange rng).getD #[]
 
 def InfoTable.tacticInfo? (stx : Syntax) (table : InfoTable) :
-    Option (Array (ContextInfo × TacticInfo × Environment)) := do
+    Option (Array (ContextInfo × TacticInfo × AliasedEnv)) := do
   let rng ← stx.getRange? (canonicalOnly := true)
   pure <| table.nodesFor rng |>.filterMap fun node =>
     match node.info with
-    | .ofTacticInfo ti => if ti.stx == stx then some (node.ci, ti, node.commandEnv) else none
+    | .ofTacticInfo ti => if ti.stx == stx then some (node.ci, ti, node.aliasedEnv) else none
     | _ => none
 
 /--
@@ -595,7 +673,6 @@ structure SigCache where
 instance : EmptyCollection SigCache := ⟨⟨{}, {}, {}⟩⟩
 
 structure Context where
-  ids : HashMap Lsp.RefIdent Lsp.RefIdent
   definitionsPossible : Bool
   includeUnparsed : Bool
   suppressNamespaces : List Name
@@ -795,19 +872,69 @@ where
   getNames (ref : Server.Reference) : List Lsp.RefIdent :=
     ref.ident :: ref.aliases.toList
 
-def build (refs : Server.ModuleRefs) : HashMap Lsp.RefIdent Lsp.RefIdent := Id.run do
+def build (refs : Server.ModuleRefs) : AliasTable := Id.run do
   let st := go refs.toList |>.run .init |>.snd
-  let mut ids : HashMap _ _ := {}
+  let mut aliases : AliasTable := {}
   for (x, _) in st.indices.toList do
     let ((_, y, _), _) := StateT.run (m := Id) (UnionFind.find x) st
-    ids := ids.insert x y
-  ids
+    aliases := aliases.insert x y
+  aliases
 where
   go : List (Lsp.RefIdent × Server.RefInfo) → StateT (UnionFind.State Lsp.RefIdent) Id Unit
     | [] => pure ()
     | (x, info) :: more => do
       for y in getRefs info do UnionFind.equate x y
       go more
+
+/--
+Builds the aliased environment of a command from all of the command's info trees.
+
+The environment is `env` when the trees don't contain info nodes.
+
+The state holds the binders of the earlier commands. Some binders of this command have source
+ranges that are already in the state. Their shared IDs are the variable IDs from the state. The
+command's other binders are added to the state.
+-/
+def AliasedEnv.ofTrees (fileMap : FileMap) (env : Environment) (trees : Array InfoTree) :
+    StateM BinderIds AliasedEnv := do
+  let refs := Server.findModuleRefs fileMap trees
+  let mut aliases := build refs
+  for (ident, info) in refs.toList do
+    let some defn := info.definition
+      | continue
+    let representative := (aliases.get? ident).getD ident
+    let some id := Compat.refIdentCase representative (onFVar := some) (onConst := fun _ => none)
+      | continue
+    match (← get).get? defn.range with
+    | some shared => aliases := aliases.share representative shared
+    | none => modify (·.insert defn.range id)
+  return { env := infoTreesCommandEnv? trees |>.getD env, aliases }
+
+/-- Computes a suitable aliased environment for an info tree. -/
+def AliasedInfoTree.ofTree (fileMap : FileMap) (env : Environment) (tree : InfoTree) :
+    StateM BinderIds AliasedInfoTree := do
+  return { tree, aliasedEnv := ← AliasedEnv.ofTrees fileMap env #[tree] }
+
+/--
+Gives info trees their own aliased environments, one for each tree.
+
+The trees are taken to be in source order, and each of them is taken to be the only info tree of
+its command.
+-/
+def AliasedInfoTree.ofEachTree (fileMap : FileMap) (env : Environment) (trees : Array InfoTree) :
+    Array AliasedInfoTree :=
+  Id.run <| (trees.mapM (AliasedInfoTree.ofTree fileMap env)).run' {}
+
+/--
+Gives info trees their own aliased environments, one for each tree. Positions that don't have
+trees stay `none`.
+
+The trees are taken to be in source order, and each of them is taken to be the only info tree of
+its command.
+-/
+def AliasedInfoTree.ofEachTree? (fileMap : FileMap) (env : Environment)
+    (trees : Array (Option InfoTree)) : Array (Option AliasedInfoTree) :=
+  Id.run <| (trees.mapM (Option.mapM (AliasedInfoTree.ofTree fileMap env))).run' {}
 
 /--
 Removes the unwanted namespaces in question when they occur as prefixes.
@@ -883,13 +1010,13 @@ def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
   let docs ← findDocString? env fieldInfo.projName
   return .const fieldInfo.projName tyStr docs false none
 
-def infoExists [Monad m] [MonadLiftT IO m] (table : InfoTable) (trees : Array InfoTree)
+def infoExists [Monad m] [MonadLiftT IO m] (table : InfoTable) (trees : Array AliasedInfoTree)
     (stx : Syntax) : m Bool := do
   match stx.getRange? (canonicalOnly := true) with
   | some rng => return !(table.nodesFor rng).isEmpty
   | none =>
     for t in trees do
-      for _ in infoForSyntax t stx do
+      for _ in infoForSyntax t.tree stx do
         return true
     return false
 
@@ -1038,11 +1165,19 @@ def Highlighted.fromOutput (output : List Output) : Highlighted :=
     | .tactics info startPos endPos :: more => go (.tactics info startPos.byteIdx endPos.byteIdx acc) more
   go .empty output
 
+/-- A message together with the alias table of the command that produced it. -/
+structure AliasedMessage where
+  message : Message
+  aliases : AliasTable
+
+instance : Inhabited AliasedMessage := ⟨⟨default, {}⟩⟩
+
+/-- Messages that share a source range. -/
 structure MessageBundle where
-  messages : Array Message
+  messages : Array AliasedMessage
   non_empty : messages.size > 0
 
-def MessageBundle.first (msgs : MessageBundle) : Message := msgs.messages[0]'msgs.non_empty
+def MessageBundle.first (msgs : MessageBundle) : Message := (msgs.messages[0]'msgs.non_empty).message
 
 def MessageBundle.pos (msgs : MessageBundle) : Lean.Position := msgs.first.pos
 
@@ -1054,15 +1189,15 @@ private def _root_.Lean.Position.before (pos1 pos2 : Lean.Position) : Bool :=
 private def _root_.Lean.Position.notAfter (pos1 pos2 : Lean.Position) : Bool :=
   pos1.line < pos2.line || (pos1.line == pos2.line && pos1.column ≤ pos2.column)
 
-def bundleMessages (msgs : Array Message) : Array MessageBundle := Id.run do
+def bundleMessages (msgs : Array AliasedMessage) : Array MessageBundle := Id.run do
   let mut out := #[]
   let mut curr : Option MessageBundle := none
-  for m in msgs.qsort cmp do
+  for m in msgs.qsort (cmp ·.message ·.message) do
     match curr with
     | none => curr := some ⟨#[m], Nat.zero_lt_succ 0⟩
     | some b =>
-      let first := b.messages[0]'b.non_empty
-      if first.pos == m.pos && first.endPos == m.endPos then
+      let first := b.first
+      if first.pos == m.message.pos && first.endPos == m.message.endPos then
         curr := some {b with
           messages := b.messages.push m,
           non_empty := by rw [Array.size_push]; exact lt_succ_of_lt b.non_empty
@@ -1143,10 +1278,10 @@ def HighlightState.resetCache (st : HighlightState) : HighlightState :=
   { st with terms := {}, ppTerms := {}, fmtTerms := {}, goals := {}, hyps := {} }
 
 def HighlightState.ofMessages [Monad m] [MonadFileMap m]
-    (stx : Syntax) (messages : Array Message)
+    (stx : Syntax) (messages : Array AliasedMessage)
     (startPos? := stx.getPos?) (endPos? := Internal.getTrailingOrTailPos? stx) :
     m HighlightState := do
-  let msgs ← bundleMessages <$> messages.filterM isRelevant
+  let msgs ← bundleMessages <$> messages.filterM (isRelevant ·.message)
   pure {
     messages := msgs
     nextMessage := if h : 0 < msgs.size then some ⟨0, h⟩ else none,
@@ -1164,6 +1299,8 @@ where
       pure <| !(msg.pos.before s) && !(e.before msg.pos)
 
 abbrev HighlightM (α : Type) : Type := ReaderT Context (ReaderT InfoTable (StateRefT HighlightState TermElabM)) α
+
+abbrev AliasedHighlightM := ReaderT AliasTable HighlightM
 
 private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
   | [] => none
@@ -1250,12 +1387,12 @@ def tokenNameContext [Monad m] [MonadReaderOf Context m] [MonadLiftT IO m]
 
 open TermDeps in
 /-- Determines a kind candidate for a token whose meaning is `expr` according to the info tree. -/
-def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+def exprKindCandidate [Monad m] [MonadReaderOf AliasTable m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (lctx : LocalContext) (getNames : UInt64 → m NameContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
     m (Option (KindCandidate m)) := do
   let ci := delabContext ci
-  let cache : IO.Ref _ := (← read).sigCache
+  let cache : IO.Ref _ := (← readThe Context).sigCache
   let runMeta {α} (act : MetaM α) (env := ci.env) (lctx := lctx) : m α := do
     count .runMetaMCalls
     {ci with env := env}.runMetaM lctx act
@@ -1346,9 +1483,11 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
   let rec findKind (e : Expr) : m (Option (KindCandidate m)) := do
     match e with
     | Expr.fvar id =>
-      if let some y := (← read).ids[(← Compat.mkRefIdentFVar id)]? then
+      let aliases ← readThe AliasTable
+      if let some y := aliases.get? (← Compat.mkRefIdentFVar id) then
         return some <| Compat.refIdentCase y
           (onFVar := fun x =>
+            let shown := (aliases.sharedId? y).getD x
             if (lctx.find? x).any (·.isAuxDecl) then
               ⟨.const x.name "" none false none, do
                 let (tyStr, _) ← ppVarType
@@ -1357,9 +1496,9 @@ def exprKindCandidate [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLif
                 -- FIXME the mkSimple is a bit of a kludge
                 return some (.const (.mkSimple (toString e)) tyStr none false none, none)⟩
             else
-              ⟨.var x "" none, do
+              ⟨.var shown "" none, do
                 let (tyStr, prettySig) ← ppVarType
-                return some (.var x tyStr none, prettySig)⟩)
+                return some (.var shown tyStr none, prettySig)⟩)
           (onConst := fun x =>
             ⟨.const x "" none false none, do
               let (sig, prettySig) ← ppSig x
@@ -1398,7 +1537,7 @@ Finds the appropriate token kind for a token whose meaning is the expression `ex
 `collectFormat` is true, also returns the `FormatWithInfos` to be saved as a reflowable type or
 signature.
 -/
-def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
+def exprKind [Monad m] [MonadReaderOf AliasTable m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (lctx : LocalContext) (getNames : UInt64 → m NameContext) (stx? : Option Syntax) (expr : Expr)
     (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
@@ -1407,7 +1546,7 @@ def exprKind [Monad m] [MonadReaderOf Context m] [MonadEnv m] [MonadLiftT IO m] 
   candidate.render
 
 def termInfoKindCandidate
-    [Monad m] [MonadReaderOf Context m]
+    [Monad m] [MonadReaderOf AliasTable m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
     m (Option (KindCandidate m)) := do
@@ -1415,7 +1554,7 @@ def termInfoKindCandidate
       exprKindCandidate ci termInfo.lctx (tokenNameContext ci termInfo.lctx) termInfo.stx termInfo.expr
         (allowUnknownTyped := allowUnknownTyped)
     | return none
-  if !(← read).definitionsPossible then return some candidate
+  if !(← readThe Context).definitionsPossible then return some candidate
   return some { candidate with
     render := do
       let k ← candidate.render
@@ -1425,7 +1564,7 @@ def termInfoKindCandidate
       return k }
 
 def termInfoKind
-    [Monad m] [MonadReaderOf Context m]
+    [Monad m] [MonadReaderOf AliasTable m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (termInfo : TermInfo) (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
@@ -1433,7 +1572,7 @@ def termInfoKind
     | return none
   candidate.render
 
-def infoKindCandidate [Monad m] [MonadReaderOf Context m]
+def infoKindCandidate [Monad m] [MonadReaderOf AliasTable m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
     m (Option (KindCandidate m)) := do
@@ -1455,7 +1594,7 @@ def infoKindCandidate [Monad m] [MonadReaderOf Context m]
     | _ =>
       pure none
 
-def infoKind [Monad m] [MonadReaderOf Context m]
+def infoKind [Monad m] [MonadReaderOf AliasTable m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (ci : ContextInfo) (info : Info) (allowUnknownTyped : Bool := false) :
     m (Option KindWithPPSig) := do
@@ -1467,38 +1606,43 @@ def infoKind [Monad m] [MonadReaderOf Context m]
 All info nodes whose canonical span matches `stx`, via the pre-built range index when `stx` has a
 canonical range, in the same order that filtering traversals of `trees` would produce.
 -/
-def infoNodesFor (trees : Array InfoTree) (stx : Syntax) :
+def infoNodesFor (trees : Array AliasedInfoTree) (stx : Syntax) :
     HighlightM (Array InfoNode) := do
   match stx.getRange? (canonicalOnly := true) with
   | some rng => return (← readThe InfoTable).nodesFor rng
   | none => return trees.flatMap fun t =>
-    let commandEnv? := infoTreeCommandEnv? t
-    (infoForSyntax t stx).toArray.map fun (ci, info) =>
-      { ci, info, commandEnv := commandEnv?.getD ci.env }
+    (infoForSyntax t.tree stx).toArray.map fun (ci, info) => { ci, info, aliasedEnv := t.aliasedEnv }
 
-def withCommandEnv (trees : Array InfoTree) (stx : Syntax) (act : HighlightM α) : HighlightM α := do
+/-- Runs `act` with the final environment and the alias table of a command. -/
+def withAliasedEnv (aliasedEnv : AliasedEnv) (act : AliasedHighlightM α) : HighlightM α :=
+  withEnv aliasedEnv.env (act.run aliasedEnv.aliases)
+
+/--
+Runs `act` in the final environment of the command that produced the first info node for `stx`.
+-/
+def withCommandEnv (trees : Array AliasedInfoTree) (stx : Syntax) (act : HighlightM α) : HighlightM α := do
   if let some node := (← infoNodesFor trees stx)[0]? then
-    withEnv node.commandEnv act
+    withEnv node.aliasedEnv.env act
   else
     act
 
 def kindCandidatesByPriority
-    (trees : Array InfoTree) (stx : Syntax) (allowUnknownTyped : Bool := false) :
-    HighlightM (Array (Environment × KindCandidate HighlightM)) := do
+    (trees : Array AliasedInfoTree) (stx : Syntax) (allowUnknownTyped : Bool := false) :
+    HighlightM (Array (InfoNode × KindCandidate AliasedHighlightM)) := do
   let mut candidates := #[]
-  for { ci, commandEnv, info } in (← infoNodesFor trees stx) do
-    if let some candidate ←
-        withEnv commandEnv (infoKindCandidate ci info (allowUnknownTyped := allowUnknownTyped)) then
-      candidates := candidates.push (commandEnv, candidate)
+  for node in (← infoNodesFor trees stx) do
+    if let some candidate ← withAliasedEnv node.aliasedEnv
+        (infoKindCandidate node.ci node.info (allowUnknownTyped := allowUnknownTyped)) then
+      candidates := candidates.push (node, candidate)
   return candidates.insertionSort (·.2.shape.priority > ·.2.shape.priority)
 
 def anonCtorKind
-    (trees : Array InfoTree) (stx : Syntax) :
+    (trees : Array AliasedInfoTree) (stx : Syntax) :
     HighlightM (Option Token.Kind) := do
-  for (commandEnv, candidate) in ← kindCandidatesByPriority trees stx do
+  for (node, candidate) in ← kindCandidatesByPriority trees stx do
     match candidate.shape with
     | .const .. | .anonCtor .. =>
-      let some (kind, _) ← withEnv commandEnv candidate.render
+      let some (kind, _) ← withAliasedEnv node.aliasedEnv candidate.render
         | continue
       return match kind with
       | .const n sig doc? _ ppSig? => some <| .anonCtor n sig doc? ppSig?
@@ -1507,7 +1651,7 @@ def anonCtorKind
     | _ => return none
   return none
 
-partial def renderTagged [Monad m] [MonadReaderOf Context m]
+partial def renderTagged [Monad m] [MonadReaderOf AliasTable m] [MonadReaderOf Context m]
     [MonadFileMap m] [MonadEnv m] [MonadFinally m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
     (outer : Option Token.Kind) (doc : CodeWithInfos)
     (tagEnv : ContextInfo → Environment → Environment := fun _ env => env) :
@@ -1568,7 +1712,7 @@ partial def codeWithInfosIsString? (code : CodeWithInfos) : Option String := do
 section Compat
 partial def messageContents
     (message : Message) (highlightTerms : Bool := true) :
-    HighlightM (Highlighted.MessageContents Highlighted) := do
+    AliasedHighlightM (Highlighted.MessageContents Highlighted) := do
   withCategory .messages <| withOptions (pp.sanitizeNames.set · true) do
     let head := if message.caption != "" then message.caption ++ ":\n" else ""
     let body ←
@@ -1576,18 +1720,18 @@ partial def messageContents
         Lean.Widget.msgToInteractive message.data true
     return .append #[.text head, ← convert body]
 where
-  convert (txt : TaggedText MsgEmbed) : HighlightM (Highlighted.MessageContents Highlighted) :=
+  convert (txt : TaggedText MsgEmbed) : AliasedHighlightM (Highlighted.MessageContents Highlighted) :=
     match txt with
     | .text str => pure (.text str)
     | .append xs => .append <$> xs.mapM convert
     | .tag embed _ =>
-      let render (e : CodeWithInfos) : HighlightM Highlighted :=
+      let render (e : CodeWithInfos) : AliasedHighlightM Highlighted :=
         if highlightTerms then
           try renderTagged none e (tagEnv := fun ctx _ => ctx.env)
           catch | _ => pure <| .text e.pretty
         else
           pure <| .text e.pretty
-      Compat.msgEmbedCase (α := HighlightM (Highlighted.MessageContents Highlighted)) embed
+      Compat.msgEmbedCase (α := AliasedHighlightM (Highlighted.MessageContents Highlighted)) embed
         (onExpr := fun e =>
           if let some txt := codeWithInfosIsString? e then pure <| .text txt
           else .term <$> render e)
@@ -1627,13 +1771,13 @@ partial def openWhile (shouldOpen : MessageBundle → Bool) : HighlightM Unit :=
   if let some msg ← nextMessage? then
     if shouldOpen msg then
       advanceMessages
-      let txt ← msg.messages.mapM fun m => do
+      let txt ← msg.messages.mapM fun { message := m, aliases } => do
           let kind : Highlighted.Span.Kind :=
             match SubVerso.Highlighting.Messages.severity m with
             | .error => .error
             | .warning => .warning
             | .information => .info
-          let str ← withReader ({ · with definitionsPossible := false}) (messageContents m)
+          let str ← withReader (·.noDefinitions) ((messageContents m).run aliases)
           pure ⟨kind, str⟩
 
       modify fun st =>
@@ -1662,9 +1806,9 @@ partial def emitPointsBefore (pos : Lean.Position) : HighlightM Unit := do
   if let some msg ← nextMessage? then
     if msg.pos.before pos then
       advanceMessages
-      for m in msg.messages do
+      for { message := m, aliases } in msg.messages do
         let kind := Highlighted.Span.Kind.ofSeverity (SubVerso.Highlighting.Messages.severity m)
-        let str ← withReader ({ · with definitionsPossible := false}) (messageContents m)
+        let str ← withReader (·.noDefinitions) ((messageContents m).run aliases)
         modify fun st => { st with output := Output.add st.output (.point kind str) }
       emitPointsBefore pos
 
@@ -1994,7 +2138,7 @@ open TermDeps in
 @[specialize]
 def cachedTerm
     (cache : HighlightState → TermCache α) (setCache : HighlightState → TermCache α → HighlightState)
-    (key : TermKey) (ctx : NameContext) (render : Expr → HighlightM α) : HighlightM α := do
+    (key : TermKey) (ctx : NameContext) (render : Expr → AliasedHighlightM α) : AliasedHighlightM α := do
   if key.expr.val.hasMVar then
     count .termCacheUncached
     return ← render key.expr.val
@@ -2010,12 +2154,12 @@ def cachedTerm
   modify fun st => setCache st ((cache st).insert key deps v)
   return v
 
-def renderOrGet (key : TermKey) (ctx : NameContext) (render : Expr → HighlightM Highlighted) :
-    HighlightM Highlighted :=
+def renderOrGet (key : TermKey) (ctx : NameContext) (render : Expr → AliasedHighlightM Highlighted) :
+    AliasedHighlightM Highlighted :=
   cachedTerm (·.terms) (fun st c => { st with terms := c }) key ctx render
 
-def renderOrGetCodeWithInfos (key : TermKey) (ctx : NameContext) (render : Expr → HighlightM CodeWithInfos) :
-    HighlightM CodeWithInfos :=
+def renderOrGetCodeWithInfos (key : TermKey) (ctx : NameContext) (render : Expr → AliasedHighlightM CodeWithInfos) :
+    AliasedHighlightM CodeWithInfos :=
   cachedTerm (·.ppTerms) (fun st c => { st with ppTerms := c }) key ctx render
 
 
@@ -2046,7 +2190,7 @@ SubVerso output. The contents of tags are simplified for export, tags that aren'
 private partial def cleanFormatTags
     (infos : InfoPerPos) (ci : ContextInfo)
     (f : Std.Format) :
-    StateT (Array (Nat × TokenAnnotation)) HighlightM Std.Format := do
+    StateT (Array (Nat × TokenAnnotation)) AliasedHighlightM Std.Format := do
   match f with
   | .tag n (.text s) =>
     if let some info := Compat.InfoPerPos.get? infos n then
@@ -2066,17 +2210,17 @@ private partial def cleanFormatTags
 @[inherit_doc cleanFormatTags]
 def resolveFormatAnnotations
     (fmt : Std.Format) (infos : InfoPerPos) (ci : ContextInfo) :
-    HighlightM (Std.Format × Array (Nat × TokenAnnotation)) :=
+    AliasedHighlightM (Std.Format × Array (Nat × TokenAnnotation)) :=
   -- Positions in pretty-printer output are indices into the format data structure, not real source
   -- positions. Setting `definitionsPossible` to false prevents `isDefinition` from calling
   -- `getDeclarationRange?` on syntax with these fake positions, which would cause
   -- `codepointPosToUtf16PosFrom` to loop when the FileMap's string is shorter. These synthetic
   -- positions are often very large numbers (91620430928 was observed in practice), and
   -- `codepointPosToUtf16PosFromAux` loops that many times.
-  withReader (·.noDefinitions) <| cleanFormatTags infos ci fmt #[]
+  withTheReader Context (·.noDefinitions) <| cleanFormatTags infos ci fmt #[]
 
 /-- Simplifies a complete `FormatWithInfos` into a format data JSON string. -/
-private def resolveFormatWithInfos (prettySig : Option (FormatWithInfos × ContextInfo)) : HighlightM (Option String) := do
+private def resolveFormatWithInfos (prettySig : Option (FormatWithInfos × ContextInfo)) : AliasedHighlightM (Option String) := do
   let some (fi, ci) := prettySig | return none
   try
     let (fmt', annots) ← resolveFormatAnnotations fi.fmt fi.infos ci
@@ -2084,17 +2228,17 @@ private def resolveFormatWithInfos (prettySig : Option (FormatWithInfos × Conte
   catch _ => return none
 
 def identKind
-    (trees : Array InfoTree) (stx : TSyntax `ident)
+    (trees : Array AliasedInfoTree) (stx : TSyntax `ident)
     (allowUnknownTyped : Bool := false) :
     HighlightM Token.Kind := do
-  for (commandEnv, candidate) in ← kindCandidatesByPriority trees stx allowUnknownTyped do
-    let some (kind, kindSig) ← withEnv commandEnv candidate.render
+  for (node, candidate) in ← kindCandidatesByPriority trees stx allowUnknownTyped do
+    let some (kind, kindSig) ← withAliasedEnv node.aliasedEnv candidate.render
       | continue
     match kind with
     | .const name sig docs isDef none =>
-      return .const name sig docs isDef (← withEnv commandEnv (resolveFormatWithInfos kindSig))
+      return .const name sig docs isDef (← withAliasedEnv node.aliasedEnv (resolveFormatWithInfos kindSig))
     | .var id tyStr none =>
-      return .var id tyStr (← withEnv commandEnv (resolveFormatWithInfos kindSig))
+      return .var id tyStr (← withAliasedEnv node.aliasedEnv (resolveFormatWithInfos kindSig))
     | _ => return kind
   return .unknown
 
@@ -2103,21 +2247,21 @@ The inferred type of a literal (e.g. a numeral), as a pretty-printed string and 
 format. Unlike `identKind`, this just reads the type of the literal's own elaboration info rather
 than classifying it. A numeral should never be treated as, say, the `OfNat.ofNat` constant.
 -/
-def literalType (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
+def literalType (trees : Array AliasedInfoTree) (stx : Syntax) :
     HighlightM (Option String × Option String) := do
-  for { ci, info, commandEnv } in (← infoNodesFor trees stx) do
+  for { ci, info, aliasedEnv } in (← infoNodesFor trees stx) do
     -- `exprKind` (with `allowUnknownTyped`) reports a non-`const`/`var`/`sort`/`str` expression —
     -- which a numeral's `OfNat.ofNat …`/literal application is — as `.withType <type>`.
-    let some candidate ← withEnv commandEnv (infoKindCandidate ci info (allowUnknownTyped := true))
+    let some candidate ← withAliasedEnv aliasedEnv (infoKindCandidate ci info (allowUnknownTyped := true))
       | continue
     let .withType .. := candidate.shape | continue
-    if let some (.withType ty, prettySig) ← withEnv commandEnv candidate.render then
-      return (some ty, ← withEnv commandEnv (resolveFormatWithInfos prettySig))
+    if let some (.withType ty, prettySig) ← withAliasedEnv aliasedEnv candidate.render then
+      return (some ty, ← withAliasedEnv aliasedEnv (resolveFormatWithInfos prettySig))
   return (none, none)
 
 /-- Render a term, caching it. -/
 def renderOrGetWithFormat (key : TermKey) (ctx : NameContext)
-    (render : Expr → HighlightM (Highlighted × String)) : HighlightM (Highlighted × String) :=
+    (render : Expr → AliasedHighlightM (Highlighted × String)) : AliasedHighlightM (Highlighted × String) :=
   cachedTerm (·.fmtTerms) (fun st c => { st with fmtTerms := c }) key ctx render
 
 def showsMVars (mctx : MetavarContext) (names : NameContext) (conclusion : Expr) : Bool := Id.run do
@@ -2134,8 +2278,8 @@ Looks up a hypothesis key, returning the cached value if found. If not, it creat
 highlighted hypothesis using `render`.
 -/
 def cachedHypothesis (key : HypKey) (ctx : NameContext)
-    (render : HighlightM (Highlighted.Hypothesis Highlighted)) :
-    HighlightM (Highlighted.Hypothesis Highlighted) := do
+    (render : AliasedHighlightM (Highlighted.Hypothesis Highlighted)) :
+    AliasedHighlightM (Highlighted.Hypothesis Highlighted) := do
   let roots := key.roots
   if roots.any (·.hasMVar) then
     count .hypCacheUncached
@@ -2152,10 +2296,10 @@ def cachedHypothesis (key : HypKey) (ctx : NameContext)
   modify fun st => { st with hyps := st.hyps.insert key deps hyp }
   return hyp
 
-def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List MVarId) :
-    HighlightM (Array (Highlighted.Goal Highlighted)) := withEnv commandEnv <| withReader (·.noDefinitions) do
+def highlightGoals (ci : ContextInfo) (aliasedEnv : AliasedEnv) (goals : List MVarId) :
+    HighlightM (Array (Highlighted.Goal Highlighted)) := withAliasedEnv aliasedEnv <| withTheReader Context (·.noDefinitions) do
   let mut goalView := #[]
-  let doCollectFormat := (← read).collectFormat
+  let doCollectFormat := (← readThe Context).collectFormat
   let ppCtxHash := ppContextHash ci
   for g in goals do
     let mut hyps := #[]
@@ -2175,15 +2319,15 @@ def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List M
     let maxHeartbeats : Nat := (← getNatOption `maxHeartbeats)
     let options := ci.options |>.set `pp.tagAppFns true |>.set `maxHeartbeats maxHeartbeats
     let ci' := delabContext { ci with options }
-    let runMeta {α} (act : MetaM α) : HighlightM α := do
+    let runMeta {α} (act : MetaM α) : AliasedHighlightM α := do
       count .runMetaMCalls
       ci'.runMetaM lctx act
     let names : NameContext := .ofLocalContext lctx ci.mctx
     let termKey (e : Expr) : TermKey := { expr := e, ppCtxHash := ppCtxHash }
-    let ppCode (e : Expr) : HighlightM CodeWithInfos := do
+    let ppCode (e : Expr) : AliasedHighlightM CodeWithInfos := do
       count .delaboratorCalls
       runMeta (ppCodeWithInfos e)
-    let ppCodeAndFormat (e : Expr) : HighlightM (Highlighted × String) := do
+    let ppCodeAndFormat (e : Expr) : AliasedHighlightM (Highlighted × String) := do
       count .delaboratorCalls
       let ((code, fi), ngen) ← runMeta do
         let r ← ppCodeAndFormatWithInfos e
@@ -2191,7 +2335,7 @@ def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List M
       let hl ← renderTagged none code
       let (fmt, annots) ← resolveFormatAnnotations fi.fmt fi.infos { ci' with ngen := ngen }
       pure (hl, formatDataToJson fmt annots)
-    let renderTerm (e : Expr) : HighlightM (Highlighted × Option String) := do
+    let renderTerm (e : Expr) : AliasedHighlightM (Highlighted × Option String) := do
       if doCollectFormat then
         let (hl, fmt) ← renderOrGetWithFormat (termKey e) names ppCodeAndFormat
         pure (hl, some fmt)
@@ -2244,13 +2388,13 @@ def highlightGoals (ci : ContextInfo) (commandEnv : Environment) (goals : List M
   pure goalView
 
 def tacticInfoGoals
-    (ci : ContextInfo) (commandEnv : Environment) (tacticInfo : TacticInfo)
+    (ci : ContextInfo) (aliasedEnv : AliasedEnv) (tacticInfo : TacticInfo)
     (startPos endPos : Compat.String.Pos)
     (before : Bool := false) :
     HighlightM (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos) := do
   let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
   let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
-  let goalView ← highlightGoals ci commandEnv goals
+  let goalView ← highlightGoals ci aliasedEnv goals
 
   return (goalView, startPos, endPos)
 
@@ -2266,14 +2410,14 @@ partial def findTactics'
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) := do
 
   if let some res := (← readThe InfoTable).tacticInfo? stx then
-    for (ci, tacticInfo, commandEnv) in res.reverse do
+    for (ci, tacticInfo, aliasedEnv) in res.reverse do
       if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
         return some (#[], startPos, endPos)
 
       let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
       let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
       if goals.isEmpty then continue
-      let goalView ← highlightGoals ci commandEnv goals
+      let goalView ← highlightGoals ci aliasedEnv goals
 
       if !Output.inTacticState (← get).output goalView then
         return some (goalView, startPos, endPos)
@@ -2294,14 +2438,14 @@ partial def findAllTactics'
   let mut found := #[]
 
   if let some res := (← readThe InfoTable).tacticInfo? stx then
-    for (ci, tacticInfo, commandEnv) in res.reverse do
+    for (ci, tacticInfo, aliasedEnv) in res.reverse do
       if !before && !tacticInfo.goalsBefore.isEmpty && tacticInfo.goalsAfter.isEmpty then
         continue
 
       let goals := if before then tacticInfo.goalsBefore else tacticInfo.goalsAfter
       let ci := {ci with mctx := if before then tacticInfo.mctxBefore else tacticInfo.mctxAfter}
       if goals.isEmpty then continue
-      let goalView ← highlightGoals ci commandEnv goals
+      let goalView ← highlightGoals ci aliasedEnv goals
 
       if !Output.inTacticState (← get).output goalView then
         found := found ++ goalView
@@ -2314,25 +2458,24 @@ Finds the proof state _after_ a single rewrite rule `stx` (one entry of a `rw`/`
 This gives each step of `rw [h₁, …, hₙ]` its own intermediate proof state.
 -/
 partial def rwRuleGoals
-    (trees : Array Lean.Elab.InfoTree) (stx : Syntax) :
+    (trees : Array AliasedInfoTree) (stx : Syntax) :
     HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) := do
   let some ruleStart := stx.getPos? (canonicalOnly := true)
     | return none
   for t in trees do
-    for (ci, info) in infoIncludingSyntax t stx do
+    for (ci, info) in infoIncludingSyntax t.tree stx do
       if let .ofTacticInfo ti := info then
-        let commandEnv := (infoTreeCommandEnv? t).getD ci.env
         if let some regionStart := ti.stx.getPos? (canonicalOnly := true) then
           if let some regionEnd := ti.stx.getTailPos? (canonicalOnly := true) then
             if regionStart == ruleStart then
-              return some (← tacticInfoGoals ci commandEnv ti regionStart regionEnd (before := false))
+              return some (← tacticInfoGoals ci t.aliasedEnv ti regionStart regionEnd (before := false))
   return none
 
 /-- Tactics which should show inner tactic scripts' states as well as the full final state -/
 def compoundTacticKinds := Compat.wholeTacticStateKinds
 
 partial def findTactics
-    (trees : Array Lean.Elab.InfoTree) -- TODO: use the table instead of these
+    (trees : Array AliasedInfoTree) -- TODO: use the table instead of these
     (stx : Syntax)
     (before : Bool := false)
     : HighlightM (Option (Array (Highlighted.Goal Highlighted) × Compat.String.Pos × Compat.String.Pos)) :=
@@ -2349,7 +2492,7 @@ partial def findTactics
   -- Place the initial proof state after the `by` token
   if stx matches .atom _ "by" then
     for t in trees do
-      for i in infoIncludingSyntax t stx |>.reverse do
+      for i in infoIncludingSyntax t.tree stx |>.reverse do
         if not i.2.isOriginal then continue
         if let (_, .ofTacticInfo tacticInfo) := i then
           match tacticInfo.stx with
@@ -2371,14 +2514,13 @@ partial def findTactics
   -- Special handling for =>: show the _before state_
   if stx matches .atom _ "=>" then
     for t in trees do
-      for i in infoIncludingSyntax t stx |>.reverse do
+      for i in infoIncludingSyntax t.tree stx |>.reverse do
         if not i.2.isOriginal then continue
         if let (ci, .ofTacticInfo tacticInfo) := i then
           if tacticInfo.stx.getKind == nullKind then
             if let some tacStx := tacticInfo.stx.getArgs.back? then
               if tacStx == stx then
-                let commandEnv := (infoTreeCommandEnv? t).getD ci.env
-                return some (← tacticInfoGoals ci commandEnv tacticInfo startPos endPos (before := true))
+                return some (← tacticInfoGoals ci t.aliasedEnv tacticInfo startPos endPos (before := true))
 
           match tacticInfo.stx with
           | `(Lean.Parser.Tactic.inductionAlt| $_lhs =>%$tk $rhs )
@@ -2476,10 +2618,10 @@ def beforeGoals (stx : Syntax) : HighlightM (Option (Array (Highlighted.Goal Hig
   return none
 
 def highlightArrowLike
-    (trees : Array Lean.Elab.InfoTree)
+    (trees : Array AliasedInfoTree)
     (lhs arr rhs : Syntax)
     (tactics : Bool)
-    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × Compat.String.Pos) → Syntax → HighlightM Unit)
+    (hl : Array AliasedInfoTree → Bool → Option (Name × Compat.String.Pos) → Syntax → HighlightM Unit)
     (lookingAt : Option (Name × Compat.String.Pos) := none) :
     HighlightM Unit := do
   let mut lhsTactics := tactics
@@ -2515,10 +2657,10 @@ where
 -- Special cases for highlighting. These are a separate function because the nested syntax/normal
 -- pattern match was causing Lean to work very, very hard to compile the pattern match
 def highlightSpecial
-    (trees : Array Lean.Elab.InfoTree)
+    (trees : Array AliasedInfoTree)
     (stx : Syntax)
     (tactics : Bool)
-    (hl : Array Lean.Elab.InfoTree → Bool → Option (Name × Compat.String.Pos) → Syntax → HighlightM Unit)
+    (hl : Array AliasedInfoTree → Bool → Option (Name × Compat.String.Pos) → Syntax → HighlightM Unit)
     (lookingAt : Option (Name × Compat.String.Pos) := none) :
     HighlightM Unit := do
   -- Highlight things like conv => specially
@@ -2565,14 +2707,13 @@ def highlightSpecial
             -- Starting in Lean 4.14, each case/tactic alt gets its own TacticInfo. This will
             -- highlight them appropriately. Older Lean versions will have less information here.
             for t in trees do
-              let i := infoIncludingSyntax t l
+              let i := infoIncludingSyntax t.tree l
               for (ci, i) in i do
                 if let .ofTacticInfo ti := i then
                   if ti.stx.getKind == nullKind then
                     let preArr := i.stx[0]
                     if preArr.getKind == nullKind && preArr[0] == l then
-                      let commandEnv := (infoTreeCommandEnv? t).getD ci.env
-                      let (goals, _, _) ← tacticInfoGoals ci commandEnv ti startPos endPos (before := true)
+                      let (goals, _, _) ← tacticInfoGoals ci t.aliasedEnv ti startPos endPos (before := true)
                       if !goals.isEmpty then
                         HighlightM.openTactic goals startPos endPos
                         lhsTactics := false
@@ -2688,7 +2829,7 @@ def atomKind (name : Option Name) (occ : Option String) (docs : Option String) (
 def nestedTacticKinds := Compat.keepNestedStateKinds
 
 partial def highlight'
-    (trees : Array Lean.Elab.InfoTree)
+    (trees : Array AliasedInfoTree)
     (stx : Syntax)
     (tactics : Bool)
     (lookingAt : Option (Name × Compat.String.Pos) := none) :
@@ -2909,20 +3050,38 @@ partial def highlight'
 def sortSuppress (nss : List Name) : List Name :=
   nss.toArray.qsort (fun x y => x.components.length > y.components.length) |>.toList
 
+/--
+Assigns alias tables to messages by source position.
+
+Messages get the table of the first info tree whose root syntax contains their start position.
+Messages that start outside the root syntax of every tree get empty alias tables.
+-/
+def messagesWithAliases (fileMap : FileMap) (trees : Array AliasedInfoTree) (messages : Array Message) :
+    Array AliasedMessage := Id.run do
+  if messages.isEmpty then return #[]
+  let mut roots := #[]
+  for t in trees do
+    if let some rng := (infoTreeRootSyntax? t.tree).bind (·.getRange?) then
+      roots := roots.push (fileMap.toPosition rng.start, fileMap.toPosition rng.stop, t.aliasedEnv.aliases)
+  let mut out := #[]
+  for message in messages do
+    let root? := roots.find? fun (start, stop, _) =>
+      !message.pos.before start && message.pos.notAfter stop
+    out := out.push { message, aliases := (root?.map (·.2.2)).getD {} }
+  return out
+
 def highlight (stx : Syntax) (messages : Array Message)
     (trees : PersistentArray Lean.Elab.InfoTree)
     (suppressNamespaces : List Name := [])
     (collectFormat : Bool := false) : TermElabM Highlighted := do
-  let trees := trees.toArray
-  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
-  let ids := build modrefs
+  let fileMap ← getFileMap
+  let trees := AliasedInfoTree.ofEachTree fileMap (← getEnv) trees.toArray
 
-  let st ← HighlightState.ofMessages stx messages
+  let st ← HighlightState.ofMessages stx (messagesWithAliases fileMap trees messages)
 
   let infoTable : InfoTable := .ofInfoTrees trees
   let sigCache ← IO.mkRef {}
   let ctxt := {
-    ids,
     definitionsPossible := true,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
@@ -2947,14 +3106,13 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
     (suppressNamespaces : List Name := [])
     (startPos? endPos? : Option Compat.String.Pos := none)
     (collectFormat : Bool := false) : TermElabM Highlighted := do
-  let trees := trees.toArray
-  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
-  let ids := build modrefs
+  let fileMap ← getFileMap
+  let trees := AliasedInfoTree.ofEachTree fileMap (← getEnv) trees.toArray
 
   let startPos? := startPos? <|> stx.getPos?
   let endPos? := endPos? <|> Internal.getTrailingOrTailPos? stx
 
-  let st ← HighlightState.ofMessages stx messages startPos? endPos?
+  let st ← HighlightState.ofMessages stx (messagesWithAliases fileMap trees messages) startPos? endPos?
 
   let infoTable : InfoTable := .ofInfoTrees trees
 
@@ -2965,7 +3123,6 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
 
   let sigCache ← IO.mkRef {}
   let ctxt := {
-    ids,
     definitionsPossible := true,
     includeUnparsed := true,
     suppressNamespaces := sortSuppress suppressNamespaces,
@@ -2979,7 +3136,8 @@ def highlightIncludingUnparsed (stx : Syntax) (messages : Array Message)
 Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
 module, where each command has its own corresponding tree.
 
-The work of constructing the alias table is performed once, with all the trees together.
+Each tree has its own alias table. A message is rendered with the table of the tree whose root
+syntax contains the message's start position.
 
 When `includeUnparsed` is `true`, source text within the highlighted region that is not covered by
 the given syntaxes (e.g. text skipped by parse-error recovery) is included verbatim in the output.
@@ -2992,19 +3150,19 @@ def highlightMany (stxs : Array Syntax) (messages : Array Message)
     (collectFormat := false)
     (includeUnparsed := false)
     (startPos? endPos? : Option Compat.String.Pos := none) : TermElabM (Array Highlighted) := do
+  let fileMap ← getFileMap
+  let env ← getEnv
+  let trees := AliasedInfoTree.ofEachTree? fileMap env trees
   let trees' := trees.filterMap id
   let infoTable : InfoTable := .ofInfoTrees trees'
-  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees'
-  let ids := build modrefs
   let blame := mkNullNode stxs
   let startPos? := startPos? <|> blame.getPos?
   let endPos? := endPos? <|> Internal.getTrailingOrTailPos? blame
-  let st ← HighlightState.ofMessages blame messages startPos? endPos?
+  let st ← HighlightState.ofMessages blame (messagesWithAliases fileMap trees' messages) startPos? endPos?
 
   if trees.size ≠ stxs.size then throwError "Mismatch: got {trees.size} info trees and {stxs.size} syntaxes"
   let sigCache ← IO.mkRef {}
   let ctxt := {
-    ids,
     definitionsPossible := true,
     includeUnparsed,
     suppressNamespaces := sortSuppress suppressNamespaces,
@@ -3053,7 +3211,7 @@ source span. A header has tokens when it contains a `module`, `prelude`, or `imp
 comments belong to the next segment.
 -/
 structure ModuleSegment where
-  messages : Array Message
+  messages : Array AliasedMessage
   region? : Option (Compat.String.Pos × Compat.String.Pos)
 deriving Inhabited
 
@@ -3065,10 +3223,10 @@ running to the end of the file. Every message lands in exactly one segment. When
 tokens, the end-of-input item owns the whole file's region, so its messages are still rendered.
 -/
 def moduleSegments (fileMap : FileMap) (result : Compat.Frontend.FrontendResult)
-    (messages : Array Message) : Array ModuleSegment := Id.run do
+    (messages : Array AliasedMessage) : Array ModuleSegment := Id.run do
   let starts := result.syntax.map fun stx =>
     if stx.isOfKind ``Parser.Command.eoi then none else stx.getPos?
-  let sorted := messages.map (fun m => (leanPosToUtf8Pos fileMap m.pos, m)) |>.qsort (·.1 < ·.1)
+  let sorted := messages.map (fun m => (leanPosToUtf8Pos fileMap m.message.pos, m)) |>.qsort (·.1 < ·.1)
   let mut segments : Array ModuleSegment := starts.map fun _ =>
     { messages := #[], region? := none }
   let mut msgIdx := 0
@@ -3104,19 +3262,20 @@ def moduleSegments (fileMap : FileMap) (result : Compat.Frontend.FrontendResult)
 Highlights a sequence of syntaxes, each with its own info tree. Typically used for highlighting a
 module, where each command has its own corresponding tree.
 
-The work of constructing the alias table is performed once, with all the trees together. Messages
-from the whole module are pooled, and each message is attributed to the command that contains its
-start position, so a message is rendered exactly once, on the code it points at, even when a
-different command produced it.
+Each command has its own alias table, which is built from all of the command's trees. Messages from
+the whole module are pooled, and each message is attributed to the command that contains its start
+position, so a message is rendered exactly once, on the code it points at, even when a different
+command produced it. Each message is rendered with the alias table of the command that produced it.
+Header messages are rendered with an empty alias table.
 -/
 def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
     (suppressNamespaces : List Name := []) (collectFormat := false)
     (timings? : Option (IO.Ref Timings) := none) :
     TermElabM (Array Highlighted) := do
   let fileMap ← getFileMap
+  let env ← getEnv
   let sigCache := ← IO.mkRef {}
   let ctxt : Context := {
-    ids := {},
     definitionsPossible := true,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
@@ -3124,16 +3283,19 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
     sigCache,
     timings?
   }
-  let (segments, infoTable, ids) ← (withCategory .setup do
-    IO.lazyPure fun _ =>
-      let trees' := result.items.flatMap (·.info.toArray)
-      let allMessages := Compat.messageLogArray result.headerMessages ++
-        result.items.flatMap (fun i => Compat.messageLogArray i.messages)
+  let (segments, infoTable, itemTrees) ← (withCategory .setup do
+    IO.lazyPure fun _ => Id.run <| StateT.run' (s := ({} : BinderIds)) do
+      let mut itemTrees : Array (Array AliasedInfoTree) := #[]
+      let mut allMessages : Array AliasedMessage :=
+        Compat.messageLogArray result.headerMessages |>.map fun message => ({ message, aliases := {} } : AliasedMessage)
+      for item in result.items do
+        let trees := item.info.toArray
+        let aliasedEnv ← AliasedEnv.ofTrees fileMap env trees
+        itemTrees := itemTrees.push (trees.map fun tree => { tree, aliasedEnv })
+        allMessages := allMessages ++ (Compat.messageLogArray item.messages).map fun message => { message, aliases := aliasedEnv.aliases }
       let segments := moduleSegments fileMap result allMessages
-      let infoTable : InfoTable := .ofInfoTrees trees'
-      let modrefs := Lean.Server.findModuleRefs fileMap trees'
-      (segments, infoTable, build modrefs) : ReaderT Context TermElabM _).run ctxt
-  let ctxt := { ctxt with ids }
+      let infoTable : InfoTable := .ofInfoTrees itemTrees.flatten
+      return (segments, infoTable, itemTrees) : ReaderT Context TermElabM _).run ctxt
 
   let mut hls := #[]
 
@@ -3153,14 +3315,13 @@ def highlightFrontendResult (result : Compat.Frontend.FrontendResult)
     let cmd := result.items[idx]!
     let st ← segmentState cmd.commandSyntax segments[idx + 1]!
     sigCache.set {}
-    let (hl, _) ← go cmd segments[idx + 1]! |>.run ctxt |>.run infoTable |>.run st
+    let (hl, _) ← go cmd itemTrees[idx]! segments[idx + 1]! |>.run ctxt |>.run infoTable |>.run st
     hls := hls.push hl
 
   return hls
 where
-  go (res : Compat.Frontend.FrontendItem) (seg : ModuleSegment) := do
-    let _ ← withCommandEnv res.info.toArray res.commandSyntax
-      (highlight' res.info.toArray res.commandSyntax true)
+  go (res : Compat.Frontend.FrontendItem) (trees : Array AliasedInfoTree) (seg : ModuleSegment) := do
+    let _ ← withCommandEnv trees res.commandSyntax (highlight' trees res.commandSyntax true)
     flushSegment seg
     modifyGet fun (st : HighlightState) => (Highlighted.fromOutput st.output, {st with output := []})
   /--
@@ -3178,20 +3339,17 @@ def highlightProofState (ci : ContextInfo) (goals : List MVarId)
     (suppressNamespaces : List Name := []) (collectFormat := false) :
     TermElabM (Array (Highlighted.Goal Highlighted)) := do
   let trees := trees.toArray
-  let modrefs := Lean.Server.findModuleRefs (← getFileMap) trees
-  let ids := build modrefs
-  let infoTable : InfoTable := .ofInfoTrees trees
+  let aliasedEnv := Id.run <| (AliasedEnv.ofTrees (← getFileMap) (← getEnv) trees).run' {}
+  let infoTable : InfoTable := .ofInfoTrees (trees.map fun tree => { tree, aliasedEnv })
   let sigCache ← IO.mkRef {}
   let ctxt := {
-    ids,
     definitionsPossible := false,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
     collectFormat,
     sigCache
   }
-  let commandEnv := (infoTreesCommandEnv? trees).getD (← getEnv)
-  let (hlGoals, _) ← highlightGoals ci commandEnv goals |>.run ctxt |>.run infoTable |>.run .empty
+  let (hlGoals, _) ← highlightGoals ci aliasedEnv goals |>.run ctxt |>.run infoTable |>.run .empty
   pure hlGoals
 
 
@@ -3199,15 +3357,15 @@ def highlightMessage (message : Message)
     (suppressNamespaces : List Name := []) (collectFormat := false) :
     TermElabM Highlighted.Message := do
   let sigCache ← IO.mkRef {}
-  let ctxt := {
-    ids := {},
+  let ctxt : Context := {
     definitionsPossible := false,
     includeUnparsed := false,
     suppressNamespaces := sortSuppress suppressNamespaces,
     collectFormat,
     sigCache
   }
-  let (contents, _) ← messageContents message |>.run ctxt |>.run {} |>.run .empty
+  let aliases : AliasTable := {}
+  let (contents, _) ← messageContents message |>.run aliases |>.run ctxt |>.run {} |>.run .empty
   let severity : Highlighted.Span.Kind :=
     match message.severity with
     | .error => .error
