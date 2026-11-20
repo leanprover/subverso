@@ -16,7 +16,7 @@ from pathlib import Path
 
 def demodulize_file(filepath):
     """De-modulize a single Lean file in place."""
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     output_lines = []
@@ -27,46 +27,54 @@ def demodulize_file(filepath):
 
     for i, line in enumerate(lines):
         # Check for skip directive
-        if re.match(r'--\s*nomodule\s+skip\s*', line):
+        if re.match(r"--\s*nomodule\s+skip\s*", line):
             skip_next = True
-            output_lines.append('')
+            output_lines.append("")
             continue
 
         if skip_next:
             skip_next = False
-            output_lines.append('')
+            output_lines.append("")
             continue
 
         # Delete first standalone "module"
-        if not module_deleted and line.strip() == 'module':
+        if not module_deleted and line.strip() == "module":
             module_deleted = True
             in_import_section = True
-            output_lines.append('')
+            output_lines.append("")
             continue
 
         # Delete first standalone "public section" (ends import section)
-        if not public_section_deleted and line.strip() == 'public section':
+        if not public_section_deleted and line.strip() == "public section":
             public_section_deleted = True
             in_import_section = False
-            output_lines.append('')
+            output_lines.append("")
             continue
 
         # Replace import variants with plain "import" (only in import section)
         modified_line = line
         if in_import_section:
-            modified_line = re.sub(r'^\s*((public|meta)\s+)+import', 'import', modified_line)
+            modified_line = re.sub(
+                r"^\s*((public|meta)\s+)+import", "import", modified_line
+            )
         else:
-            modified_line = re.sub(r'^\s*@\[\s*expose\s*\]', '-- @[expose]', modified_line)
-            modified_line = re.sub(r':=\s*private', ':=', modified_line)
-            modified_line = re.sub(r'meta\s+def', 'def', modified_line)
-            modified_line = re.sub(r'meta\s+partial\s+def', 'partial def', modified_line)
-            modified_line = re.sub(r'private\s+meta', 'private', modified_line)
-            modified_line = re.sub(r'meta\s+instance', 'instance', modified_line)
-            modified_line = re.sub(r'meta\s+partial\s+instance', 'partial instance', modified_line)
-            modified_line = re.sub(r'meta\s+structure', 'structure', modified_line)
+            modified_line = re.sub(
+                r"^\s*@\[\s*expose\s*\]", "-- @[expose]", modified_line
+            )
+            modified_line = re.sub(r":=\s*private", ":=", modified_line)
+            modified_line = re.sub(r"meta\s+def", "def", modified_line)
+            modified_line = re.sub(
+                r"meta\s+partial\s+def", "partial def", modified_line
+            )
+            modified_line = re.sub(r"private\s+meta", "private", modified_line)
+            modified_line = re.sub(r"meta\s+instance", "instance", modified_line)
+            modified_line = re.sub(
+                r"meta\s+partial\s+instance", "partial instance", modified_line
+            )
+            modified_line = re.sub(r"meta\s+structure", "structure", modified_line)
         output_lines.append(modified_line)
 
-    with open(filepath, 'w', encoding='utf-8') as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         f.writelines(output_lines)
 
 
@@ -81,7 +89,7 @@ def main():
         print(f"Error: {directory} is not a directory", file=sys.stderr)
         sys.exit(1)
 
-    lean_files = directory.rglob('*.lean')
+    lean_files = directory.rglob("*.lean")
 
     count = 0
     for filepath in lean_files:
@@ -91,5 +99,5 @@ def main():
     print(f"De-modulized {count} Lean files in {directory}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -13,6 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -20,7 +23,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       runners: ${{ steps.plan.outputs.runners }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
       # The test job has 8 version slots, so shards hold at most 8 versions.
       - name: Plan the test matrix
@@ -53,11 +56,11 @@ jobs:
           curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
       - name: Restore the prebuilt test projects
         id: test-projects
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v5.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
@@ -69,7 +72,7 @@ jobs:
       # The toolchain in `lean-toolchain` builds the test driver that prebuilds the test projects.
       - name: Install the toolchain in lean-toolchain
         if: steps.test-projects.outputs.cache-hit != 'true'
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v3.0.2
         with:
           timeout_minutes: 15
           max_attempts: 3
@@ -78,7 +81,7 @@ jobs:
 
       - name: Install the test projects' toolchains
         if: steps.test-projects.outputs.cache-hit != 'true'
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v3.0.2
         with:
           timeout_minutes: 15
           max_attempts: 3
@@ -100,7 +103,7 @@ jobs:
 
       - name: Save the prebuilt test projects
         if: steps.test-projects.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v5.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
@@ -112,7 +115,7 @@ jobs:
       # job doesn't count it as a cache hit, so its next run builds the failed projects again.
       - name: Save the test projects that built
         if: failure() && steps.prebuild.outcome == 'failure'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v5.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
@@ -158,10 +161,10 @@ jobs:
         run: |
           which lake
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
       - name: Install the test projects' toolchains
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v3.0.2
         with:
           timeout_minutes: 15
           max_attempts: 3
@@ -173,7 +176,7 @@ jobs:
             done
 
       - name: Restore the prebuilt test projects
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v5.1.0
         with:
           path: |
             .prebuild/*/*/*/.lake
@@ -253,7 +256,7 @@ jobs:
 
       - name: Upload the logs of failed versions
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: failed-versions-${{ strategy.job-index }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/subverso-ci/failed
