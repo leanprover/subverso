@@ -7,3 +7,4 @@ lake-manifest.json
 no-mod
 .builds
 .prebuild
+__pycache__/

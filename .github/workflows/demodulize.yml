@@ -6,12 +6,16 @@ on:
       - main    
   workflow_dispatch:
 
+# The job pushes the no-modules branch and its tags.
+permissions:
+  contents: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
     if: ${{ github.repository == 'leanprover/subverso' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
       
       - name: Verify .source-commit doesn't exist
         run: |

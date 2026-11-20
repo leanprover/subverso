@@ -5,12 +5,15 @@ on:
 
 name: Formalities
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: check-imports-and-headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7.0.1
 
       - name: Don't 'import Lean', use precise imports
         if: always()
@@ -38,7 +41,7 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Check out code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
 
       - name: Check for orphaned modules
         run: |
