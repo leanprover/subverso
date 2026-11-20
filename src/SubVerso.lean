@@ -3,11 +3,10 @@ Copyright (c) 2023-2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
-public import SubVerso.Compat
-public import SubVerso.Examples
-public import SubVerso.Helper
-public import SubVerso.Highlighting
-public import SubVerso.Module
-public import SubVerso.Module.Normalize
-public import SubVerso.Signature
+import SubVerso.Compat
+import SubVerso.Examples
+import SubVerso.Helper
+import SubVerso.Highlighting
+import SubVerso.Module
+import SubVerso.Module.Normalize
+import SubVerso.Signature
