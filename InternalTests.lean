@@ -355,12 +355,12 @@ open Lean Elab Command Highlighting in
   let ciExplicit := { ci with options := ci.options.setBool `pp.explicit true }
   let sigCache ← IO.mkRef {}
   let ctxt : Highlighting.Context := {
-    ids := {}, definitionsPossible := false, includeUnparsed := false, suppressNamespaces := [],
+    definitionsPossible := false, includeUnparsed := false, suppressNamespaces := [],
     sigCache
   }
   let act : HighlightM (Array (Highlighted.Goal Highlighted) × Array (Highlighted.Goal Highlighted)) := do
-    let plain ← highlightGoals ci ci.env ti.goalsBefore
-    let explicit ← highlightGoals ciExplicit ci.env ti.goalsBefore
+    let plain ← highlightGoals ci { env := ci.env } ti.goalsBefore
+    let explicit ← highlightGoals ciExplicit { env := ci.env } ti.goalsBefore
     pure (plain, explicit)
   let (plain, explicit) ← runTermElabM fun _ =>
     withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
@@ -1789,6 +1789,155 @@ open Lean Elab Command in
     "  case n => exact 1",
     "  case r => exact (fun _ => Eq.refl m) h"])
   "h" ["?n = 1", "?n = 1", "1 = 1"]
+
+open Lean Elab Command in
+-- A binder of one command is a variable even when a later command's own name has the same
+-- free variable ID. Lean releases before 4.30 reuse free variable IDs across commands, so the
+-- binder `b` and the local that stands for `scopeFoo` while it is elaborated share an ID there.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle <| String.intercalate "\n" [
+    "theorem scopeBar (a b : True) : True := by",
+    "  sorry",
+    "",
+    "theorem scopeFoo : True := by",
+    "  sorry"]
+  let kinds (name : String) := hl.tokenList.toList.filter (·.content == name) |>.map (·.kind.name)
+  for name in ["a", "b"] do
+    unless kinds name == ["var"] do
+      throwError m!"Token '{name}' has kinds {kinds name}, expected a variable"
+  for name in ["scopeBar", "scopeFoo"] do
+    unless kinds name == ["const"] do
+      throwError m!"Token '{name}' has kinds {kinds name}, expected a constant"
+  let types := hl.varTokens.toList.filter (·.1 == "b") |>.map (·.2)
+  unless types == ["True"] do
+    throwError m!"Variable 'b' has hover types {repr types}, expected [\"True\"]"
+
+open Lean Elab Command in
+/-- Elaborates each of `cmds` alone from the same initial state and gathers the results as one module. -/
+def elabCommandsFromSameState (cmds : List String) : CommandElabM Compat.Frontend.FrontendResult := do
+  let initialState : Command.State := { env := (← getEnv), maxRecDepth := (← get).maxRecDepth }
+  let blank (s : String) : String := String.map (fun c => if c == '\n' then c else ' ') s
+  let mut items := #[]
+  let mut before := ""
+  let mut header? := none
+  for cmd in cmds do
+    let text := blank before ++ cmd
+    let inputCtx := Parser.mkInputContext text "<input>"
+    let (headerStx, parserState, msgs) ← Parser.parseHeader inputCtx
+    let (result, _) ← Compat.Frontend.processCommands headerStx
+      |>.run { inputCtx } |>.run { commandState := { initialState with messages := msgs }, parserState, cmdPos := parserState.pos }
+    if header?.isNone then header? := some (result.headerSyntax, result.headerMessages)
+    items := items ++ result.items.filter (·.commandSyntax.getKind != ``Lean.Parser.Command.eoi)
+    before := before ++ cmd ++ "\n\n"
+  let some (headerSyntax, headerMessages) := header?
+    | throwError "No commands"
+  return { headerSyntax, headerMessages, items }
+
+open Lean Elab Command in
+/--
+Highlights the module whose commands are `cmds` through `highlightFrontendResult`, with each command
+elaborated from the same initial state.
+
+Each command is elaborated alone from a copy of the module's text. The copy ends after the command,
+and the earlier commands in it are blanked out. Every command thus starts from the same name generator,
+and free variable IDs repeat across commands on every Lean release.
+-/
+def highlightCommandsFromSameState (cmds : List String) : CommandElabM Highlighting.Highlighted := do
+  let input := String.intercalate "\n\n" cmds
+  let result ← elabCommandsFromSameState cmds
+  let fileMap := FileMap.ofString input
+  let hls ← runTermElabM fun _ =>
+    withTheReader Core.Context (fun ctx => { ctx with fileMap }) do
+      Highlighting.highlightFrontendResult (result.updateLeading input)
+  return hls.foldl (· ++ ·) .empty
+
+open Lean Elab Command in
+-- A binder of one command is a variable even when a later command's own name has the same free
+-- variable ID.
+#eval show CommandElabM Unit from do
+  let cmds := [
+    "theorem sameStateBar (a b : True) : True := by\n  sorry",
+    "def sameStateFoo : Nat := 1"]
+  let hl ← highlightCommandsFromSameState cmds
+  let kinds (name : String) := hl.tokenList.toList.filter (·.content == name) |>.map (·.kind.name)
+  for name in ["a", "b"] do
+    unless kinds name == ["var"] do
+      throwError m!"Token '{name}' has kinds {kinds name}, expected a variable"
+  for name in ["sameStateBar", "sameStateFoo"] do
+    unless kinds name == ["const"] do
+      throwError m!"Token '{name}' has kinds {kinds name}, expected a constant"
+
+open Lean Elab Command Term Meta in
+/--
+Logs an information message about a local variable `x` whose free variable ID is `id`. The message
+covers bytes 4 to 16 of the input.
+-/
+elab "scope_msg_fvar " id:str : command => do
+  let name := (id.getString.splitOn ".").foldl (init := Name.anonymous) fun n s =>
+    match s.toNat? with
+    | some k => .mkNum n k
+    | none => .mkStr n s
+  let fvarId : FVarId := ⟨name⟩
+  liftTermElabM do
+    let lctx := (← getLCtx).mkLocalDecl fvarId `x (mkConst ``Nat)
+    withLCtx lctx {} do
+      logInfoAt (Syntax.atom (.synthetic ⟨4⟩ ⟨16⟩) "") m!"subverso_test {mkFVar fvarId}"
+
+open SubVerso.Highlighting in
+/-- The tokens in the terms of the messages of a highlighted tree, in order. -/
+partial def SubVerso.Highlighting.Highlighted.messageTokens : Highlighted → Array Token
+  | .seq hls => hls.foldl (init := #[]) fun acc hl => acc ++ hl.messageTokens
+  | .span info hl =>
+    info.foldl (init := #[]) (fun acc (_, msg) => acc ++ contentTokens msg) ++ hl.messageTokens
+  | .tactics _ _ _ hl => hl.messageTokens
+  | .point _ msg => contentTokens msg
+  | _ => #[]
+where
+  contentTokens : Highlighted.MessageContents Highlighted → Array Token
+    | .term hl => hl.tokenList
+    | .trace _ msg children _ => children.foldl (init := contentTokens msg) (· ++ contentTokens ·)
+    | .append msgs => msgs.foldl (init := #[]) (· ++ contentTokens ·)
+    | _ => #[]
+
+open Lean Elab Command in
+-- A message is rendered with the free variables of the command that produced it, also when it lies
+-- in another command's source. Here the second command's message lies in the first command and is
+-- about a local whose free variable ID is that of the first command's own name.
+#eval show CommandElabM Unit from do
+  let first := "def msgScopeBar : Nat := 1"
+  let result ← elabCommandsFromSameState [first]
+  let auxIds := result.items.flatMap (·.info.toArray) |>.flatMap fun t =>
+    t.foldInfo (init := #[]) fun _ info acc =>
+      match info with
+      | .ofTermInfo ti =>
+        match ti.expr with
+        | .fvar id => if (ti.lctx.find? id).any (·.isAuxDecl) then acc.push id else acc
+        | _ => acc
+      | _ => acc
+  let some auxId := auxIds[0]?
+    | throwError "No auxiliary local for 'msgScopeBar'"
+  let hl ← highlightModuleStyle s!"{first}\n\nscope_msg_fvar \"{auxId.name}\""
+  let kinds := hl.messageTokens.toList.filter (·.content == "x") |>.map (·.kind.name)
+  unless kinds == ["var"] do
+    throwError m!"Message token 'x' has kinds {kinds}, expected a variable:\n{hlStringWithMessages hl}"
+
+open Lean Elab Command in
+-- A section variable is one variable in its binder and in each declaration that uses it.
+#eval show CommandElabM Unit from do
+  let hl ← highlightModuleStyle <| String.intercalate "\n" [
+    "variable (sharedVar : Nat)",
+    "",
+    "def sharedVarF := sharedVar + 1",
+    "",
+    "def sharedVarG := sharedVar + 2"]
+  let ids := hl.tokenList.toList.filterMap fun tok =>
+    match tok.kind with
+    | .var id .. => if tok.content == "sharedVar" then some id.name else none
+    | _ => none
+  unless ids.length == 3 do
+    throwError m!"Expected three variable tokens for 'sharedVar', got {ids}"
+  unless ids.all (· == ids.head!) do
+    throwError m!"The tokens for 'sharedVar' have different variable IDs: {ids}"
 
 end VarHoverTypes
 
