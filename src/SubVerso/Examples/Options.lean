@@ -3,11 +3,9 @@ Copyright (c) 2023-2025 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Author: David Thrane Christiansen
 -/
-module
 import SubVerso.Compat
-public import Lean.Data.Options
-public import Lean.Data.Name
-public section
+import Lean.Data.Options
+import Lean.Data.Name
 
 /-!
 Options that control how SubVerso highlights code.
